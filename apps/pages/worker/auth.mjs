@@ -221,13 +221,15 @@ const recordedAnswers = new WeakSet();
 async function recordExchange(env, principal, account) {
   if (recordedAnswers.has(account)) return;
   try {
-    const { organizations, credential } = organizationDirectory(env).memberships(account);
+    const { organizations, credential, capabilities } =
+      organizationDirectory(env).memberships(account);
     await recordOrganizationMemberships(
       env,
       principal,
       organizations,
       account.verifiedAt,
       credential,
+      capabilities,
     );
   } catch (cause) {
     throw withAdmissionReason(

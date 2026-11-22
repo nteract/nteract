@@ -8,8 +8,9 @@
  * directory's `memberships`. The host keeps the newest report per principal
  * as one D1 row of `pages_organization_memberships`: the directory's
  * `provider`, the organizations, `verified_at_ms` (when Pages sent the
- * exchange that reported them, in milliseconds by Pages' clock) and the
- * directory's opaque `directory_credential`. Every successful exchange
+ * exchange that reported them, in milliseconds by Pages' clock), the
+ * directory's opaque `directory_credential`, and the `capabilities` it
+ * advertised with that exchange. Every successful exchange
  * writes, in one statement (`recordOrganizationMemberships`), so the row
  * always holds the newest answer any isolate received, and a slow exchange
  * can't undo a newer one. That costs one D1 write per browser sign-in, and
@@ -34,18 +35,21 @@
  * settled values are cached, never a pending read (isolate-setup.mjs says
  * why).
  *
- * The directory credential is read only by `directoryCredential`, never
- * cached, and never joins the record the cache holds, so it stays on the
- * server and out of every identity. A newer exchange without one clears it.
+ * The directory credential and capabilities are read only by
+ * `directoryAccess`, never cached, and never join the record the cache
+ * holds, so the credential stays on the server and out of every identity. A
+ * newer exchange without them clears them.
  *
  * Kilo deployments kept this evidence in `kilo_memberships` before the table
  * took the directory's name. Its migrations still run first, so every
  * database has that table in its last shape, and the first migration here
  * copies its rows: evidence a person holds keeps counting across the deploy.
  * Each Kilo write also goes to that table, without the credential, so a
- * build rolled back to reads current evidence. A later build stops that
- * write and drops the table once every deployment has run this one for
- * longer than the evidence lasts.
+ * build rolled back to reads current evidence, and each read takes the newer
+ * of the two rows (`evidenceRow`), so an exchange a rolled-back build handled
+ * counts after rolling forward. A later build stops both and drops the table
+ * once every deployment has run this one for longer than the evidence
+ * lasts.
  *
  * No organization id or name, and no credential, reaches a log line from
  * here. */
@@ -53,6 +57,7 @@ import { identityProvider } from "../identity-provider.mjs";
 import { migrateSchema } from "./d1-schema.mjs";
 import { isolateSetup } from "./isolate-setup.mjs";
 import { kiloDirectory } from "./kilo-directory.mjs";
+import { knownCapabilities } from "./organization-directory.mjs";
 
 /** How long one read answers for in this isolate. */
 export const CACHE_MS = 30_000;
@@ -98,9 +103,8 @@ const LEGACY_MIGRATIONS = Object.freeze([
 const MIGRATIONS = Object.freeze([
   // Every statement is safe to run again, and an older build keeps reading
   // and writing `kilo_memberships`, which this copies from and never
-  // rewrites. A row an older isolate writes after the copy reaches this
-  // table at that person's next exchange through this build; until then this
-  // table keeps the answer before it, for at most the evidence's lifetime.
+  // rewrites. A row an older build writes after the copy stays only there;
+  // `evidenceRow` reads both tables, so it counts.
   Object.freeze({
     version: 1,
     name: "organization_memberships",
@@ -116,6 +120,21 @@ const MIGRATIONS = Object.freeze([
         (principal, provider, organizations, verified_at_ms)
       SELECT principal, 'kilo', organizations, verified_at_ms FROM kilo_memberships WHERE true
       ON CONFLICT (principal) DO NOTHING`,
+    ]),
+  }),
+  // What the directory advertised with that exchange, as a JSON array of
+  // names. The default reads as nothing advertised, so a row an earlier
+  // build of this table wrote offers nothing until that person's next
+  // exchange through this build. An earlier build still running names no
+  // capabilities in its write, so its update leaves the column as it was
+  // and the credential it stores decides: Kilo mints one only while it
+  // advertises member search.
+  Object.freeze({
+    version: 2,
+    name: "directory_capabilities",
+    statements: Object.freeze([
+      `ALTER TABLE pages_organization_memberships
+        ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'`,
     ]),
   }),
 ]);
@@ -184,6 +203,40 @@ function parseRecord(row, directory) {
   });
 }
 
+/** The newest stored answer for `principal`: `{ organizations,
+ * verified_at_ms, provider, directory_credential, capabilities }`, or null.
+ *
+ * While `kilo_memberships` exists, a Kilo directory's answer is the newer of
+ * this table's row and that one's. A build rolled back to, or an older
+ * isolate, writes only the legacy table, so an exchange it handled (one that
+ * removed someone from an organization, say) is newer there; the copy ran
+ * once and doesn't carry it over. That row has no credential and advertises
+ * nothing, so the person can't search until their next exchange through this
+ * build. In a tie this
+ * table's row wins. Read the new table alone once the legacy table is
+ * dropped. */
+async function evidenceRow(env, principal, directory) {
+  if (directory.provider !== "kilo")
+    return env.DB.prepare(
+      `SELECT organizations, verified_at_ms, provider, directory_credential, capabilities
+      FROM pages_organization_memberships WHERE principal = ?`,
+    )
+      .bind(principal)
+      .first();
+  return env.DB.prepare(
+    `SELECT organizations, verified_at_ms, provider, directory_credential, capabilities,
+      0 AS legacy
+    FROM pages_organization_memberships WHERE principal = ?
+    UNION ALL
+    SELECT organizations, verified_at_ms, 'kilo', NULL, '[]', 1
+    FROM kilo_memberships WHERE principal = ?
+    ORDER BY verified_at_ms DESC, legacy ASC
+    LIMIT 1`,
+  )
+    .bind(principal, principal)
+    .first();
+}
+
 /** The principal's membership record, `{ organizations, verifiedAtMs }`, or
  * null. Reads D1 unless this isolate read or wrote it within `CACHE_MS`. */
 export async function membershipRecord(env, principal, now = Date.now()) {
@@ -193,15 +246,7 @@ export async function membershipRecord(env, principal, now = Date.now()) {
   if (hit) return hit.record;
   const writesBefore = writes;
   await ready(env.DB);
-  const record = parseRecord(
-    await env.DB.prepare(
-      `SELECT provider, organizations, verified_at_ms
-      FROM pages_organization_memberships WHERE principal = ?`,
-    )
-      .bind(principal)
-      .first(),
-    directory,
-  );
+  const record = parseRecord(await evidenceRow(env, principal, directory), directory);
   if (writes === writesBefore) remember(principal, record, now);
   return record;
 }
@@ -226,6 +271,11 @@ export async function membershipRecord(env, principal, now = Date.now()) {
  * follows the same order: a later exchange replaces it, null included, and
  * one in the same millisecond keeps whichever is set. Two credentials that
  * close name the same person on the same deployment, so either serves.
+ *
+ * `capabilities` is what the directory advertised with the exchange. It
+ * follows the organizations' rule: a later exchange replaces it, and one in
+ * the same millisecond that advertised something else leaves nothing
+ * advertised, so a tie never turns a feature on.
  */
 export async function recordOrganizationMemberships(
   env,
@@ -233,12 +283,16 @@ export async function recordOrganizationMemberships(
   organizations,
   sentAt,
   credential = null,
+  capabilities = [],
 ) {
   const directory = organizationDirectory(env);
   if (!directory) throw new Error("This deployment's sign-in reports no organizations");
   writes++;
   try {
-    await write(env, principal, directory.provider, organizations, sentAt, credential);
+    await write(env, principal, directory.provider, organizations, sentAt, {
+      credential,
+      capabilities: JSON.stringify(knownCapabilities(capabilities)),
+    });
   } finally {
     writes++;
     // The row may now differ from both this answer and this isolate's view,
@@ -256,13 +310,20 @@ export async function recordOrganizationMemberships(
 const storedOrganizations = (organizations) =>
   JSON.stringify(organizations.map(({ id, name }) => ({ id, name })));
 
-async function write(env, principal, provider, organizations, sentAt, credential) {
+async function write(
+  env,
+  principal,
+  provider,
+  organizations,
+  sentAt,
+  { credential, capabilities },
+) {
   await ready(env.DB);
   const stored = storedOrganizations(organizations);
   const table = "pages_organization_memberships";
   await env.DB.prepare(
-    `INSERT INTO ${table} (principal, provider, organizations, verified_at_ms, directory_credential)
-    VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO ${table} (principal, provider, organizations, verified_at_ms, directory_credential, capabilities)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT (principal) DO UPDATE SET
       provider = excluded.provider,
       organizations = CASE
@@ -275,6 +336,11 @@ async function write(env, principal, provider, organizations, sentAt, credential
           THEN excluded.directory_credential
         ELSE COALESCE(excluded.directory_credential, ${table}.directory_credential)
       END,
+      capabilities = CASE
+        WHEN excluded.verified_at_ms > ${table}.verified_at_ms THEN excluded.capabilities
+        WHEN excluded.capabilities = ${table}.capabilities THEN ${table}.capabilities
+        ELSE '[]'
+      END,
       verified_at_ms = excluded.verified_at_ms
     WHERE excluded.verified_at_ms >= ${table}.verified_at_ms`,
   )
@@ -284,6 +350,7 @@ async function write(env, principal, provider, organizations, sentAt, credential
       stored,
       Math.floor(sentAt),
       typeof credential === "string" && credential ? credential : null,
+      capabilities,
     )
     .run();
   if (provider === "kilo") await writeLegacy(env, principal, stored, sentAt);
@@ -310,32 +377,46 @@ async function writeLegacy(env, principal, stored, sentAt) {
     .run();
 }
 
-/** The directory credential `identity`'s newest exchange carried, or null
- * when it carried none, the evidence it came with no longer counts, or
- * `identity` isn't an account of this deployment's directory. A directory
- * issues its credential with the exchange and honors it for as long as Pages
- * trusts the evidence, so a credential this returns is one the directory
- * still accepts, clocks aside. Reads D1 every time: it is never cached. */
-export async function directoryCredential(env, identity, now = Date.now()) {
+/** What `identity`'s newest exchange left it for the directory, `{
+ * credential, capabilities }`, or null when the evidence it came with no
+ * longer counts or `identity` isn't an account of this deployment's
+ * directory. `credential` is null when the exchange carried none (one an
+ * older build handled carries none); `capabilities` is the known names the
+ * directory advertised. A directory issues its credential with the exchange
+ * and honors it for as long as Pages trusts the evidence, so a credential
+ * this returns is one the directory still accepts, clocks aside. Reads D1
+ * every time: it is never cached. */
+export async function directoryAccess(env, identity, now = Date.now()) {
   const directory = directoryAccount(env, identity, now);
   if (!directory) return null;
   await ready(env.DB);
-  const row = await env.DB.prepare(
-    `SELECT provider, verified_at_ms, directory_credential
-    FROM pages_organization_memberships WHERE principal = ?`,
-  )
-    .bind(identity.principal)
-    .first();
+  const row = await evidenceRow(env, identity.principal, directory);
   if (
     !row ||
     row.provider !== directory.provider ||
     !Number.isSafeInteger(row.verified_at_ms) ||
-    typeof row.directory_credential !== "string" ||
-    !row.directory_credential ||
     evidenceEnd({ verifiedAtMs: row.verified_at_ms }, directory) <= now
   )
     return null;
-  return row.directory_credential;
+  let advertised;
+  try {
+    advertised = JSON.parse(row.capabilities);
+  } catch {
+    advertised = [];
+  }
+  return {
+    credential:
+      typeof row.directory_credential === "string" && row.directory_credential
+        ? row.directory_credential
+        : null,
+    capabilities: knownCapabilities(advertised),
+  };
+}
+
+/** The directory credential `identity`'s newest exchange carried while its
+ * evidence counts, or null (`directoryAccess`). */
+export async function directoryCredential(env, identity, now = Date.now()) {
+  return (await directoryAccess(env, identity, now))?.credential ?? null;
 }
 
 /** This deployment's directory when `identity` is one of its accounts, the

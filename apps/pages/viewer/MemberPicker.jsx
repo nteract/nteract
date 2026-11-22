@@ -47,6 +47,8 @@ export function memberSearchStatus(state, organizationName) {
       : state.unavailable
         ? `Searching ${organizationName} isn't available right now. Keep typing to try again, or invite by email.`
         : "Search failed. Keep typing to try again.";
+  if (state.name === "limited")
+    return `Too many searches. Searching again in ${Math.ceil(state.retryAfterMs / 1000)} seconds.`;
   if (state.name === "signin")
     return `Sign in again to search ${organizationName}. Then keep typing.`;
   return "";

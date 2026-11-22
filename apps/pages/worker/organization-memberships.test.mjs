@@ -199,6 +199,7 @@ const versionsOf = async (env, table) =>
     ({ version }) => version,
   );
 const EVIDENCE_COLUMNS = [
+  "capabilities",
   "directory_credential",
   "organizations",
   "principal",
@@ -211,7 +212,7 @@ test("a fresh database gets the organization memberships table beside the legacy
   const { env } = await fixture(t);
   const at = Date.now();
   await recordOrganizationMemberships(env, "user:kilo:fresh", [sentinel], at);
-  assert.deepEqual(await versionsOf(env, "pages_organization_schema"), [1]);
+  assert.deepEqual(await versionsOf(env, "pages_organization_schema"), [1, 2]);
   assert.deepEqual(await columnsOf(env, "pages_organization_memberships"), EVIDENCE_COLUMNS);
   // The legacy table, in its last shape, so the copy always has a source.
   assert.deepEqual(await versionsOf(env, "kilo_membership_schema"), [1, 2]);
@@ -276,7 +277,7 @@ test("evidence in the legacy table keeps counting after the deploy, and the copy
     organizations: [],
     verifiedAtMs: at,
   });
-  assert.deepEqual(await versionsOf(env, "pages_organization_schema"), [1]);
+  assert.deepEqual(await versionsOf(env, "pages_organization_schema"), [1, 2]);
   assert.deepEqual(await versionsOf(env, "kilo_membership_schema"), [1, 2]);
   // An older build still running writes the legacy table only; this build's
   // newer evidence isn't replaced by the copy running again elsewhere.
@@ -326,6 +327,103 @@ test("a database that ran only the seconds table drops its rows and takes millis
     organizations: [sentinel],
     verifiedAtMs: at,
   });
+});
+
+test("the capabilities column joins a table an earlier build made, and that build's writes still land", async (t) => {
+  const { env } = await fixture(t);
+  const at = Date.now() - 60_000;
+  // The table as the build before this one leaves it: version 1 only.
+  await legacyDatabase(env, []);
+  for (const sql of [
+    `CREATE TABLE pages_organization_schema (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE pages_organization_memberships (
+      principal TEXT PRIMARY KEY,
+      provider TEXT NOT NULL,
+      organizations TEXT NOT NULL,
+      verified_at_ms INTEGER NOT NULL,
+      directory_credential TEXT
+    )`,
+    `INSERT INTO pages_organization_schema VALUES (1, 'organization_memberships', '2026-11-20T00:00:00.000Z')`,
+  ])
+    await env.DB.prepare(sql).run();
+  await env.DB.prepare(
+    "INSERT INTO pages_organization_memberships VALUES ('user:kilo:earlier', 'kilo', ?, ?, 'proof')",
+  )
+    .bind(JSON.stringify([sentinel]), at)
+    .run();
+  assert.deepEqual(await membershipRecord(env, "user:kilo:earlier"), {
+    organizations: [sentinel],
+    verifiedAtMs: at,
+  });
+  assert.deepEqual(await versionsOf(env, "pages_organization_schema"), [1, 2]);
+  assert.deepEqual(await columnsOf(env, "pages_organization_memberships"), EVIDENCE_COLUMNS);
+  const read = () =>
+    env.DB.prepare("SELECT capabilities FROM pages_organization_memberships WHERE principal = ?")
+      .bind("user:kilo:earlier")
+      .first();
+  assert.equal((await read()).capabilities, "[]", "an earlier row advertises nothing");
+  // The earlier build's own insert, which names no capabilities, still runs.
+  await env.DB.prepare(
+    `INSERT INTO pages_organization_memberships
+      (principal, provider, organizations, verified_at_ms, directory_credential)
+    VALUES ('user:kilo:beside', 'kilo', '[]', ?, NULL)`,
+  )
+    .bind(at)
+    .run();
+  const beside = await env.DB.prepare(
+    "SELECT capabilities FROM pages_organization_memberships WHERE principal = 'user:kilo:beside'",
+  ).first();
+  assert.equal(beside.capabilities, "[]");
+  // Running the migrations again changes nothing.
+  const again = await otherIsolate();
+  await again.recordOrganizationMemberships(env, "user:kilo:earlier", [sentinel], at + 1000, "p", [
+    "member_search",
+  ]);
+  assert.deepEqual(await versionsOf(env, "pages_organization_schema"), [1, 2]);
+  assert.equal((await read()).capabilities, '["member_search"]');
+});
+
+const advertised = async (env, principal) =>
+  JSON.parse(
+    (
+      await env.DB.prepare(
+        "SELECT capabilities FROM pages_organization_memberships WHERE principal = ?",
+      )
+        .bind(principal)
+        .first()
+    ).capabilities,
+  );
+
+test("capabilities follow the newest exchange, unknown names drop, and a tie never turns one on", async (t) => {
+  const { env } = await fixture(t);
+  const principal = "user:kilo:capable";
+  const at = Date.now();
+  await recordOrganizationMemberships(env, principal, [sentinel], at, null, [
+    "future_thing",
+    "member_search",
+    "member_search",
+    7,
+  ]);
+  assert.deepEqual(await advertised(env, principal), ["member_search"]);
+  // An older exchange changes nothing.
+  await recordOrganizationMemberships(env, principal, [sentinel], at - 1, null, []);
+  assert.deepEqual(await advertised(env, principal), ["member_search"]);
+  // The same answer in the same millisecond keeps it; a different one clears it.
+  await recordOrganizationMemberships(env, principal, [sentinel], at, null, ["member_search"]);
+  assert.deepEqual(await advertised(env, principal), ["member_search"]);
+  await recordOrganizationMemberships(env, principal, [sentinel], at, null, []);
+  assert.deepEqual(await advertised(env, principal), []);
+  await recordOrganizationMemberships(env, principal, [sentinel], at, null, ["member_search"]);
+  assert.deepEqual(await advertised(env, principal), [], "a tie never turns it back on");
+  // A newer exchange replaces it either way.
+  await recordOrganizationMemberships(env, principal, [sentinel], at + 1, null, ["member_search"]);
+  assert.deepEqual(await advertised(env, principal), ["member_search"]);
+  await recordOrganizationMemberships(env, principal, [sentinel], at + 2);
+  assert.deepEqual(await advertised(env, principal), []);
 });
 
 test("a row another directory wrote is not evidence here", async (t) => {
@@ -838,4 +936,47 @@ test("each write also lands in the legacy table, without the credential, so a ro
   await recordOrganizationMemberships(env, "user:kilo:removed", [sentinel], at + 500);
   assert.deepEqual(await legacy(), { organizations: "[]", verified_at_ms: at + 1000 });
   assert.deepEqual((await membershipRecord(env, "user:kilo:removed")).organizations, []);
+});
+
+test("a removal an older build records during a rollback holds after rolling forward", async (t) => {
+  const { env } = await fixture(t);
+  const principal = "user:kilo:rolled-back";
+  const at = Date.now() - 60_000;
+  const holder = { principal, namespace: "user:kilo", expiresAt: at + 3_600_000 };
+  await recordOrganizationMemberships(env, principal, [sentinel], at, "credential-1");
+  // Rolled back: the older build's exchange removes the organization in the
+  // legacy table only, with the statement that build runs.
+  await env.DB.prepare(
+    `INSERT INTO kilo_memberships (principal, organizations, verified_at_ms) VALUES (?, ?, ?)
+    ON CONFLICT (principal) DO UPDATE SET organizations = excluded.organizations,
+      verified_at_ms = excluded.verified_at_ms
+    WHERE excluded.verified_at_ms >= kilo_memberships.verified_at_ms`,
+  )
+    .bind(principal, "[]", at + 1000)
+    .run();
+  // Rolled forward: a fresh isolate reads the newer legacy answer.
+  const forward = await otherIsolate();
+  assert.deepEqual(await forward.membershipRecord(env, principal), {
+    organizations: [],
+    verifiedAtMs: at + 1000,
+  });
+  assert.deepEqual(await forward.organizationLeases(env, holder), []);
+  assert.equal(
+    await forward.directoryCredential(env, holder),
+    null,
+    "the older build's exchange carried no credential",
+  );
+  // The person's next exchange through this build is newest again.
+  await forward.recordOrganizationMemberships(
+    env,
+    principal,
+    [sentinel],
+    at + 2000,
+    "credential-2",
+  );
+  assert.deepEqual(
+    (await forward.organizationLeases(env, holder)).map(({ id }) => id),
+    [sentinel.id],
+  );
+  assert.equal(await forward.directoryCredential(env, holder), "credential-2");
 });

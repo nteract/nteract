@@ -1626,13 +1626,15 @@ Every successful exchange writes the principal's membership record to D1
 
 - **Row shape and ordering.** Each row stores the organization directory's
   `provider` (`kilo`), the organizations, `verified_at_ms` (when Pages sent the
-  exchange, in milliseconds by its own clock), and the directory's opaque
-  `directory_credential`. One statement orders writes against the stored row so
+  exchange, in milliseconds by its own clock), the directory's opaque
+  `directory_credential`, and the `capabilities` it advertised with that
+  exchange. One statement orders writes against the stored row so
   the newest answer wins across isolates and `verified_at_ms` never moves
   backward. A record written by another provider does not count as evidence.
 - **Same-millisecond ties.** An answer with identical stored text changes
   nothing; any differing answer in the same millisecond clears organizations
-  until the next exchange so an unorderable tie never grants access.
+  and capabilities until the next exchange so an unorderable tie never grants
+  access or turns a feature on.
 - **Write volume.** One D1 write per browser sign-in, and at least one per
   agent-token exchange in each isolate (concurrent requests arriving at lease
   start write the same answer harmlessly).
@@ -1647,11 +1649,14 @@ Pages owns this organization lens; Kilo is its first directory adapter
   into `pages_organization_memberships` as provider `kilo` without overwriting
   newer rows. Each write also mirrors organizations and `verified_at_ms` (never
   `directory_credential`) to `kilo_memberships` so rollback builds read current
-  evidence and revocations stick. An older isolate still writes only
-  `kilo_memberships`; its updates reach the new table on that person's next
-  exchange through this build (bounded by the 8-hour evidence window). Once
-  this release has run on every deployment for more than 8 hours, the following
-  release stops the dual write and drops `kilo_memberships` and
+  evidence and revocations stick. An older isolate, or a build rolled back
+  to, writes only `kilo_memberships`, so each read takes the newer of a
+  principal's two rows (the new table's wins a tie): an exchange that build
+  handled, such as a removal from an organization, still counts after rolling
+  forward. That row carries no credential, so the person can't search until
+  their next exchange through this build. Once this release has run on every
+  deployment for more than 8 hours, the following release stops the dual
+  write and the two-table read, and drops `kilo_memberships` and
   `kilo_membership_schema`; deployments jumping past this build still run the
   copy before the drop.
 - **Directory search credential (`member_search_proof`).** Kilo's exchange may
@@ -1662,13 +1667,28 @@ Pages owns this organization lens; Kilo is its first directory adapter
   reads it from D1 while the record is live, sending it to Kilo's
   `POST /api/pages-auth/organization-members` with the deployment secret; it
   never enters a response, identity, cache, or log line.
-- **Fallback and rate limits.** Without a proof, the share dialog shows email
-  invitations only. Kilo returns 503 until its rate-limit rules exist and on
+- **Directory capabilities.** Kilo's exchange may carry `directory: {
+  capabilities: [...] }`, the features it offers this deployment now. The only
+  name Pages knows is `member_search`, which Kilo advertises (and mints a
+  proof for) only while its operator setting for organization member search is
+  on. Pages drops unknown names and stores the rest in `capabilities` (schema
+  version 2 adds the column with default `'[]'`) under the organizations'
+  ordering, so a newer exchange without the name turns search off. With the
+  setting off Kilo sends an empty list; an empty list, an answer without a
+  `directory` field, and a list of only unknown names all advertise nothing. A row the previous build
+  writes beside this one leaves `capabilities` as it was; that build stores a
+  credential only when Kilo minted one.
+- **Fallback and rate limits.** Member search needs both `member_search`
+  advertised and a live proof; without both, the share dialog shows email
+  invitations only. Without the capability, search and pick answer 404
+  `member_search_unavailable`; with it but no proof, they answer 403
+  `organization_proof_required`. Kilo returns 503 until its rate-limit rules exist and on
   outages; Pages replies with retryable 503 `member_search_unavailable` and
   keeps the picker open for the next query. Pages has no shared rate limiter of
   its own, so Kilo's per-deployment and per-searcher limits govern search (a
   heavy searcher can exhaust the deployment's share), and a 429 from Kilo
-  passes its `Retry-After` through to the browser.
+  passes its `Retry-After` through to the browser, which holds searches until
+  it ends.
 
 A sign-in whose write fails gets the retryable failure page (503,
 `membership_unrecorded`) and no session. An agent request on a token answer

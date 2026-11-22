@@ -14,10 +14,13 @@
  * - `evidenceSeconds`: how long, from the exchange that reported them, Pages
  *   trusts what it said about an account's organizations.
  * - `memberships(account)`: what one sign-in reported, as `{ organizations,
- *   credential }`. `organizations` is `[{ id, name }]`. `credential` is an
- *   opaque string the directory issued for that person's search on this
- *   deployment, or null. Pages stores it with the record and hands it back
- *   only to `search` and `resolve`.
+ *   credential, capabilities }`. `organizations` is `[{ id, name }]`.
+ *   `credential` is an opaque string the directory issued for that person's
+ *   search on this deployment, or null. Pages stores it with the record and
+ *   hands it back only to `search` and `resolve`. `capabilities` is what the
+ *   directory advertised it offers this deployment now, as names from
+ *   `DIRECTORY_CAPABILITIES`; Pages gates each feature on its name, never on
+ *   a credential's presence or a failed call.
  * - `search({ principal, organizationId, credential, query })`: members of
  *   the organization whose name matches `query`, for the person `principal`
  *   names.
@@ -31,6 +34,19 @@
  * accept the person's credential, `"membership"` when the person isn't a
  * member of the organization now, or `"request"` when it doesn't accept the
  * request. Anything else is one of the errors below. */
+
+/** Search and resolve organization members by name (organization-members.mjs). */
+export const MEMBER_SEARCH = "member_search";
+
+/** Every capability name Pages knows. A directory may advertise others;
+ * Pages drops them. */
+export const DIRECTORY_CAPABILITIES = Object.freeze([MEMBER_SEARCH]);
+
+/** `names` without repeats, unknown names or anything that isn't one, in
+ * `DIRECTORY_CAPABILITIES` order, so one set of capabilities is always one
+ * stored text. */
+export const knownCapabilities = (names) =>
+  DIRECTORY_CAPABILITIES.filter((name) => Array.isArray(names) && names.includes(name));
 
 /** The directory can't answer now: unreachable, refusing this deployment, or
  * not configured to. Searching again later may work. */

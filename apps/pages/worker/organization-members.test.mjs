@@ -6,7 +6,7 @@ import { sqliteD1 } from "../test/sqlite-d1.mjs";
 import worker from "./index.mjs";
 import { KILO_MEMBERSHIP_SECONDS } from "./kilo-config.mjs";
 import { KILO_MEMBER_SEARCH_PATH, kiloDirectory, kiloMembers } from "./kilo-directory.mjs";
-import { MAX_PROOF_LENGTH, exchangeKiloCode } from "./kilo-exchange.mjs";
+import { MAX_PROOF_LENGTH, exchangeKiloCode, kiloCapabilities } from "./kilo-exchange.mjs";
 import { handleKiloSignIn } from "./kilo-handoff.mjs";
 import {
   DirectoryProtocolError,
@@ -14,6 +14,7 @@ import {
   DirectoryUnavailable,
 } from "./organization-directory.mjs";
 import {
+  directoryAccess,
   directoryCredential,
   membershipRecord,
   recordOrganizationMemberships,
@@ -83,14 +84,53 @@ test("a search posts the searcher's proof and query to Kilo on the deployment se
 
 test("the directory reads what an exchange reported, credential included", () => {
   const { directory } = answering(200, {});
-  assert.deepEqual(directory.memberships({ organizations: [acme], memberSearchProof: PROOF }), {
-    organizations: [acme],
-    credential: PROOF,
-  });
+  assert.deepEqual(
+    directory.memberships({
+      organizations: [acme],
+      memberSearchProof: PROOF,
+      directoryCapabilities: ["member_search"],
+    }),
+    { organizations: [acme], credential: PROOF, capabilities: ["member_search"] },
+  );
   assert.deepEqual(directory.memberships({ organizations: [] }), {
     organizations: [],
     credential: null,
+    capabilities: [],
   });
+});
+
+test("the exchange reads the capabilities Kilo advertises and ignores names it doesn't know", async () => {
+  assert.deepEqual(kiloCapabilities(undefined), [], "no directory field advertises nothing");
+  assert.deepEqual(kiloCapabilities(null), []);
+  assert.deepEqual(kiloCapabilities({}), []);
+  assert.deepEqual(kiloCapabilities({ capabilities: [] }), [], "the setting off");
+  assert.deepEqual(kiloCapabilities({ capabilities: "member_search" }), []);
+  assert.deepEqual(
+    kiloCapabilities({
+      capabilities: ["member_search", "future_thing", "member_search", "", 7, "x".repeat(65)],
+    }),
+    ["member_search", "future_thing"],
+  );
+  const exchanged = async (extra) =>
+    exchangeKiloCode(
+      answering(200, { user: { id: "person-1", name: "Person" }, organizations: [], ...extra })
+        .fetcher,
+      { ...client, code: "code", state: "state" },
+    );
+  assert.deepEqual((await exchanged({})).directoryCapabilities, []);
+  assert.deepEqual(
+    (await exchanged({ directory: { capabilities: ["future_thing", "member_search"] } }))
+      .directoryCapabilities,
+    ["future_thing", "member_search"],
+  );
+  // The directory adapter keeps only the names Pages knows.
+  assert.deepEqual(
+    answering(200, {}).directory.memberships({
+      organizations: [],
+      directoryCapabilities: ["future_thing"],
+    }).capabilities,
+    [],
+  );
 });
 
 test("members Pages can't show, or that could show an address, are dropped", () => {
@@ -283,11 +323,12 @@ const origin = "http://127.0.0.1:9479";
 const audience = "pages-member-test";
 const secret = "kilo-exchange-fixture-secret-0123456789";
 
-async function signedIn(t, { memberSearch = true } = {}) {
+async function signedIn(t, { memberSearch = true, capabilities } = {}) {
   const kilo = await startLocalKiloHandoff({
     deployments: { [audience]: origin },
     secret,
     memberSearch,
+    ...(capabilities !== undefined && { capabilities }),
   });
   t.after(() => kilo.close());
   resetMembershipCache();
@@ -415,12 +456,50 @@ test("a search Pages can refuse never reaches Kilo", async (t) => {
   assert.equal(kilo.memberCalls().length, 0);
 });
 
-test("with a Kilo that sends no proof, search is off and Kilo is never asked", async (t) => {
+test("with a Kilo that advertises no search, search is off and Kilo is never asked", async (t) => {
   const { kilo, search } = await signedIn(t, { memberSearch: false });
   const refused = await search({ organization_id: acme.id, query: "jes" });
-  assert.equal(refused.status, 403);
-  assert.equal(refused.body.code, "organization_proof_required");
+  assert.equal(refused.status, 404);
+  assert.equal(refused.body.code, "member_search_unavailable");
   assert.equal(kilo.memberCalls().length, 0);
+});
+
+test("a proof without the advertised capability, or the capability without a proof, searches nothing", async (t) => {
+  const proofOnly = await signedIn(t, { capabilities: null });
+  const unadvertised = await proofOnly.search({ organization_id: acme.id, query: "jes" });
+  assert.equal(unadvertised.status, 404);
+  assert.equal(unadvertised.body.code, "member_search_unavailable");
+  assert.equal(proofOnly.kilo.memberCalls().length, 0);
+  const capabilityOnly = await signedIn(t, {
+    memberSearch: false,
+    capabilities: ["member_search"],
+  });
+  const unproven = await capabilityOnly.search({ organization_id: acme.id, query: "jes" });
+  assert.equal(unproven.status, 403);
+  assert.equal(unproven.body.code, "organization_proof_required");
+  assert.equal(capabilityOnly.kilo.memberCalls().length, 0);
+});
+
+test("a newer exchange without the capability turns search off, and one with it turns it back on", async (t) => {
+  const { kilo, env, search } = await signedIn(t);
+  const principal = "user:kilo:searcher-person";
+  const who = kiloIdentity(principal, Date.now());
+  assert.equal((await search({ organization_id: acme.id, query: "jes" })).status, 200);
+  const { credential, capabilities } = await directoryAccess(env, who);
+  assert.deepEqual(capabilities, ["member_search"]);
+  const organizations = [acme, other];
+  const later = Date.now() + 1000;
+  // Kilo still sent a proof, but stopped advertising search.
+  await recordOrganizationMemberships(env, principal, organizations, later, credential, []);
+  assert.deepEqual(await directoryAccess(env, who, later), { credential, capabilities: [] });
+  const off = await search({ organization_id: acme.id, query: "jes" });
+  assert.equal(off.status, 404);
+  assert.equal(off.body.code, "member_search_unavailable");
+  assert.equal(kilo.memberCalls().length, 1);
+  await recordOrganizationMemberships(env, principal, organizations, later + 1, credential, [
+    "member_search",
+  ]);
+  assert.equal((await search({ organization_id: acme.id, query: "jes" })).status, 200);
 });
 
 test("Kilo's refusals and failures reach the dialog as codes it can act on", async (t) => {
@@ -470,10 +549,11 @@ const projectAccess = (w, projectId) => ({
   fetch: (request) => w.env.PROJECTS.getByName(projectId).fetch(request),
 });
 
-async function pickWorld(t, { memberSearch = true } = {}) {
+async function pickWorld(t, { memberSearch = true, capabilities } = {}) {
   const w = await world(t, {
     kilo: { owner: [acme], member: [acme], stranger: [other] },
     memberSearch,
+    capabilities,
   });
   w.kilo.members(acme.id, [{ id: "jesse-person", name: "Jesse Doe" }]);
   return w;
@@ -576,23 +656,71 @@ test("a pick Kilo doesn't confirm grants nothing", async (t) => {
   assert.equal(read.body.access.revision, 0);
 });
 
-test("without a proof from Kilo the dialog gets no picker and a pick is refused before Kilo", async (t) => {
-  const w = await pickWorld(t, { memberSearch: false });
-  const { page_id } = (await w.createPage({ title: "Plans" })).body;
-  const page = pageAccess(w, page_id);
-  const read = await hostAccess(w, "owner", page, { read: true });
-  assert.equal(read.body.memberSearch, false);
-  assert.deepEqual(read.body.organizationOptions, [acme]);
-  const refused = await hostAccess(w, "owner", page, {
-    action: "grant_organization_member",
-    organization_id: acme.id,
-    member_id: "jesse-person",
-    role: "viewer",
-    expected_revision: 0,
-    nonce: w.key(),
+// Each case is its own test: one world's Kilo client per test.
+for (const [why, options, status, code] of [
+  [
+    "the setting off sends an empty list and no proof",
+    { memberSearch: false },
+    404,
+    "member_search_unavailable",
+  ],
+  [
+    "a Kilo from before capabilities sends no directory field",
+    { memberSearch: false, capabilities: null },
+    404,
+    "member_search_unavailable",
+  ],
+  [
+    "search advertised without a proof",
+    { memberSearch: false, capabilities: ["member_search"] },
+    403,
+    "organization_proof_required",
+  ],
+  [
+    "a proof with an empty list",
+    { memberSearch: true, capabilities: [] },
+    404,
+    "member_search_unavailable",
+  ],
+  [
+    "a proof with no directory field",
+    { memberSearch: true, capabilities: null },
+    404,
+    "member_search_unavailable",
+  ],
+  [
+    "a proof with only a name Pages doesn't know",
+    { memberSearch: true, capabilities: ["future_thing"] },
+    404,
+    "member_search_unavailable",
+  ],
+])
+  test(`no picker, and a pick refused before Kilo, when ${why}`, async (t) => {
+    const w = await pickWorld(t, options);
+    const { page_id } = (await w.createPage({ title: "Plans" })).body;
+    const page = pageAccess(w, page_id);
+    const read = await hostAccess(w, "owner", page, { read: true });
+    assert.equal(read.status, 200, JSON.stringify(read.body));
+    assert.equal(read.body.memberSearch, false);
+    assert.deepEqual(read.body.organizationOptions, [acme]);
+    const refused = await hostAccess(w, "owner", page, {
+      action: "grant_organization_member",
+      organization_id: acme.id,
+      member_id: "jesse-person",
+      role: "viewer",
+      expected_revision: 0,
+      nonce: w.key(),
+    });
+    assert.equal(refused.status, status);
+    assert.equal(refused.body.code, code);
+    assert.equal(w.kilo.memberCalls().length, 0);
   });
-  assert.equal(refused.status, 403);
-  assert.equal(refused.body.code, "organization_proof_required");
+
+test("the picker shows with search advertised and a proof, whatever unknown names come beside it", async (t) => {
+  const w = await pickWorld(t, { capabilities: ["future_thing", "member_search"] });
+  const { page_id } = (await w.createPage({ title: "Plans" })).body;
+  const read = await hostAccess(w, "owner", pageAccess(w, page_id), { read: true });
+  assert.equal(read.body.memberSearch, true);
 });
 
 test("an owner grants a Project to a colleague Kilo confirms, and it reaches their list", async (t) => {
@@ -696,4 +824,88 @@ test("Kilo's Retry-After on a 429 reaches the dialog", async (t) => {
   assert.equal(response.status, 429);
   assert.equal(response.headers.get("retry-after"), "12");
   assert.equal((await response.json()).retry_after_ms, 12_000);
+});
+
+/** Holds the next member call at Kilo until `release()`, then answers that
+ * Jesse is a member. `reached` settles when Kilo has the call. */
+function heldResolve(w) {
+  let release;
+  let reached;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const arrived = new Promise((resolve) => {
+    reached = resolve;
+  });
+  w.kilo.respondMembers(async (req, res) => {
+    reached();
+    await gate;
+    res
+      .writeHead(200, { "content-type": "application/json" })
+      .end(
+        JSON.stringify({ members: [{ id: "jesse-person", name: "Jesse Doe", image_url: null }] }),
+      );
+  });
+  return { release, reached: arrived };
+}
+
+test("a pick Kilo is slow to confirm holds no other request on the Page", async (t) => {
+  const w = await pickWorld(t);
+  const { page_id } = (await w.createPage({ title: "Plans" })).body;
+  const page = pageAccess(w, page_id);
+  const held = heldResolve(w);
+  const grant = hostAccess(w, "owner", page, {
+    action: "grant_organization_member",
+    organization_id: acme.id,
+    member_id: "jesse-person",
+    role: "viewer",
+    expected_revision: 0,
+    nonce: w.key(),
+  });
+  await held.reached;
+  // The owner's other requests on this Page answer while Kilo holds the pick.
+  const read = await hostAccess(w, "owner", page, { read: true });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.deepEqual(read.body.members, []);
+  const shared = await hostAccess(w, "owner", page, {
+    action: "set_role",
+    principal: "user:kilo:member-person",
+    role: "editor",
+    expected_revision: 0,
+    nonce: w.key(),
+  });
+  assert.equal(shared.status, 200, JSON.stringify(shared.body));
+  held.release();
+  // The pick was proposed at the revision it read; the change that landed
+  // meanwhile wins and the pick is refused, never applied over it.
+  const granted = await grant;
+  assert.equal(granted.status, 409, JSON.stringify(granted.body));
+  const after = await hostAccess(w, "owner", page, { read: true });
+  assert.deepEqual(
+    after.body.members.map(({ principal }) => principal),
+    ["user:kilo:member-person"],
+  );
+});
+
+test("a pick Kilo is slow to confirm holds no other request on the Project", async (t) => {
+  const w = await pickWorld(t);
+  const { project_id } = await w.createProject("Guild");
+  const project = projectAccess(w, project_id);
+  const held = heldResolve(w);
+  const grant = hostAccess(w, "owner", project, {
+    space_id: project_id,
+    action: "grant_organization_member",
+    organization_id: acme.id,
+    member_id: "jesse-person",
+    role: "viewer",
+    expected_revision: 0,
+    nonce: w.key(),
+  });
+  await held.reached;
+  const read = await hostAccess(w, "owner", project, { space_id: project_id, read: true });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  held.release();
+  const granted = await grant;
+  assert.equal(granted.status, 200, JSON.stringify(granted.body));
+  assert.equal(granted.body.members["user:kilo:jesse-person"].displayName, "Jesse Doe");
 });

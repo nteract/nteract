@@ -124,12 +124,12 @@ async function digest(text) {
 }
 
 /** The Kilo account `token` names, as `{ id, name, verifiedEmail,
- * organizations, memberSearchProof, verifiedAt, until }`, with
- * `verifiedEmail` and `memberSearchProof` only when Kilo sent usable ones,
- * `verifiedAt` when the exchange was sent, and `until` when this request's
- * identity stops being valid: the end of the isolate's lease, or
- * `UNLEASED_VALIDITY_MS` after Kilo answered when there is no lease. Throws
- * a coded error when Kilo refuses it (401 `invalid_kilo_token`, 403
+ * organizations, memberSearchProof, directoryCapabilities, verifiedAt,
+ * until }`, with `verifiedEmail` and `memberSearchProof` only when Kilo sent
+ * usable ones, `verifiedAt` when the exchange was sent, and `until` when this
+ * request's identity stops being valid: the end of the isolate's lease, or
+ * `UNLEASED_VALIDITY_MS` after Kilo answered when there is no lease. Throws a
+ * coded error when Kilo refuses it (401 `invalid_kilo_token`, 403
  * `account_unavailable`) or can't answer (503 `sign_in_unavailable`,
  * retryable). */
 export async function kiloTokenAccount({ config, claims }, token) {
@@ -179,6 +179,7 @@ export async function kiloTokenAccount({ config, claims }, token) {
       organizations: answer.organizations,
       // Recorded beside them and never read from here again.
       ...(answer.memberSearchProof && { memberSearchProof: answer.memberSearchProof }),
+      directoryCapabilities: answer.directoryCapabilities,
       verifiedAt: sentAt,
       until: until ?? settledAt + UNLEASED_VALIDITY_MS,
     });

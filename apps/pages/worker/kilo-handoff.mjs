@@ -246,8 +246,16 @@ async function completeHandoff(request, env, config) {
   // write would read an older listing, one this answer may have removed
   // organizations from.
   try {
-    const { organizations, credential } = organizationDirectory(env).memberships(account);
-    await recordOrganizationMemberships(env, identity.principal, organizations, sentAt, credential);
+    const { organizations, credential, capabilities } =
+      organizationDirectory(env).memberships(account);
+    await recordOrganizationMemberships(
+      env,
+      identity.principal,
+      organizations,
+      sentAt,
+      credential,
+      capabilities,
+    );
   } catch {
     return signInFailed(503, "membership_unrecorded", returnTo);
   }

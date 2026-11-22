@@ -22,6 +22,12 @@
 // signed in or given a token, plus `members(organizationId, list)`. Without
 // `memberSearch` the answer has no proof and the route is missing, like a Kilo
 // from before the route.
+//
+// `capabilities` is the answer's `directory.capabilities`: by default
+// `["member_search"]` with `memberSearch` and `[]` without, as Kilo
+// advertises search only while it is on. A test can send any list, or `null`
+// for no `directory` field (a Kilo from before capabilities), to pull the
+// two apart.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 
@@ -49,6 +55,7 @@ export async function startLocalKiloHandoff({
   port = 0,
   now = Date.now,
   memberSearch = false,
+  capabilities = memberSearch ? ["member_search"] : [],
 }) {
   const codes = new Map();
   const exchanges = [];
@@ -107,6 +114,7 @@ export async function startLocalKiloHandoff({
       user: userOf(holder),
       organizations: holder.organizations ?? [],
       ...(memberSearch && { member_search_proof: proofFor(holder.id, audience) }),
+      ...(capabilities && { directory: { capabilities } }),
     };
   };
   const membersOf = (organizationId) => {

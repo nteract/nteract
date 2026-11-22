@@ -18,6 +18,22 @@ export const KILO_MEMBERSHIP_SECONDS = 8 * 60 * 60;
 export const kiloPrincipalNamespace = (env) =>
   env?.PAGES_KILO_PRINCIPAL_NAMESPACE?.trim() || "user:kilo";
 
+/** The principal a Kilo account id stands for in `namespace`: the one
+ * encoding sign-in, sharing grants and member search all use. */
+export const kiloPrincipal = (namespace, id) => `${namespace}:${encodeURIComponent(id)}`;
+
+/** The Kilo account id `principal` names in `namespace`, or null when it
+ * names none there. */
+export function kiloAccountId(namespace, principal) {
+  const prefix = `${namespace}:`;
+  if (typeof principal !== "string" || !principal.startsWith(prefix)) return null;
+  try {
+    return decodeURIComponent(principal.slice(prefix.length)) || null;
+  } catch {
+    return null;
+  }
+}
+
 /** This deployment's Kilo sign-in settings, or null when it doesn't use Kilo.
  * `PAGES_KILO_APP_URL` turns it on and must be a bare `https:` origin; a
  * loopback `http:` origin is accepted only beside the local test issuer flag.
@@ -77,7 +93,7 @@ export function kiloClient(env) {
  * made from this identity carries the signed email proof (app-session.ts) and
  * can claim an invitation sent to it. */
 export function kiloIdentity(config, account) {
-  const principal = `${config.namespace}:${encodeURIComponent(account.id)}`;
+  const principal = kiloPrincipal(config.namespace, account.id);
   return {
     principal,
     operator: "browser",
