@@ -39,6 +39,13 @@ pub struct ExecutionRecord {
     pub seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submitted_by_actor_label: Option<String>,
+    /// Capability that ran the execution; absent means the kernel. Additive so
+    /// durable records of prompt executions round-trip through `ExecutionState`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<String>,
+    /// Blob hash of the context built for a prompt execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_blob: Option<String>,
     #[serde(default)]
     pub outputs: Vec<serde_json::Value>,
     pub created_at: DateTime<Utc>,
@@ -68,6 +75,8 @@ impl ExecutionRecord {
             source: exec.source.clone(),
             seq: exec.seq,
             submitted_by_actor_label: exec.submitted_by_actor_label.clone(),
+            capability: exec.capability.clone(),
+            context_blob: exec.context_blob.clone(),
             outputs: exec.outputs.clone(),
             created_at: now,
             updated_at: now,
@@ -126,6 +135,8 @@ impl ExecutionRecord {
             && self.source == other.source
             && self.seq == other.seq
             && self.submitted_by_actor_label == other.submitted_by_actor_label
+            && self.capability == other.capability
+            && self.context_blob == other.context_blob
             && self.outputs == other.outputs
     }
 
@@ -224,6 +235,10 @@ impl ExecutionRecord {
             cell_id: self.cell_id.clone(),
             seq: self.seq,
             submitted_by_actor_label: self.submitted_by_actor_label.clone(),
+            capability: self.capability.clone(),
+            context_blob: self.context_blob.clone(),
+            // A stored record is terminal; its stops no longer matter.
+            stop_requested: 0,
         }
     }
 }
@@ -511,6 +526,8 @@ mod tests {
             source: Some("1 + 1".to_string()),
             seq: Some(0),
             submitted_by_actor_label: None,
+            capability: None,
+            context_blob: None,
             outputs: vec![serde_json::json!({
                 "output_type": "stream",
                 "output_id": "old",
@@ -551,6 +568,43 @@ mod tests {
         let mut requalified = saved.clone();
         requalified.notebook_id = Some(NOTEBOOK_B.into());
         assert!(!saved.payload_matches(&requalified));
+    }
+
+    #[test]
+    fn prompt_execution_fields_round_trip_through_a_record() {
+        let exec: runtime_doc::ExecutionState = serde_json::from_value(serde_json::json!({
+            "status": "done",
+            "source": "what is x?",
+            "cell_id": "prompt-1",
+            "outputs": [],
+            "capability": "prompt",
+            "context_blob": "abc123",
+        }))
+        .unwrap();
+        let record = ExecutionRecord::from_notebook_execution_state("p1", NOTEBOOK_A, None, &exec);
+        assert_eq!(record.capability.as_deref(), Some("prompt"));
+        assert_eq!(record.context_blob.as_deref(), Some("abc123"));
+        assert_eq!(record.execution_state(), exec);
+
+        let json = serde_json::to_string(&record).unwrap();
+        let back: ExecutionRecord = serde_json::from_str(&json).unwrap();
+        assert!(record.payload_matches(&back));
+        assert_eq!(back.execution_state(), exec);
+
+        // Kernel records stay byte-compatible: the fields are omitted, and old
+        // records without them still parse.
+        let kernel = ExecutionRecord::from_execution_state(
+            "k1",
+            "notebook",
+            NOTEBOOK_A,
+            None,
+            &runtime_doc::ExecutionState::default(),
+        );
+        let kernel_json = serde_json::to_value(&kernel).unwrap();
+        assert!(kernel_json.get("capability").is_none());
+        assert!(kernel_json.get("context_blob").is_none());
+        let parsed: ExecutionRecord = serde_json::from_value(kernel_json).unwrap();
+        assert_eq!(parsed.capability, None);
     }
 
     #[test]

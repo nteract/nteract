@@ -579,6 +579,7 @@ async fn render_durable_result(
         cell_id: record.cell_id.clone(),
         seq: record.seq,
         submitted_by_actor_label: record.submitted_by_actor_label,
+        ..Default::default()
     };
     let mapping = record
         .cell_id
@@ -1012,7 +1013,7 @@ mod tests {
                 execution_id: id.into(), context_kind:"notebook".into(), context_id:context.into(),
                 notebook_id:None, notebook_path:Some("/tmp/notebook.ipynb".into()), cell_id:Some("cell-1".into()),
                 status:"done".into(),success:Some(true),execution_count:Some(3),source:Some("print('notebook A secret')".into()),
-                seq:Some(0),submitted_by_actor_label:None,
+                seq:Some(0),submitted_by_actor_label:None, capability: None, context_blob: None,
                 outputs:vec![serde_json::json!({"output_type":"stream","name":"stdout","text":{"inline":"notebook A secret"}})],
                 created_at:chrono::Utc::now(),updated_at:chrono::Utc::now(),
             }).await.unwrap();

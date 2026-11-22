@@ -601,6 +601,7 @@ impl RuntimeStatePeerHandle {
             .iter()
             .filter(|(id, execution)| {
                 (!self.room_owned_queue || active.contains(id.as_str()))
+                    && runtime_doc::is_kernel_capability(execution.capability.as_deref())
                     && matches!(execution.status.as_str(), "queued" | "running")
             })
             .collect();

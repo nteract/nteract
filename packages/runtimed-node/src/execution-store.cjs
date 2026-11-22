@@ -169,7 +169,8 @@ function createNotebookExecutionStore() {
             prev.execution_count === snap.execution_count &&
             prev.status === snap.status &&
             prev.success === snap.success &&
-            (prev.submitted_by_actor_label ?? null) === (snap.submitted_by_actor_label ?? null))
+            (prev.submitted_by_actor_label ?? null) === (snap.submitted_by_actor_label ?? null) &&
+            (prev.dispatched ?? false) === (snap.dispatched ?? false))
             return;
         const owned = Object.freeze({
             ...snap,

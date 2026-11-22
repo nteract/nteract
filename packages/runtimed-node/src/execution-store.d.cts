@@ -5,6 +5,8 @@ export interface ExecutionViewSnapshot {
     success: boolean | null;
     output_ids: string[];
     submitted_by_actor_label?: string | null;
+    /** Prompt executions: the context is built and dispatched to the prompt agent. */
+    dispatched?: boolean;
 }
 export interface ExecutionQueueProjection {
     executing_execution_id?: string | null;

@@ -351,7 +351,10 @@ fn validate_runtime_peer_execution_update(
     let provenance_unchanged = before.source == after.source
         && before.cell_id == after.cell_id
         && before.seq == after.seq
-        && before.submitted_by_actor_label == after.submitted_by_actor_label;
+        && before.submitted_by_actor_label == after.submitted_by_actor_label
+        && before.capability == after.capability
+        && before.context_blob == after.context_blob
+        && before.stop_requested == after.stop_requested;
     if !provenance_unchanged {
         return Err(runtime_state_policy_error(
             scope,
@@ -1283,6 +1286,49 @@ mod tests {
             err.to_string().contains("queue"),
             "error should identify queue writes: {err}"
         );
+    }
+
+    #[test]
+    fn runtime_peer_policy_rejects_prompt_provenance_changes() {
+        let mut before_doc = RuntimeStateDoc::new();
+        before_doc
+            .create_execution_with_capability(
+                "exec-prompt",
+                "ask",
+                0,
+                None,
+                Some("prompt-cell"),
+                crate::CAPABILITY_PROMPT,
+            )
+            .unwrap();
+        let before = runtime_state_policy_snapshot(&before_doc);
+
+        for mutate in [
+            (|doc: &mut RuntimeStateDoc| doc.set_execution_context("exec-prompt", "blob"))
+                as fn(&mut RuntimeStateDoc) -> Result<(), RuntimeStateError>,
+            |doc| doc.request_execution_stop("exec-prompt").map(|_| ()),
+            |doc| {
+                let (_, executions) = doc.doc().get(ROOT, "executions").unwrap().unwrap();
+                let (_, entry) = doc.doc().get(&executions, "exec-prompt").unwrap().unwrap();
+                doc.doc_mut()
+                    .put(&entry, "capability", "kernel")
+                    .map_err(RuntimeStateError::from)
+            },
+        ] {
+            let mut after_doc = RuntimeStateDoc::from_doc(before_doc.doc().clone());
+            mutate(&mut after_doc).unwrap();
+            let after = runtime_state_policy_snapshot(&after_doc);
+            let err = validate_runtime_state_sync_scope(
+                &before,
+                &after,
+                RuntimeStateWriteScope::RuntimePeer,
+            )
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("provenance is coordinator-owned"),
+                "unexpected error: {err}"
+            );
+        }
     }
 
     fn assert_runtime_peer_rejects_field<F>(mut mutate: F, field: &str)

@@ -1195,6 +1195,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn await_execution_terminal_ignores_kernel_failure_for_prompt_executions() {
+        use crate::execution_wait::{await_execution_terminal, ExecutionTerminalError};
+
+        let (handle, shared, _rx, _cmd_rx) = test_handle_with_shared();
+        {
+            let mut st = shared.lock().unwrap();
+            st.state_doc
+                .create_execution_with_capability(
+                    "prompt-1",
+                    "ask",
+                    0,
+                    None,
+                    Some("prompt-cell"),
+                    runtime_doc::CAPABILITY_PROMPT,
+                )
+                .unwrap();
+            st.state_doc.set_execution_running("prompt-1").unwrap();
+            st.state_doc
+                .set_lifecycle(&runtime_doc::RuntimeLifecycle::Error)
+                .unwrap();
+        }
+
+        // The kernel error does not end the wait for a prompt execution.
+        let err = await_execution_terminal(
+            &handle,
+            "prompt-1",
+            std::time::Duration::from_millis(300),
+            None,
+        )
+        .await
+        .expect_err("still running");
+        assert_eq!(err, ExecutionTerminalError::Timeout);
+
+        {
+            let mut st = shared.lock().unwrap();
+            st.state_doc
+                .set_lifecycle(&runtime_doc::RuntimeLifecycle::Shutdown)
+                .unwrap();
+            st.state_doc.set_execution_done("prompt-1", true).unwrap();
+        }
+        let state = await_execution_terminal(
+            &handle,
+            "prompt-1",
+            std::time::Duration::from_secs(5),
+            Some(std::time::Duration::ZERO),
+        )
+        .await
+        .expect("the prompt's own terminal state");
+        assert_eq!(state.status, "done");
+    }
+
+    #[tokio::test]
     async fn await_execution_terminal_prefers_done_over_kernel_error() {
         // Regression: the daemon writes set_execution_done() for pending
         // executions *before* flipping kernel.status to "error" on kernel
