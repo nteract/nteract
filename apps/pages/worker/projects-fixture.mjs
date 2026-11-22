@@ -64,7 +64,8 @@ export class Storage {
  * them to the organizations (`[{ id, name }]`) Kilo reports for them;
  * `organizations(who, list)` changes that list and mints a new token, so the
  * next call makes a new exchange. With `memberSearch` too, the fake Kilo sends
- * a member search proof and answers member searches. */
+ * a member search proof, advertises `member_search` and answers member
+ * searches; `capabilities` replaces what it advertises. */
 export async function world(
   t,
   {
@@ -72,6 +73,7 @@ export async function world(
     storage: newStorage = () => new Storage(),
     kilo: kiloPeople,
     memberSearch = false,
+    capabilities,
   } = {},
 ) {
   const auth = await createAuthFixture();
@@ -80,6 +82,7 @@ export async function world(
         deployments: { [KILO_AUDIENCE]: "https://pages.invalid" },
         secret: KILO_SECRET,
         memberSearch,
+        ...(capabilities !== undefined && { capabilities }),
       })
     : null;
   if (kilo) {

@@ -24,8 +24,11 @@
  * `member_search_proof` is optional too: Kilo's signed statement that this
  * person signed in to this deployment, which Pages keeps server-side and sends
  * back to search the person's organizations (kilo-directory.mjs). Without
- * a usable one the sign-in goes ahead and search is off. The rest of the
- * answer is not read.
+ * a usable one the sign-in goes ahead and search is off.
+ * `directory.capabilities` lists what Kilo offers this deployment as an
+ * organization directory (`member_search` today), read as strings and
+ * otherwise kept as sent; an answer without it offers nothing. The rest of
+ * the answer is not read.
  *
  * The module holds no state and logs nothing. Error messages are fixed text,
  * so a code, a secret, an address or a response body can't reach a log
@@ -124,11 +127,13 @@ const discard = async (response) => {
  * `state` must be the ones the sign-in started with: Kilo's code is good only
  * for them, which is what makes a code copied out of a browser useless.
  *
- * Returns `{ id, name, verifiedEmail, organizations, memberSearchProof }`,
- * with `name` null when the account has none, `verifiedEmail`, normalized as
- * an invitation stores it, left out when Kilo sent no usable address,
- * `organizations` as `kiloOrganizations` reads them, and `memberSearchProof`
- * left out when Kilo sent none; or `{ refused }` when Kilo turned the
+ * Returns `{ id, name, verifiedEmail, organizations, memberSearchProof,
+ * directoryCapabilities }`, with `name` null when the account has none,
+ * `verifiedEmail`, normalized as an invitation stores it, left out when Kilo
+ * sent no usable address, `organizations` as `kiloOrganizations` reads them,
+ * `memberSearchProof` left out when Kilo sent none, and
+ * `directoryCapabilities` as `kiloCapabilities` reads them; or `{ refused }`
+ * when Kilo turned the
  * call down: `"client"` for a 401, which
  * means it didn't accept this deployment's secret or audience; `"account"` for
  * a 403, which means the account is gone or blocked; and `"code"` for any
@@ -212,6 +217,27 @@ export function kiloOrganizations(value) {
   return [...organizations.values()];
 }
 
+/** The most capability names Pages reads from one answer, and the longest. */
+const MAX_CAPABILITIES = 32;
+const MAX_CAPABILITY_LENGTH = 64;
+
+/** What Kilo advertises it offers as an organization directory, from the
+ * answer's `directory`: each name a non-empty string of at most 64
+ * characters, once, in Kilo's order. Kilo sends an empty list while member
+ * search is off. Anything else, including no `directory` at all, offers
+ * nothing; Pages ignores names it doesn't know later
+ * (organization-directory.mjs). */
+export function kiloCapabilities(directory) {
+  const names = directory?.capabilities;
+  if (!Array.isArray(names)) return [];
+  const kept = new Set();
+  for (const name of names) {
+    if (kept.size === MAX_CAPABILITIES) break;
+    if (typeof name === "string" && name && name.length <= MAX_CAPABILITY_LENGTH) kept.add(name);
+  }
+  return [...kept];
+}
+
 async function exchange(fetcher, { appUrl, secret, body, timeoutMs }, credential) {
   let response;
   try {
@@ -270,5 +296,6 @@ async function exchange(fetcher, { appUrl, secret, body, timeoutMs }, credential
     ...(verifiedEmail && { verifiedEmail }),
     organizations: kiloOrganizations(answer?.organizations),
     ...(memberSearchProof && { memberSearchProof }),
+    directoryCapabilities: kiloCapabilities(answer?.directory),
   };
 }

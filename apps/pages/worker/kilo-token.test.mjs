@@ -161,7 +161,12 @@ test("the exchange sends exactly the token and audience, with the deployment's s
     token: "header.payload.signature",
     audience,
   });
-  assert.deepEqual(account, { id: "person:1", name: "Example", organizations: [] });
+  assert.deepEqual(account, {
+    id: "person:1",
+    name: "Example",
+    organizations: [],
+    directoryCapabilities: [],
+  });
   assert.equal(calls.length, 1);
   const [{ url, init }] = calls;
   assert.equal(url, `https://kilo.invalid${KILO_EXCHANGE_PATH}`);

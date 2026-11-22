@@ -4,7 +4,10 @@
  * (kilo-exchange.mjs), and, from the release that added member search, a
  * `member_search_proof`: a token Kilo signs naming the person and this
  * deployment's audience, good for 8 hours. That proof is the directory
- * credential Pages stores with the record.
+ * credential Pages stores with the record. The exchange's
+ * `directory.capabilities` says what Kilo offers this deployment: Kilo
+ * advertises `member_search`, and mints the proof, only once its operators
+ * turn search on.
  *
  * Search and resolve are one route, server to server, on the deployment
  * secret like the exchange, plus the searcher's proof. The secret says which
@@ -40,6 +43,7 @@ import {
   DirectoryProtocolError,
   DirectoryRateLimited,
   DirectoryUnavailable,
+  knownCapabilities,
 } from "./organization-directory.mjs";
 
 /** Where Pages searches an organization's members. */
@@ -204,6 +208,7 @@ export function kiloDirectory(env, { fetcher = (...args) => fetch(...args), time
       return {
         organizations: account.organizations ?? [],
         credential: account.memberSearchProof ?? null,
+        capabilities: knownCapabilities(account.directoryCapabilities),
       };
     },
     memberPrincipal: (memberId) => kiloPrincipal(namespace, memberId),

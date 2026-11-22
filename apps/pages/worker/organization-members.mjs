@@ -8,15 +8,17 @@
  * directory confirms, with the name it sent. Nothing the browser sends about
  * a member is granted or stored.
  *
- * Both calls need three things now, checked in this order:
+ * Both calls need four things now, checked in this order:
  *
  * 1. This deployment's sign-in has an organization directory.
  * 2. The caller holds a lease for the organization
  *    (organization-memberships.mjs): its newest exchange named it and still
  *    counts.
- * 3. That exchange carried a directory credential. Kilo sends one from the
- *    release that added member search; with an older Kilo there is none,
- *    search is off, and sharing by email works as before.
+ * 3. That exchange advertised `member_search` (organization-directory.mjs).
+ *    Kilo advertises it only once its operators turn search on; an older
+ *    Kilo advertises nothing, search is off, and sharing by email works as
+ *    before.
+ * 4. That exchange carried a directory credential.
  *
  * The directory still checks the caller's membership live on each call. The
  * credential travels only from D1 to the directory: it never reaches a
@@ -26,9 +28,10 @@ import {
   DirectoryProtocolError,
   DirectoryRateLimited,
   DirectoryUnavailable,
+  MEMBER_SEARCH,
 } from "./organization-directory.mjs";
 import {
-  directoryCredential,
+  directoryAccess,
   organizationDirectory,
   organizationProof,
 } from "./organization-memberships.mjs";
@@ -83,15 +86,17 @@ export function checkedQuery(value) {
 }
 
 /** Whether `identity` can search its organizations now: this deployment has
- * an organization directory and its newest exchange carried a credential that
- * still counts. The share dialog shows the picker only then. */
+ * an organization directory, and its newest exchange, which still counts,
+ * advertised `member_search` and carried a credential. The share dialog
+ * shows the picker only then. */
 export async function memberSearchAvailable(env, identity, now = Date.now()) {
   if (!identity || !organizationDirectory(env)) return false;
-  return (await directoryCredential(env, identity, now)) !== null;
+  const access = await directoryAccess(env, identity, now);
+  return !!access?.credential && access.capabilities.includes(MEMBER_SEARCH);
 }
 
 /** What one directory call needs for `identity` in `organizationId`, after
- * the three checks in the header. Throws a coded HttpError for each. */
+ * the four checks in the header. Throws a coded HttpError for each. */
 async function searchContext(env, identity, organizationId, now) {
   const directory = organizationDirectory(env);
   if (!directory)
@@ -108,7 +113,10 @@ async function searchContext(env, identity, organizationId, now) {
         : "Search only an organization you belong to",
       PROOF_REQUIRED,
     );
-  const credential = await directoryCredential(env, identity, now);
+  const access = await directoryAccess(env, identity, now);
+  if (!access?.capabilities.includes(MEMBER_SEARCH))
+    throw new HttpError(404, "Organization search isn't offered here", MEMBER_SEARCH_UNAVAILABLE);
+  const { credential } = access;
   if (!credential) throw proofRequired();
   return {
     directory,

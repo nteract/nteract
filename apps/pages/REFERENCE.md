@@ -1442,9 +1442,10 @@ same sharing route. The host asks the directory again whether that id is a
 member of that organization now, and grants the account it confirms as a
 plain member row named as the directory names it: the same grant `set_role` makes, which
 stays when the person leaves the organization. Nothing the browser sends about
-the person is granted or stored. Both calls need the owner's organization lease
-and the directory credential their newest exchange carried
-([Kilo organizations](DEPLOYMENT.md#kilo-organizations)). Without one the
+the person is granted or stored. Both calls need the owner's organization lease,
+and their newest exchange must have advertised `member_search` and carried a
+directory credential
+([Kilo organizations](DEPLOYMENT.md#kilo-organizations)). Without both the
 picker is hidden and email invitations work as before; when the directory
 can't answer, that search fails and the next one tries again. A pick the directory no longer confirms is refused with 404
 `member_not_found`; a search it can't run answers
