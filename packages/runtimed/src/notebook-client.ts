@@ -205,6 +205,16 @@ export class NotebookClient {
     }
   }
 
+  /** Interrupt the run of the prompt cell `cellId`; the kernel is untouched. */
+  async interruptPrompt(cellId: string): Promise<NotebookResponse> {
+    try {
+      return await this.sendRequest({ type: "interrupt_execution", cell_id: cellId });
+    } catch (e) {
+      this.log.error("[notebook-client] Prompt interrupt failed:", e);
+      throw e;
+    }
+  }
+
   /** Shutdown the kernel. */
   async shutdownKernel(): Promise<NotebookResponse> {
     try {

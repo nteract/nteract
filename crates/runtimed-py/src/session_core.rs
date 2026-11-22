@@ -841,7 +841,7 @@ pub(crate) async fn interrupt(state: &Arc<Mutex<SessionState>>) -> PyResult<()> 
     };
 
     let response = handle
-        .send_request(NotebookRequest::InterruptExecution {})
+        .send_request(NotebookRequest::InterruptExecution { cell_id: None })
         .await
         .map_err(to_py_err)?;
 

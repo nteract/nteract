@@ -302,6 +302,17 @@ describe("NotebookClient", () => {
     );
   });
 
+  it("interrupts the kernel without a cell id and a prompt run with one", async () => {
+    const { client, sendRequest } = stubClient();
+    await client.interruptKernel();
+    await client.interruptPrompt("prompt-1");
+    expect(sendRequest).toHaveBeenNthCalledWith(1, { type: "interrupt_execution" });
+    expect(sendRequest).toHaveBeenNthCalledWith(2, {
+      type: "interrupt_execution",
+      cell_id: "prompt-1",
+    });
+  });
+
   it("passes caller-provided execution ids on guarded execute requests", async () => {
     const { client, sendRequest } = stubClient();
     const executionId = "22222222-2222-4222-8222-222222222222";

@@ -83,9 +83,10 @@ pub enum Handshake {
         operator: Option<String>,
     },
 
-    /// Runtime agent handshake. Sent by the coordinator to a spawned runtime
-    /// agent subprocess on its stdin. The runtime agent reads this, bootstraps
-    /// its RuntimeStateDoc, and begins processing kernel requests.
+    /// Runtime agent handshake. A spawned runtime agent subprocess sends this
+    /// as the first frame on every (re)connect to the daemon socket
+    /// (`UdsFrameTransport::connect`). The agent then syncs its
+    /// RuntimeStateDoc and processes requests from the coordinator.
     RuntimeAgent {
         /// Notebook room to attach to.
         notebook_id: String,
@@ -94,6 +95,10 @@ pub enum Handshake {
         /// Filesystem path to the shared blob store root
         /// (e.g., "~/.cache/runt/blobs/").
         blob_root: String,
+        /// Capabilities this agent offers (e.g. `["prompt"]`). Empty means a
+        /// kernel agent, which is also what older agents send.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        capabilities: Vec<String>,
     },
 
     /// Create a new untitled notebook. Daemon creates empty room, generates env_id.
@@ -410,4 +415,36 @@ pub async fn recv_typed_bootstrap_frame<R: AsyncRead + Unpin>(
 
     let bootstrap = serde_json::from_slice(&frame.payload)?;
     Ok(Some(bootstrap))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_agent_handshake_capabilities_wire_format() {
+        let handshake = |capabilities: Vec<String>| Handshake::RuntimeAgent {
+            notebook_id: "n".into(),
+            runtime_agent_id: "a".into(),
+            blob_root: "/b".into(),
+            capabilities,
+        };
+
+        // Empty capabilities are omitted; older agents send no field at all.
+        let json = serde_json::to_value(handshake(Vec::new())).unwrap();
+        assert!(json.get("capabilities").is_none());
+        let parsed: Handshake = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            parsed,
+            Handshake::RuntimeAgent { capabilities, .. } if capabilities.is_empty()
+        ));
+
+        let json = serde_json::to_value(handshake(vec!["prompt".into()])).unwrap();
+        assert_eq!(json["capabilities"], serde_json::json!(["prompt"]));
+        let parsed: Handshake = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            parsed,
+            Handshake::RuntimeAgent { capabilities, .. } if capabilities == vec!["prompt".to_string()]
+        ));
+    }
 }
