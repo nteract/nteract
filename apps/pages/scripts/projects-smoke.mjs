@@ -1905,27 +1905,23 @@ try {
   await expect(leaseContent).toHaveAttribute("contenteditable", "true");
   await expect(member.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible();
   const events = () => member.evaluate(() => window.__leaseEvents);
-  for (let cycle = 1; cycle <= 2; cycle++) {
-    await expect
-      .poll(async () => (await events()).filter((event) => event.name === "close").length, {
-        timeout: 17000,
-      })
-      .toBe(cycle);
-    const closed = (await events()).filter((event) => event.name === "close").at(-1);
-    assert.equal(closed.code, 4503);
-    assert.equal(closed.reason, "project_lease_expired");
-    await expect
-      .poll(async () => (await events()).filter((event) => event.name === "open").length)
-      .toBe(cycle + 1);
-    const reopened = (await events()).filter((event) => event.name === "open").at(-1);
-    assert.ok(reopened.at - closed.at < 2000, "scheduled renewal stays near base backoff");
-    await expect(leaseContent).toHaveAttribute("contenteditable", "true");
-    await expect(member.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible();
-    await expect(member.getByText(/Server unreachable|Sign in again/)).toHaveCount(0);
-  }
-  report.projectLease = { cycles: await events() };
+  const openedBefore = (await events()).filter((event) => event.name === "open").length;
+  const closedBefore = (await events()).filter((event) => event.name === "close").length;
+  // Wait past one full 15-second Project lease; in-place renewal keeps the socket open.
+  await member.waitForTimeout(17000);
+  const afterLease = await events();
+  assert.equal(
+    afterLease.filter((event) => event.name === "close").length,
+    closedBefore,
+    "in-place Project lease renewal keeps the socket open across the 15-second boundary",
+  );
+  assert.equal(afterLease.filter((event) => event.name === "open").length, openedBefore);
+  await expect(leaseContent).toHaveAttribute("contenteditable", "true");
+  await expect(member.getByRole("status").filter({ hasText: /^Saved$/ })).toBeVisible();
+  await expect(member.getByText(/Server unreachable|Sign in again/)).toHaveCount(0);
+  report.projectLease = { cycles: afterLease };
   complete(
-    "An accepted Project editor crossed two real 15-second lease closes and reconnected without an outage",
+    "An accepted Project editor stayed connected across the 15-second lease boundary without closing",
   );
   await member.evaluate(() => {
     window.__leaseHold = window.__leaseEvents.filter((event) => event.name === "open").at(-1).id;

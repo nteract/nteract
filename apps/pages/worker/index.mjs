@@ -189,6 +189,8 @@ import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
 import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
 import { DocumentPolicy, PermissionDenied, leaseExpiryError } from "./policy.mjs";
 import {
+  ADMISSION_CODES,
+  ADMISSION_REASONS,
   ADMISSION_ROUTES,
   admissionCloseCode,
   admissionCloseReason,
@@ -198,6 +200,7 @@ import {
   logAdmissionDenied,
   withAdmissionReason,
 } from "./admission-reasons.mjs";
+import { ProjectLease } from "./project-lease.mjs";
 import { buildAdvertisement } from "../shared/build-identity.mjs";
 import { advertiseBuild } from "./build-advertisement.mjs";
 import {
@@ -5335,6 +5338,7 @@ export class Page {
   retireAbandoned() {
     const stop = () => {
       this.contentActivity?.stop();
+      this.projectLease?.stop();
       this.pageCard?.stop();
       this.unwatchContent();
     };
@@ -5628,7 +5632,7 @@ export class Page {
         !unavailable &&
         metadata?.owner === this.metadata?.owner &&
         metadata?.pageId === this.metadata?.pageId
-      )
+      ) {
         this.projectAccessState = projectAccessStep(
           this.projectAccessState ?? PROJECT_ACCESS_EMPTY,
           {
@@ -5637,8 +5641,86 @@ export class Page {
             snapshot,
           },
         );
+        this.applyProjectAccessUpdate();
+      }
     }
     return identity;
+  }
+
+  /** Lazily create this Page host's Project lease renewal runner. */
+  ensureProjectLease() {
+    return (this.projectLease ??= new ProjectLease({
+      resolve: () => this.renewProjectLease(),
+      onError: (error) => {
+        if (error?.code !== "project_policy_unavailable") logFailure(error, "project-lease");
+      },
+    }));
+  }
+
+  /** Earliest deadline among open browser sockets currently bounded by this
+   * Page's cached Project access lease, or null when none are. */
+  nextProjectLeaseDeadline() {
+    const validUntil = this.projectAccess?.valid_until;
+    if (!Number.isFinite(validUntil) || !this.plain) return null;
+    let earliest = null;
+    for (const conn of this.plain.host.connections()) {
+      if (conn.trusted || conn.closed || conn.expiresAt !== validUntil) continue;
+      if (leaseExpiryError(conn.identity, conn.expiresAt).reason !== "project_lease_expired")
+        continue;
+      earliest = earliest === null ? conn.expiresAt : Math.min(earliest, conn.expiresAt);
+    }
+    return earliest;
+  }
+
+  /** Re-evaluate open sockets after a settled Project access snapshot update,
+   * extending unchanged Project leases and closing revoked sockets at once. */
+  applyProjectAccessUpdate() {
+    if (!this.plain) return;
+    const { closed } = this.runExtendLeases();
+    if (closed > 0) {
+      this.activity?.prune();
+      this.broadcastProfiles();
+    }
+    const deadline = this.nextProjectLeaseDeadline();
+    if (deadline !== null) this.projectLease?.leaseBound(deadline);
+    else if (this.projectLease && this.projectLease.state.name !== "idle")
+      this.projectLease.socketsGone();
+  }
+
+  /** Run `plain.extendLeases()` while suppressing per-socket `socketsGone()`
+   * checks until the entire batch has updated, so closing one revoked socket
+   * cannot disarm renewal for unchanged peers still earlier in the loop. */
+  runExtendLeases() {
+    this.extendingLeases = true;
+    try {
+      return this.plain.extendLeases();
+    } finally {
+      this.extendingLeases = false;
+    }
+  }
+
+  /** Refresh this Page's Project snapshot once for all open Project-bound
+   * sockets. Throws on transient Project unavailability so existing socket
+   * deadlines remain untouched and still fail closed at `valid_until`. */
+  async renewProjectLease() {
+    const metadata = this.metadata;
+    if (!metadata) return null;
+    const observed = this.projectAccessState ?? PROJECT_ACCESS_EMPTY;
+    const snapshot = await resolveProjectAccess(this.env, metadata);
+    if (metadata.owner === this.metadata?.owner && metadata.pageId === this.metadata?.pageId) {
+      this.projectAccessState = projectAccessStep(this.projectAccessState ?? PROJECT_ACCESS_EMPTY, {
+        observed,
+        owner: metadata.owner,
+        snapshot,
+      });
+    }
+    if (!this.plain) return null;
+    const { closed } = this.runExtendLeases();
+    if (closed > 0) {
+      this.activity?.prune();
+      this.broadcastProfiles();
+    }
+    return this.nextProjectLeaseDeadline();
   }
 
   /** Resolve the Project access for `identity` on `metadata` and record it
@@ -5954,6 +6036,7 @@ export class Page {
    * object page_cards never serves. */
   async forgetContent() {
     this.contentActivity?.stop();
+    this.projectLease?.stop();
     this.pageCard?.stop({ deleting: true });
     this.unwatchContent();
     await this.ctx.storage.delete(CONTENT_ACTIVITY_KEY);
@@ -8457,6 +8540,7 @@ export class Page {
         return;
       case "closePolicy":
         this.contentActivity?.stop();
+        this.projectLease?.stop();
         this.pageCard?.stop();
         this.unwatchContent();
         this.activity?.close();
@@ -8920,26 +9004,33 @@ export class Page {
     }
     this.wires.add(wire);
     this.wirePrincipals.set(wire, identity.principal);
-    // Lease: the credential's deadline, re-armed when an API key renews, and
-    // a renewal check every 15 s. A deadline past setTimeout's range re-arms
-    // in steps, since a longer delay fires at once.
+    // Lease: each socket owns its own expiry timer in its own request context.
+    // When an API key or Project lease extends `conn.expiresAt`, this timer
+    // wakes at the prior deadline, sees `conn.expiresAt > Date.now()`, and
+    // re-arms itself without another request taking over the timer. A deadline
+    // past setTimeout's range also re-arms in steps.
     let expiry;
     const armExpiry = () => {
       clearTimeout(expiry);
       if (!Number.isFinite(conn.expiresAt)) return;
       const left = conn.expiresAt - Date.now();
       expiry = setTimeout(
-        () =>
-          left > 2 ** 30
-            ? armExpiry()
-            : void wire.disconnect(
-                admissionCloseCode(leaseExpiryError(conn.identity, conn.expiresAt)),
-                admissionCloseReason(leaseExpiryError(conn.identity, conn.expiresAt)),
-              ),
+        () => {
+          if (!Number.isFinite(conn.expiresAt)) return;
+          if (conn.expiresAt > Date.now()) {
+            armExpiry();
+            return;
+          }
+          const error = leaseExpiryError(conn.identity, conn.expiresAt);
+          void wire.disconnect(admissionCloseCode(error), admissionCloseReason(error));
+        },
         Math.max(1, Math.min(left, 2 ** 30)),
       );
     };
     armExpiry();
+    const projectLease = this.ensureProjectLease();
+    const projectDeadline = this.nextProjectLeaseDeadline();
+    if (projectDeadline !== null) projectLease.leaseBound(projectDeadline);
     const renewal = setInterval(() => {
       void (async () => {
         const renewed = await authenticate(request, this.env);
@@ -8947,6 +9038,8 @@ export class Page {
           throw new PermissionDenied("Credential changed");
         this.plain.renew(conn, renewed);
         armExpiry();
+        const deadline = this.nextProjectLeaseDeadline();
+        if (deadline !== null) projectLease.leaseBound(deadline);
       })().catch((error) => wire.disconnect(admissionCloseCode(error), admissionCode(error)));
     }, 15_000);
     const disconnected = new Promise((resolve) => conn.transport.onClose(resolve));
@@ -8957,15 +9050,39 @@ export class Page {
       ctx: this.ctx,
     });
     usageSession.event("admit");
-    conn.transport.onClose(() => {
+    conn.transport.onClose((detail) => {
       usageSession.event("close");
       clearTimeout(expiry);
       clearInterval(renewal);
       this.wires.delete(wire);
       this.wirePrincipals.delete(wire);
+      if (
+        !this.extendingLeases &&
+        this.projectLease &&
+        this.projectLease.state.name !== "idle" &&
+        this.nextProjectLeaseDeadline() === null
+      )
+        this.projectLease.socketsGone();
       this.activity?.prune();
       this.broadcastProfiles();
-      logUsage({ action: "sync.close", ...syncUsage, latencyMs: Date.now() - started }, this.env);
+      const closeCode =
+        !detail?.peer &&
+        Number.isSafeInteger(detail?.code) &&
+        detail.code >= 1000 &&
+        detail.code <= 4999
+          ? detail.code
+          : undefined;
+      const closeReason = syncCloseReason(detail);
+      logUsage(
+        {
+          action: "sync.close",
+          ...syncUsage,
+          latencyMs: Date.now() - started,
+          ...(closeCode !== undefined && { closeCode }),
+          ...(closeReason && { closeReason, outcome: closeReason }),
+        },
+        this.env,
+      );
     });
     logUsage(
       {
@@ -8984,9 +9101,30 @@ export class Page {
       Promise.all([
         disconnected,
         this.contentActivity?.serve(disconnected),
+        projectLease.serve(disconnected),
         usageSession.serve(disconnected),
       ]),
     );
     return new Response(null, { status: 101, webSocket: client });
   }
+}
+
+const HOST_CLOSE_REASONS = Object.freeze({
+  "Going away": "going_away",
+  Disconnected: "disconnected",
+  error: "error",
+  send_failed: "send_failed",
+});
+
+/** Allowlisted close reason for `sync.close`. Peer-supplied close text is never
+ * logged directly; only host-issued admission and transport reasons pass. */
+function syncCloseReason(detail) {
+  if (!detail || typeof detail !== "object") return undefined;
+  if (detail.peer) return "client_close";
+  const reason = detail.reason;
+  if (typeof reason !== "string" || !reason) return undefined;
+  if (Object.hasOwn(HOST_CLOSE_REASONS, reason)) return HOST_CLOSE_REASONS[reason];
+  if (Object.hasOwn(ADMISSION_CODES, reason) || Object.hasOwn(ADMISSION_REASONS, reason))
+    return reason;
+  return "unknown";
 }

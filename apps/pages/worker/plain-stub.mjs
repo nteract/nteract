@@ -9,6 +9,8 @@ export function plainStub(repo, overrides = {}) {
       await repo?.flush?.(documentIds);
     },
     refresh() {},
+    extendLeases: () => ({ extended: 0, closed: 0 }),
+    host: { connections: () => [] },
     disconnectAll() {},
     async forget() {},
     serve() {},

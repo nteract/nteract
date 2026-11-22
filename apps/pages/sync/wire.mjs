@@ -84,11 +84,14 @@ export function socketTransport(
   const messages = new Set();
   const closes = new Set();
   let closed = false;
+  let pendingClose = null;
+  let closeDetail = {};
   socket.binaryType = "arraybuffer";
-  const finish = () => {
+  const finish = (detail = {}) => {
     if (closed) return;
     closed = true;
-    for (const h of closes) h();
+    closeDetail = detail;
+    for (const h of closes) h(detail);
   };
   const transport = {
     get closed() {
@@ -99,23 +102,25 @@ export function socketTransport(
       try {
         socket.send(encodeFrame(frame));
       } catch {
-        finish();
+        finish({ code: 1006, reason: "send_failed" });
       }
     },
     onMessage(handler) {
       messages.add(handler);
     },
     onClose(handler) {
-      if (closed) handler();
+      if (closed) handler(closeDetail);
       else closes.add(handler);
     },
     close(code = 1000, reason = "Disconnected") {
+      const detail = { code, reason };
+      pendingClose = detail;
       try {
         socket.close(code, reason);
       } catch {
         /* Already closed. */
       }
-      finish();
+      finish(detail);
     },
   };
   socket.addEventListener("message", ({ data }) => {
@@ -139,8 +144,10 @@ export function socketTransport(
     }
     for (const h of messages) h(frame);
   });
-  socket.addEventListener("close", finish);
-  socket.addEventListener("error", finish);
+  socket.addEventListener("close", (event) =>
+    finish(pendingClose ?? { code: event?.code, reason: event?.reason, peer: true }),
+  );
+  socket.addEventListener("error", () => finish(pendingClose ?? { code: 1006, reason: "error" }));
   return transport;
 }
 
