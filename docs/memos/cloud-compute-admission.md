@@ -106,30 +106,40 @@ not claim nteract already includes a universal provider controller.
 ## Stop, reconnect, and replacement
 
 A network disconnect is not a stop request. A peer disappearing does not prove
-its container stopped. Conversely, a restarted container cannot recover authority
-merely because it still has an old credential.
+its container stopped. Conversely, a restarted container cannot recover
+authority merely because it still has an old credential.
 
-Persist terminal intent for a generation, with a reason such as user stop, idle
-expiry, revocation or replacement. Fence execution authority immediately. For
-managed compute, the notebook admission service records pending termination in
-its durable launch-operation store. Its scheduled reconciler retries the
-provider's idempotent stop/reconcile operation until acknowledgement of the
-required stopped state; the provider controller still owns resource mutation.
-The reconciler must resume from storage after service restart. Display cleanup
-pending if confirmation is unavailable. For imported compute, complete detach
-without invoking resource stop/delete. Keep this policy separate from disconnect
-detection.
+Termination rules:
 
-A transient reconnect may keep a nonterminal selected generation after validating
-or renewing its grant. Presence TTL is a liveness signal, grant expiry bounds
-authority, and explicit terminal policy retires the generation; no additional
-"session lease" is proposed. A presence timeout alone does not mint or retire
-a generation. Runtime process replacement receives a new generation and fences
-the old one.
-A controller process restart does not itself replace a still-valid runtime.
-Late allocation results after cancellation are recorded and reconciled only for
-resources this application owns; they cannot attach to the retired generation.
-Do not automatically replay accepted code whose external side effects are unknown.
+- **Record intent and fence immediately.** Persist terminal intent for a
+  generation with a reason (user stop, idle expiry, revocation, or replacement),
+  and fence execution authority right away.
+- **Managed compute reconciliation.** The notebook admission service records
+  pending termination in its durable launch-operation store. Its scheduled
+  reconciler retries the provider's idempotent stop/reconcile operation until it
+  acknowledges the required stopped state. The provider controller still owns
+  resource mutation. The reconciler must resume from storage after service
+  restart. Display cleanup pending if confirmation is unavailable.
+- **Imported compute detach.** Complete detach without invoking resource
+  stop/delete.
+
+Keep this policy separate from disconnect detection.
+
+Reconnect and replacement rules:
+
+- **Transient reconnect.** A nonterminal selected generation may survive a
+  transient reconnect after validating or renewing its grant.
+- **Distinct signal roles.** Presence TTL is a liveness signal, grant expiry
+  bounds authority, and explicit terminal policy retires the generation. No
+  additional "session lease" is proposed. A presence timeout alone does not mint
+  or retire a generation.
+- **Replacement and restarts.** Runtime process replacement receives a new
+  generation and fences the old one. A controller process restart does not
+  itself replace a still-valid runtime.
+- **Late results and side effects.** Late allocation results after cancellation
+  are recorded and reconciled only for resources this application owns; they
+  cannot attach to the retired generation. Do not automatically replay accepted
+  code whose external side effects are unknown.
 
 ## State placement
 

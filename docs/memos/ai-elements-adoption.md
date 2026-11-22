@@ -4,29 +4,29 @@ Status: research, with the convergence call now decided. 2026-07-07.
 
 > **Decision (2026-07-07, Kyle):** AI Elements is a **pattern reference only**. Our output rendering stays as it is, deliberately closer to Jupyter. We do not port or converge output renderers (Code Block, Terminal, Stack Trace, Test Results, Package Info, Task/Queue) onto the AI Elements look. What survives from this memo is the **base shadcn primitive** track (Separator, Skeleton, Spinner, Kbd, Tooltip, Empty), which is not AI Elements at all.
 
-Vercel's [AI Elements](https://elements.ai-sdk.dev) is a shadcn-compatible registry of ~50 components built for agent UIs: a chatbot family (Message, Reasoning, Tool, Task, Prompt Input, Model Selector), a code family (Code Block, Terminal, Stack Trace, Test Results, Package Info, File Tree, Schema Display), plus voice and workflow-graph families. Several of the code-family components overlap nteract's output surfaces. This memo says what to take, what to leave, and how to take it without breaking our token discipline.
+Vercel's [AI Elements](https://elements.ai-sdk.dev) is a shadcn-compatible registry of ~50 components built for agent UIs. It includes a chatbot family (Message, Reasoning, Tool, Task, Prompt Input, Model Selector), a code family (Code Block, Terminal, Stack Trace, Test Results, Package Info, File Tree, Schema Display), plus voice and workflow-graph families. Several of the code-family components overlap nteract's output surfaces. This memo says what to take, what to leave, and how to take it without breaking our token discipline.
 
-**The recommendation in one line:** consume the *canonical shadcn primitives* (Separator, Skeleton, Spinner, Kbd, Tooltip, Empty) through the shadcn CLI as we already do; look at *AI Elements components* as UX-pattern references only, do not vendor them (per the decision above).
+**The recommendation in one line:** consume the *canonical shadcn primitives* (Separator, Skeleton, Spinner, Kbd, Tooltip, Empty) through the shadcn CLI as we already do. Treat *AI Elements components* as UX-pattern references only, and do not vendor them (per the decision above).
 
 ## How the registry works
 
 - **Install:** `npx shadcn@latest add @ai-elements/<name>` (or `npx ai-elements@latest add <name>`). Registry served from `elements.ai-sdk.dev/api/registry/`.
-- **Integration model:** shadcn-style vendoring. The CLI copies component *source* into the repo (default `components/ai-elements/<name>.tsx`), pulls its `registryDependencies` (other shadcn primitives) the same way, and adds its runtime `dependencies` (streamdown, ai-sdk, lucide-react) to `package.json`. Same "copied code, not a black-box dep" model as our `src/components/ui`.
-- **Theming:** rides entirely on shadcn's existing CSS variables (`--background`, `--primary`, `--popover`, ...). No parallel token namespace. That means it inherits our already-synced Elements/Claude Design tokens for free, which is a genuine structural fit.
+- **Integration model:** shadcn-style vendoring. The CLI copies component *source* into the repo (default `components/ai-elements/<name>.tsx`) and pulls its `registryDependencies` (other shadcn primitives) the same way. It also adds runtime `dependencies` (streamdown, ai-sdk, lucide-react) to `package.json`. This is the same "copied code, not a black-box dep" model as our `src/components/ui`.
+- **Theming:** Components ride entirely on shadcn's existing CSS variables (`--background`, `--primary`, `--popover`, ...) with no parallel token namespace. They inherit our already-synced Elements/Claude Design tokens for free.
 - **License:** Apache-2.0. **Prereq:** Tailwind v4 (we are on v4).
 
 ## Why not run the CLI straight into `src/components/ui`
 
-AI Elements source ships Tailwind classes and, for Code Block, **Shiki syntax colors** tuned to its own look, not our `--ct-*`/`--k-*`/`--sev-*` vocabulary. Dropped in unmodified it would fail the `component-chroma-boundary` ratchet and the design-sync build (unregistered group / `componentSrcMap`) on first run. The port checklist for any AI Elements component:
+AI Elements source ships Tailwind classes and, for Code Block, **Shiki syntax colors** tuned to its own look, not our `--ct-*`/`--k-*`/`--sev-*` vocabulary. Dropped in unmodified, it would fail the `component-chroma-boundary` ratchet and the design-sync build (unregistered group / `componentSrcMap`) on first run. The port checklist for any AI Elements component:
 
 1. Fetch into a scratch location, never straight into `src/components/ui/`.
 2. Re-tokenize every color class to `--ct-*`/`--k-*`/`--sev-*`.
-3. For Code Block/Tool: build a **custom Shiki theme from nteract's palette** instead of accepting stock Shiki colors. (The ratchet only catches Tailwind utilities, not the inline hex Shiki emits, so a naive port passes the automated gate while still violating the token law. This is the single biggest landing risk.)
+3. For Code Block/Tool: build a **custom Shiki theme from nteract's palette** instead of accepting stock Shiki colors. (The ratchet only catches Tailwind utilities, not the inline hex Shiki emits. A naive port passes the automated gate while still violating the token law. This is the single biggest landing risk.)
 4. Strip `"use client"`; backport to the repo's `forwardRef` + `displayName` convention.
 5. Register in design-sync's `build.mjs` group / `componentSrcMap`.
 6. Run `component-chroma-boundary` as the actual landing gate. Never add a file to `RATCHET_RAW_PALETTE_FILES` to make an import pass; that list is debt to shrink.
 
-For the plain shadcn primitives, our documented flow (`pnpm dlx shadcn@latest add <c> -yo`, then strip `"use client"`) is fine. One caveat: **shadcn now defaults new installs to Base UI**, so force the Radix variant / scoped `@radix-ui/react-*` package to stay on the one primitive runtime our other 18 primitives use.
+For the plain shadcn primitives, our documented flow (`pnpm dlx shadcn@latest add <c> -yo`, then strip `"use client"`) is fine. One caveat: **shadcn now defaults new installs to Base UI**. Force the Radix variant and scoped `@radix-ui/react-*` package to stay on the one primitive runtime our other 18 primitives use.
 
 ## Immediate canonical primitives
 
@@ -36,12 +36,12 @@ For the plain shadcn primitives, our documented flow (`pnpm dlx shadcn@latest ad
 | Skeleton | shipped (#3964) | Added with the ratified shimmer (gradient sweep, `color-mix` on `--muted-foreground`), not stock `animate-pulse`; `CellSkeleton` migrated onto it. |
 | Spinner | add-now | Colorless (`currentColor`), `lucide-react` already a dep. Add a small `cva` size variant; law demotes spinner to tight-space fallback. |
 | Kbd | add-now | `bg-muted`/`text-muted-foreground` exist. Fix upstream's `<kbd>`-nested-in-`<kbd>`; preserve the `data-slot="tooltip-content"` coupling if Tooltip lands. |
-| Tooltip | shipped | Inverted `bg-foreground/text-background` (open question 2). Scoped `@radix-ui/react-tooltip`, no arrow. `TooltipProvider` mounts per trigger group, not at the app root: the notebook command toolbar mounts its own, so desktop, cloud, Elements, and unit tests render it without a host provider. |
+| Tooltip | shipped | Inverted `bg-foreground/text-background` (open question 2). Scoped `@radix-ui/react-tooltip`, no arrow. `TooltipProvider` mounts per trigger group, not at the app root. The notebook command toolbar mounts its own, so desktop, cloud, Elements, and unit tests render it without a host provider. |
 | Empty (EmptyState) | needs Kyle | Tokens trivial, but `EmptyMedia`'s `size-10 rounded-lg` icon badge needs an explicit radius-law exemption before landing. Backs page-level empty states (no cells / comments / workstations). |
 
 ## AI Elements to nteract surface map (reference only)
 
-Per the decision at the top, none of these are being adopted or ported. The table is kept as a reference map: which AI Elements pattern corresponds to which nteract surface, so if any single surface is ever revisited as an nteract-native improvement (on its own merits, not to converge on the AI Elements look), the pattern is already located. The "Mode" column reads as "how we'd have taken it," now moot.
+Per the decision at the top, none of these are being adopted or ported. The table stays as a reference map linking AI Elements patterns to nteract surfaces. If any single surface is revisited later as an nteract-native improvement (on its own merits, not to converge on the AI Elements look), the pattern is already located. The "Mode" column reads as "how we'd have taken it," now moot.
 
 | Component | nteract surface | Mode | Why |
 | --- | --- | --- | --- |
@@ -56,7 +56,13 @@ Per the decision at the top, none of these are being adopted or ported. The tabl
 | **Shimmer** | streaming text / AI-cell thinking | reference-only (blocked) | Distinct from the block Skeleton. A *text* shimmer for streaming output; gated on the gradient-law question below. |
 | **Message / Reasoning / Model Selector** | future AI cell | reference-only | Gated on the AI cell graduating from a gutter-color placeholder to a composed surface. Reuse the comments `isAgent`/`onBehalfOf` attribution when it does. |
 
-**Skip:** the entire Voice and Workflow-graph families (no surface), Commit / JSX Preview / Schema Display / Checkpoint / Confirmation / Context / Sources / Inline Citation / Attachments / Suggestion / Chain of Thought (speculative, no host surface), File Tree (our only tree is a heading outline, not a filesystem browser). No additional registries (kibo-ui, Tremor, Aceternity, Origin UI) are needed; the shadcn + AI Elements path covers every confirmed gap.
+**Skip:**
+
+- Voice and Workflow-graph families (no surface).
+- Commit, JSX Preview, Schema Display, Checkpoint, Confirmation, Context, Sources, Inline Citation, Attachments, Suggestion, and Chain of Thought (speculative, no host surface).
+- File Tree (our only tree is a heading outline, not a filesystem browser).
+
+No additional registries (kibo-ui, Tremor, Aceternity, Origin UI) are needed. The shadcn + AI Elements path covers every confirmed gap.
 
 ## Ordered plan
 
@@ -66,7 +72,7 @@ Autonomous (no design call): **1** Separator (in flight). **2** Skeleton (done, 
 
 Needs a small design call: **4** Tooltip (done: inverted tokens, group-scoped provider); Kbd can follow without a further call. **5** Empty's icon-badge radius exemption, then Empty for page-level empties (no cells / comments / workstations).
 
-Deferred to the AI-cell roadmap (not now): a streaming *text* shimmer and the Message/Reasoning/Model Selector family only become real when the AI cell graduates from a gutter-color placeholder to a composed surface.
+Deferred to the AI-cell roadmap (not now): a streaming *text* shimmer and the Message/Reasoning/Model Selector family. They only become real when the AI cell graduates from a gutter-color placeholder to a composed surface.
 
 ## Open questions for Kyle
 
@@ -75,7 +81,7 @@ Deferred to the AI-cell roadmap (not now): a streaming *text* shimmer and the Me
 3. **Empty icon badge:** is `size-10 rounded-lg` an acceptable radius-law exemption, or reshape to `rounded-md`?
 4. **Convergence:** ~~should our output renderers converge toward the AI Elements look?~~ **Answered (Kyle, 2026-07-07): no.** Reference only; outputs stay Jupyter-adjacent. This is the decision at the top of the memo.
 5. **AI cell roadmap:** when does the AI cell graduate from gutter-color placeholder to a composed surface? That gates Message/Reasoning/Prompt Input/Model Selector past reference-only.
-6. **mcp-app theming boundary:** now largely moot, since we are not porting Code Block. If the mcp-app widget's unstyled code rendering is ever improved on its own merits, this (full token system vs a lighter host-neutral palette inside third-party chrome) is the call to make then.
+6. **mcp-app theming boundary:** now largely moot, since we are not porting Code Block. If the mcp-app widget's unstyled code rendering is ever improved on its own merits, that call returns: full token system vs a lighter host-neutral palette inside third-party chrome.
 
 ## Risks
 

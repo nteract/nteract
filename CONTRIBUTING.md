@@ -74,29 +74,12 @@ cargo xtask wasm sift-csv     # rebuild sift-csv-wasm only; bare `wasm` skips it
 
 ### MCP renderer development
 
-Run `cargo xtask run-mcp` from the worktree used by your MCP client. The
-supervisor checks generated assets before compiling and starting its child:
-WASM first, affected renderer bundles next, then the widget HTML and `runt`.
-The first build checks every bundle, including the hydrated LFS bundles, and
-records local content receipts under `target/xtask/`. This initial rebuild
-certifies current source inputs; an LFS output alone cannot establish that.
-Later
-runs compare input and output bytes, including imported TypeScript, CSS source
-directories, build configuration, and the package lockfile. Unchanged bundles
-retain their timestamps so Cargo can reuse the existing child binary.
+Run `cargo xtask run-mcp` from the worktree used by your MCP client. Before compiling and starting its child, the supervisor prepares assets in order: WASM, affected renderer bundles, widget HTML, then `runt`.
 
-File watching is opt-in: set `NTERACT_DEV_WATCH=1` on the MCP server process.
-Renderer/widget edits rebuild the affected assets and restart only the MCP
-child if its binary changes. Generated outputs do not trigger another reload.
-Without watching, restart the MCP server, or use `up rebuild=true` in owner
-mode. Attach mode prepares the child and assets but never restarts the shared
-daemon. Development daemons serve renderer assets from this worktree's disk;
-installed stable/nightly daemons are not part of this workflow.
-
-If asset preparation fails and a child binary already exists, startup keeps
-that child available and reports the failure in supervisor status. With
-watching enabled, a corrected edit retries the build. A fresh checkout with
-no usable binary still requires a successful build before child tools work.
+- **Initial vs. incremental checks:** The first build checks every bundle, including hydrated LFS bundles, and records local content receipts under `target/xtask/`. This certifies current source inputs, which an LFS output alone cannot. Later runs compare input and output bytes across imported TypeScript, CSS source directories, build config, and the package lockfile. Unchanged bundles keep their timestamps so Cargo reuses the existing child binary.
+- **File watching (opt-in):** Set `NTERACT_DEV_WATCH=1` on the MCP server process. Renderer and widget edits rebuild affected assets and restart the MCP child only when its binary changes; generated outputs do not trigger another reload. Without watching, restart the MCP server or run `up rebuild=true` in owner mode.
+- **Mode and daemon boundaries:** Attach mode prepares the child and assets without restarting the shared daemon. Development daemons serve renderer assets from this worktree's disk; installed stable and nightly daemons are outside this workflow.
+- **Build failures:** If asset preparation fails while a child binary exists, startup keeps that child running and reports the failure in supervisor status. With watching enabled, a follow-up edit retries the build. A fresh checkout with no usable binary requires a successful build before child tools work.
 
 For asset-only preparation or diagnostics:
 
@@ -106,15 +89,11 @@ cargo xtask artifacts status mcp-widget
 cargo xtask artifacts verify mcp-widget
 ```
 
-The widget embeds content hashes of lazy plugin assets, so a plugin-only edit
-also changes the widget's advertised resource URI after rebuilding. The child
-refreshes live tool/resource discovery and emits list-change notifications.
-The checked-in startup tool cache keeps its legacy readable widget URI for
-compatibility; result metadata alone does not update a host's tool catalog.
-MCP cannot force a host to replace an already-running widget. If your host
-retains its old catalog or widget, reconnect/restart that host's MCP integration
-(and, if necessary, the host application) to discover the new URI and open a
-fresh widget. Source freshness is not proof of host-side invalidation.
+**Host cache and widget refresh caveats:**
+
+- The widget embeds content hashes of lazy plugin assets, so plugin-only edits also change the widget's advertised resource URI after a rebuild.
+- The child refreshes live tool and resource discovery and emits list-change notifications. The checked-in startup tool cache retains the legacy readable widget URI for compatibility; result metadata alone does not update a host's tool catalog.
+- MCP cannot force a host to replace a running widget. If a host keeps an old catalog or widget, reconnect or restart its MCP integration (or the host app) to pick up the new URI. Source freshness does not prove host-side invalidation.
 
 ### Python bindings
 
@@ -166,29 +145,13 @@ cargo xtask integration
 cargo xtask lint --fix
 ```
 
-This runs Rust formatting, source control-byte checks, JS/TS checks (`vp check`),
-and Python lint/format (`ruff`) and type checks (`ty`). It needs no setup
-beyond `uv` and Corepack (or the pinned pnpm), so it runs in a new worktree
-as it is:
+This runs Rust formatting, source control-byte checks, JS/TS checks (`vp check`), Python lint/format (`ruff`), and Python type checks (`ty`). It needs only `uv` and Corepack (or the pinned pnpm), so it works directly in a fresh worktree:
 
-- JS dependencies install through the pnpm version pinned in `package.json`.
-  When xtask runs pnpm through Corepack, it puts Corepack shims from
-  `target/xtask/corepack-shims` first on `PATH`, so a nested `pnpm` is the
-  pinned version whatever `pnpm` the shell finds first.
-- Python tools run from a lint environment in `target/xtask/python-lint-env`.
-  Lint syncs it with `uv sync --no-install-workspace`: the `dev` group's
-  third-party packages, at the `ruff` and `ty` versions pinned in
-  `pyproject.toml`, without the workspace members. It never reads or changes
-  `.venv` or the environment `UV_PROJECT_ENVIRONMENT` selects, so lint cannot
-  repoint editable packages to another worktree. Tools load with
-  `python -I -m`, without falling back to global executables.
+- **JS dependencies:** Installed with the pnpm version pinned in `package.json`. When xtask invokes pnpm through Corepack, it prepends `target/xtask/corepack-shims` to `PATH` so nested `pnpm` calls also resolve to the pinned version.
+- **Python tools:** Run from an isolated lint environment in `target/xtask/python-lint-env`. Lint syncs it via `uv sync --no-install-workspace`, installing the `dev` group's third-party packages (`ruff` and `ty` pinned in `pyproject.toml`) without workspace members. It never reads or modifies `.venv` or the environment `UV_PROJECT_ENVIRONMENT` selects, so lint cannot repoint editable packages across worktrees. Tools run via `python -I -m` with no fallback to global executables.
+- **Failures and platform support:** Missing `uv` or a failed sync fails the run separately from lint findings. The isolated lint environment covers macOS and Linux (`tool.uv.environments`). On other platforms, `uv sync` installs nothing, so you must prepare the environment `uv` selects for `ruff` and `ty`.
 
-A missing `uv` or a failed sync fails the check and says so apart from lint
-findings. The lint environment exists on macOS and Linux, the platforms
-`tool.uv.environments` covers. On other platforms `uv sync` has nothing to
-install, so lint runs `ruff` and `ty` from the environment uv selects and you
-prepare that one yourself. `--fix` applies available formatting and lint fixes. To check
-without fixing:
+`--fix` applies available formatting and lint fixes. To check without modifying files:
 
 ```bash
 cargo xtask lint

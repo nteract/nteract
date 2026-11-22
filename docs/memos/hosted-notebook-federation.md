@@ -158,7 +158,7 @@ ComputeProviderAccount
 
 An account id, not an origin alone, must namespace cached catalog rows, open
 windows, daemon bridges, and reconnect state. Current locators already separate
-different origins. The missing case is two accounts at the same origin, which
+different origins. The missing case is two accounts at the same origin: they
 may see the same provider notebook id under different principals and must not
 collapse into one local session.
 
@@ -197,7 +197,7 @@ HostedNotebookSummary
 ```
 
 The provider resource id is an opaque lookup key. A path returned by a
-Jupyter Server Contents API is not a durable nteract document id, and matching
+Jupyter Server Contents API is not a durable nteract document id. Matching
 titles or paths across providers must never merge document histories.
 
 Catalog refresh should be independently fallible per account. An expired or
@@ -257,9 +257,9 @@ the synced notebook document.
 ### Current workstation shape
 
 The current workstation flow runs a long-lived connector in the compute
-environment. It registers and heartbeats, waits for attach jobs over an event
-socket with polling fallback, then spawns a per-room `cloud-runtime-agent` that
-dials the room as `runtime_peer`.
+environment. It registers, heartbeats, and waits for attach jobs over an event
+socket with polling fallback. When a job arrives, it spawns a per-room
+`cloud-runtime-agent` that dials the room as `runtime_peer`.
 
 [#3608](https://github.com/nteract/nteract/issues/3608) tracks the focused
 JupyterHub version of that shipped model: attach to an already-running
@@ -293,12 +293,13 @@ bridge. It requests `runtime_peer` scope and is fenced by the current runtime
 attachment session.
 
 This is the least deployment-specific experiment for "compute is already stood
-up." It is not the smallest implementation change because nteract does not yet
-have a remote Jupyter Server REST/kernel-WebSocket adapter. It requires no
-nteract process inside the Hub and no Hub-to-nteract egress. The user's Hub
-credential stays on the local machine. The costs are that Desktop must remain
-online, the daemon must implement that remote adapter, and Hub access is often
-coarse at the user-server boundary.
+up." It is not the smallest implementation change, because nteract does not yet
+have a remote Jupyter Server REST/kernel-WebSocket adapter.
+
+- **Advantages:** It requires no nteract process inside the Hub and no
+  Hub-to-nteract egress; the user's Hub credential stays on the local machine.
+- **Costs:** Desktop must remain online, the daemon must implement the remote
+  adapter, and Hub access is often coarse at the user-server boundary.
 
 #### B. nteract Jupyter Server extension
 
@@ -320,10 +321,10 @@ desktop or nteract host -> /services/nteract -> Hub API -> user server
 ```
 
 A Hub-managed or externally managed service authenticates the user through Hub
-OAuth, selects or starts a default or named server, follows spawn progress, and
-brokers attachment. It can handle deployment policy and version normalization,
-but it still needs either standard Jupyter APIs or an extension inside the user
-server.
+OAuth. It selects or starts a default or named server, follows spawn progress,
+and brokers attachment. It can handle deployment policy and version
+normalization, but it still needs either standard Jupyter APIs or an extension
+inside the user server.
 
 Prefer delegated user credentials for user-server actions. A central service
 credential with broad cross-user server access has a much larger blast radius.
@@ -336,9 +337,9 @@ nteract room <- outbound runtime_peer <- sidecar beside the user server
 
 This is closest to the current workstation data plane. A KubeSpawner deployment
 can add a sidecar to newly spawned user pods; other Spawners need their own
-equivalent hook. It works well behind private ingress because only outbound
-connectivity is required, but it needs cluster egress, deployment packaging,
-and an explicit sidecar identity.
+equivalent hook. Outbound-only connectivity works well behind private ingress.
+The tradeoff is requiring cluster egress, deployment packaging, and an explicit
+sidecar identity.
 
 ### Provisioning an nteract-enabled runtime
 
@@ -364,9 +365,9 @@ A safe high-level flow is:
 5. The room admits the `runtime_peer` only for the current attachment session.
 6. Detach or replacement revokes the enrollment path and fences late peers.
 
-The room enrollment grant should be single use or short lived and should never
-appear in argv, notebook metadata, `user_options`, ordinary sync frames, or
-provider progress logs.
+The room enrollment grant should be single use or short lived. Never place it
+in argv, notebook metadata, `user_options`, ordinary sync frames, or provider
+progress logs.
 
 ### Recommended prototype order
 
@@ -425,15 +426,15 @@ operation and attachment session id.
 
 ## `preview.runt.run` migration
 
-Desktop session persistence stores the literal room locator, while daemon bridge
-reuse indexes its in-memory, ephemeral bridges by that locator. Replacing
+Desktop session persistence stores the literal room locator. Daemon bridge
+reuse indexes its in-memory, ephemeral bridges by that same locator. Replacing
 `preview.runt.run` with `n.anaconda.com` therefore needs an explicit
-compatibility plan. Changing a display label is insufficient.
+compatibility plan; changing a display label is insufficient.
 
 Viable mechanisms include:
 
 - keep the old host serving the native HTTP and WebSocket protocol as a
-  compatibility proxy during migration, without asking the client to replay an
+  compatibility proxy during migration, without asking clients to replay an
   authorization header to another origin;
 - add a signed deployment alias response that maps the retired deployment to
   the canonical deployment before credentials are selected; or

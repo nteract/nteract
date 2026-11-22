@@ -122,8 +122,8 @@ updates may arrive for the same display, and `true` means the current chunk list
 is final. Dataset coverage is separate. The automatic repr path emits a bounded
 head with `complete: true`, `sampled: true`, `sample_strategy: "head"`, and a
 smaller `included_rows`; it is a terminal sample, not an open stream. See
-`memos/arrow-bounded-head-and-progressive-fetch.md` for the size rule that picks
-the head.
+[`../memos/arrow-bounded-head-and-progressive-fetch.md`](../memos/arrow-bounded-head-and-progressive-fetch.md)
+for the size rule that picks the head.
 
 When the producer knows the source length, `total_rows` is exact even for a
 sample. A source that cannot report its length, such as an unbounded

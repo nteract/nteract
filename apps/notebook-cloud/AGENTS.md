@@ -36,7 +36,7 @@ The cloud room host materializes and validates the notebook-room documents:
 | `NotebookDoc` | notebook room | owners write all; editors write allowed cell surface only; viewers and runtime peers read |
 | `RuntimeStateDoc` | notebook room | room host writes execution intent and room facts; runtime peers write policy-allowed lifecycle, progress, output, and comm topology for accepted work; viewer/editor/owner clients read only |
 | `CommsDoc` | notebook room | editor/owner/runtime-peer widget-state writes gated by RuntimeStateDoc topology |
-| `CommentsDoc` | notebook room sidecar | editor/owner write policy; live room host checkpoints immutable object bodies selected by the room checkpoint manifest (legacy KV checkpoints remain readable), routes `FrameType.COMMENTS_DOC_SYNC` frames, and saves `comments_doc_id` to peers (commit 778fc53e); revision rows record `comments_heads_hash` and `comments_snapshot_key` for catalog recovery |
+| `CommentsDoc` | notebook room sidecar | editor/owner write policy; room host routes `FrameType.COMMENTS_DOC_SYNC`, sends `comments_doc_id` to peers, and checkpoints immutable object bodies via the room checkpoint manifest (legacy KV checkpoints remain readable); revision rows record `comments_heads_hash` and `comments_snapshot_key` for catalog recovery |
 | `PoolDoc` | daemon scoped | not a notebook room document; hosted deployments should not assume it belongs in room identity |
 
 Permission and durability boundaries are the reason for separate documents.
@@ -69,7 +69,7 @@ stores, not from using document boundaries as a rerender workaround.
   UI semantics.
 - **Wiring parity, not just component parity.** When desktop iterates on a
   shared surface (rail, outline, toolbar, cells), check that the viewer passes
-  the same interaction props and hooks — a shared component rendered with a
+  the same interaction props and hooks. A shared component rendered with a
   thinner prop set silently lacks the new behavior even though the shared code
   ships in the bundle. Optional interaction props on shared components are the
   smell; prefer shared hooks colocated with the component (see the outline
@@ -107,29 +107,31 @@ section and `docs/adr/frontend-sync-bridge.md` Decision 8 before editing
   mounts no provider and stays byte-identical, while a test or fixture mounts
   `CloudStoresProvider` to override consumption (not activation, which the
   singletons keep owning for boot and instant paint).
-- The stores are module singletons shared across surfaces, so every async
-  completion - poll tick, imperative action, and any follow-up refetch - is
-  captured at issue and dropped at apply against an activation epoch plus the
-  auth reference; `dispose`, `reset`, and a signed-out closed gate bump the
-  epoch (a transient `loading` gate is a recoverable dip and keeps in-flight
-  work alive). Comparators are named field-by-field functions with a colocated
-  completeness manifest, never deep-equal or JSON; the manifest break surfaces
-  as a tsc error via `pnpm --dir apps/notebook-cloud typecheck` - the node
-  `test` script will not catch it. Full pattern: frontend-dev skill,
-  "Module-Singleton Source Stores".
+- Module-singleton stores are shared across surfaces; follow the `frontend-dev`
+  skill ("Module-Singleton Source Stores"):
+  - **Stale-completion fencing:** capture an activation epoch and the auth
+    reference when issuing every async operation (poll tick, imperative action,
+    and follow-up refetch), and drop stale results at apply time.
+  - **Epoch transitions:** `dispose`, `reset`, and a signed-out closed gate bump
+    the epoch; a transient `loading` gate is a recoverable dip and keeps
+    in-flight work alive.
+  - **Typed comparators:** write named field-by-field comparators with a
+    colocated completeness manifest, never deep-equal or JSON serialization.
+    Missing fields fail `pnpm --dir apps/notebook-cloud typecheck` (the node
+    `test` script will not catch them).
 
 ## Visual language
 
-Cloud chrome is flat and Ink-forward. State tints are single solid
-`color-mix(...)` values; decorative gradients are prototype-era residue and
-must not be reintroduced, including when mirroring existing atoms into new
-surfaces (that is how they propagate). The one sanctioned gradient is the
-`.cloud-startup-line` skeleton shimmer, which is motion, not decoration.
-Separators are `border-top`/`border-right` hairlines with tinted washes, not
-raised cards or drop shadows. Standalone entries that skip the viewer
-stylesheet (the OIDC callback) carry mirrored tokens from
-`src/styles/notebook-base.css`; keep them in sync when the host chrome
-retunes.
+Cloud chrome is flat and foreground-driven: rely on crisp typography and
+high-contrast ink over the base background rather than heavy fills or elevation.
+State tints are single solid `color-mix(...)` values. Do not use decorative
+gradients, including when mirroring existing atoms into new surfaces, where
+they tend to propagate. The only allowed gradient is the `.cloud-startup-line`
+skeleton shimmer, which communicates loading motion rather than surface styling.
+Use `border-top`/`border-right` hairlines with subtle tinted washes as
+separators instead of raised cards or drop shadows. Standalone entries that skip
+the viewer stylesheet (the OIDC callback) carry mirrored tokens from
+`src/styles/notebook-base.css`; keep them in sync when the host chrome retunes.
 
 ## Verification
 

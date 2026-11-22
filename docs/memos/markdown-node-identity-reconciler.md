@@ -15,11 +15,11 @@ fn node_id(kind: NodeKind, span: &SourceSpan) -> String {
 ```
 
 Anchors, isolated regions, and inline runs all clone that id, so any edit above
-or inside a block renames it and every node after it. A consumer that keys on the
+or inside a block renames it and every node after it. A consumer keyed on the
 id sees the whole tail of the document turn over on a one-character edit. This
-memo proposes replacing offset-derived identity with stable ids that carry across
-reparses, assigned by a sequence-alignment reconciler that takes the previous
-plan as input.
+design replaces offset-derived identity with stable ids that carry across
+reparses. A sequence-alignment reconciler assigns them using the previous plan
+as input.
 
 ## What this buys nteract
 
@@ -28,10 +28,10 @@ place:
 
 - React keys in the host renderer (`key={block.blockId}`, `key={run.inlineId}`
   in `ProjectedMarkdownView`). These churn on every edit-above and remount the
-  rendered subtree. The host-rendered path is stateless presentational components
-  (headings, lists, code blocks, math); stateful and executable regions route to
-  `IsolatedFrame` and are keyed separately. So the churn is a cheap, visually
-  invisible remount today, not a state-loss or correctness bug.
+  rendered subtree. The host-rendered path uses stateless presentational
+  components (headings, lists, code blocks, math). Stateful and executable
+  regions route to `IsolatedFrame` and are keyed separately. The churn is a
+  cheap, visually invisible remount today, not a state-loss or correctness bug.
 
 Everything else is already insulated from offset churn:
 
@@ -46,18 +46,18 @@ Everything else is already insulated from offset churn:
 So for nteract as it stands, stable identity mostly buys cheaper remounts. The
 cases where it becomes genuinely useful:
 
-- **Collaborative selection survival.** A remote collaborator editing above while
-  a local user drags a selection in the rendered view re-projects the plan,
-  churns every id, and remounts the subtree, which can collapse the in-progress
-  DOM selection. Stable ids plus patch-not-remount keep the untouched nodes and
-  the selection alive. Present, narrow, real.
+- **Collaborative selection survival.** Suppose a remote collaborator edits
+  above while a local user drags a selection in the rendered view. Re-projecting
+  the plan churns every id and remounts the subtree, which can collapse the
+  in-progress DOM selection. Stable ids plus patch-not-remount keep untouched
+  nodes and the selection alive. Present, narrow, real.
 - **Id-based change tracking.** A "this block changed since you last looked"
   feature needs a node to keep identity across reparses. nteract has none today;
   stable identity is the prerequisite if it grows one.
 
 The stronger pull is a downstream vendored consumer of the markdown wasm that
-keys React on these ids and hosts live component state inside the rendered
-document, where a remount is a real state loss. Putting identity in the plan
+keys React on these ids. It hosts live component state inside the rendered
+document, where a remount causes real state loss. Putting identity in the plan
 keeps it shared rather than re-derived per surface.
 
 **Relationship to Automerge.** This is read-side projection identity, not source
@@ -71,66 +71,73 @@ duplicate, or interact with Automerge's source identity.
 `project_markdown_reconciled(source, options, &prev) -> (MarkdownPlan, ReconcilerSnapshot)`
 runs three phases (`crates/nteract-markdown-engine/src/lib.rs:393-506`):
 
-1. **Build.** Run `project_node`, but leave `ProjectedNode.id` empty and defer
+1. **Build.** Run `project_node`, leaving `ProjectedNode.id` empty and deferring
    anchor and isolated-region emission. This drops the provisional-id remap and
    the `SourceSpan::empty()` id collision.
-2. **Reconcile.** Assign ids top-down. One recursive `reconcile_children` runs
-   at every children list (blocks, then list items / table rows / cells, then
-   inline runs), so block and inline ids fall out of the same pass. Root keeps
-   the literal `"root"`; only its children align.
-3. **Finalize.** A document-order DFS over the now-id-stable tree rebuilds
+2. **Reconcile.** Assign ids top-down. One recursive `reconcile_children` pass
+   runs at every children list (blocks, list items / table rows / cells, and
+   inline runs), handling block and inline ids uniformly. Root keeps the literal
+   `"root"`; only its children align.
+3. **Finalize.** Run a document-order DFS over the now-id-stable tree to rebuild
    anchors (`block_id = node.id`), isolated regions (`id = "isolation:" +
-   node.id`), and the heading-slug counter, then serializes the new snapshot
-   from `MarkdownPlan.root` (never from the flattened block/run view).
+   node.id`), and the heading-slug counter. Then serialize the new snapshot from
+   `MarkdownPlan.root` (never from the flattened block/run view).
 
 Identity is a two-tier predicate:
 
 - `eq(a, b)` = `(kind, lane, iso, isolation_tag, island_tag, island_inline)`
-  equal **and** `content_hash` equal. The unchanged-anchor test that trim and
-  LCS anchor on.
+  equal **and** `content_hash` equal. This is the unchanged-anchor test for trim
+  and LCS.
 - `compat(a, b)` = `(kind, lane, iso, isolation_tag, island_tag,
-  island_inline)` equal, content may differ. The edit-inside-vs-replace gate.
+  island_inline)` equal, while content may differ. This is the
+  edit-inside-vs-replace gate.
 
 Content decides changed-vs-unchanged, never identity. Identity is alignment
 position plus `compat`. Duplicates disambiguate by order, which alignment
 gives for free.
 
-`reconcile_children` is: ambiguity-guarded two-ended trim under `eq`, then LCS on
-the residual middle under `eq` with match-late backtrack, then a
-`content_hash`-keyed in-order move match on the leftovers, then a
-front-surplus-aware positional zip under `compat`, then mint fresh for anything
-left. A node matched under `eq` has an equal `content_hash`, so its subtree is
-byte-identical and its ids are preserved without recursing. Only `compat` carries
-(content differs) recurse to re-align changed children.
+`reconcile_children` runs five steps at each sibling list:
+
+1. Ambiguity-guarded two-ended trim under `eq`.
+2. LCS on the residual middle under `eq` with match-late backtrack.
+3. `content_hash`-keyed in-order move match on the leftovers.
+4. Front-surplus-aware positional zip under `compat`.
+5. Mint fresh ids for anything left.
+
+A node matched under `eq` has an equal `content_hash`, so its subtree is
+byte-identical and its ids are preserved without recursing. Only `compat`
+carries (where content differs) recurse to re-align changed children.
 
 Edit-scenario requirements:
 
-- **`content_hash` is a recursive Merkle digest** over `kind, lane, iso,
-  isolation_tag, island_tag, island_inline`
-  (`crates/nteract-markdown-engine/src/lib.rs:830-848`), the rendering-salient
-  attrs, `copy_text` for leaves, and each child's hash in document order. A
-  flat `copy_text` scalar would compare a formatting-only edit (`the cat sat`
-  to `the *cat* sat`) equal at the parent, silently dropping the edit. "Equal
-  `content_hash` implies subtree byte-identical" is what the subtree
-  short-circuit and the `eq` anchor depend on.
+- **`content_hash` is a recursive Merkle digest**
+  (`crates/nteract-markdown-engine/src/lib.rs:830-848`). It covers `kind, lane,
+  iso, isolation_tag, island_tag, island_inline`, rendering-salient attrs,
+  `copy_text` for leaves, and each child's hash in document order. A flat
+  `copy_text` scalar would compare a formatting-only edit (`the cat sat` to
+  `the *cat* sat`) equal at the parent, silently dropping the edit. Both the
+  subtree short-circuit and the `eq` anchor depend on "equal `content_hash`
+  implies subtree byte-identical."
 - **The structural tuple includes `isolation_tag`, `island_tag`, and
-  `island_inline`** (`crates/nteract-markdown-engine/src/lib.rs:96-109`), so
-  two isolated nodes of the same `IsolationKind` (`<video>` to `<iframe>`) are
-  not `compat` and remount instead of aliasing. `island_tag` covers MDX
-  components (`<Frog />` to `<Chart />`); `island_inline` distinguishes block
-  vs inline JSX islands for the same component tag.
+  `island_inline`** (`crates/nteract-markdown-engine/src/lib.rs:96-109`). Two
+  isolated nodes of the same `IsolationKind` (`<video>` to `<iframe>`) are
+  therefore not `compat` and remount instead of aliasing. `island_tag` covers
+  MDX components (`<Frog />` to `<Chart />`); `island_inline` distinguishes
+  block vs inline JSX islands for the same component tag.
 
-The front-surplus zip hard-codes an insert-above preference: surplus leading
-nodes with no `eq` match mint fresh before the remainder zips, so a block inserted
-above an edited block does not steal the edited block's id. This sacrifices the
-symmetric insert-below-adjacent-to-edit direction; both are pinned by tests.
+The front-surplus zip hard-codes an insert-above preference. Surplus leading
+nodes with no `eq` match mint fresh ids before the remainder zips, so a block
+inserted above an edited block does not steal the edited block's id. This
+sacrifices the symmetric insert-below-adjacent-to-edit direction; both are
+pinned by tests.
 
 The previous plan rides in as an opaque snapshot threaded through the projector.
-The existing stateless `project_markdown` is kept as the cold path: it calls the
-reconciled entry with an empty snapshot and discards the returned one, so every
-node is fresh and existing call sites are unchanged. A consumer that wants
-stability threads the snapshot back in. The whole identity matrix runs as FFI-free
-`cargo` tests because the engine stays a pure function of `(source, prev-snapshot)`.
+The existing stateless `project_markdown` stays as the cold path: it calls the
+reconciled entry with an empty snapshot and discards the returned snapshot.
+Every node is fresh, and existing call sites remain unchanged. A consumer that
+wants stability threads the snapshot back in. Because the engine stays a pure
+function of `(source, prev-snapshot)`, the whole identity matrix runs as
+FFI-free `cargo` tests.
 
 ## Behavioral coverage (Implemented tests)
 
@@ -181,7 +188,7 @@ stability threads the snapshot back in. The whole identity matrix runs as FFI-fr
   children.
 - `from_wire` must be total: a version skew or malformed bytes return `Default`
   (cold start, every node fresh), never a panic.
-- The LCS middle is O(m*n) per sibling level; a pathological flat list or a huge
+- The LCS middle is O(m*n) per sibling level. A pathological flat list or huge
   table wants a length-threshold fallback or a Myers O(ND) upgrade before very
   large documents.
 

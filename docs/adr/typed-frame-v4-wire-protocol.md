@@ -4,16 +4,16 @@
 
 ## Context
 
-Every peer in the nteract desktop world speaks the same byte protocol over a Unix socket: the Tauri relay inside the desktop app, the daemon (`runtimed`), the runtime-agent subprocess, the `runt-mcp` proxy, the Python bindings, and (per `docs/adr/identity-and-trust.md`) future hosted-room WebSocket bridges. The protocol is `notebook-wire` v4 typed frames on top of a 5-byte preamble.
+Every peer in the nteract desktop world speaks the same byte protocol over a Unix socket (or a WebSocket for hosted-room bridges): the Tauri relay inside the desktop app, the daemon (`runtimed`), the runtime-agent subprocess, the `runt-mcp` proxy, the Python bindings, and hosted-room bridges (see `docs/adr/identity-and-trust.md`). The protocol is `notebook-wire` v4 typed frames on top of a 5-byte preamble.
 
 The wire crate (`crates/notebook-wire/src/lib.rs`) is intentionally tiny: magic bytes, protocol-version constant, the `NotebookFrameType` enum, per-type size limits, and the `SessionControlMessage` shapes. Framing itself lives one crate up (`crates/notebook-protocol/src/connection/framing.rs`). Everything heavier (Automerge sync, JSON request/response, CBOR presence, blob uploads) is layered on top.
 
 This ADR pins down what every peer must agree on so the format does not silently drift between Rust, the `packages/runtimed` TypeScript surface, the Python client, and any future browser transport. The semantic neighbors:
 
-- `docs/adr/identity-and-trust.md` — who is allowed to send which frame.
-- `docs/adr/document-split.md` — what `AutomergeSync` / `RuntimeStateSync` / `CommsDocSync` / `PoolStateSync` actually carry.
-- `docs/adr/execution-pipeline.md` — how `Request` / `Response` / `SessionControl` thread through cell execution.
-- `docs/adr/blob-storage-and-content-addressing.md` — what `PUT_BLOB` is moving and where it lands.
+- `docs/adr/identity-and-trust.md`: who is allowed to send which frame.
+- `docs/adr/document-split.md`: what `AutomergeSync` / `RuntimeStateSync` / `CommsDocSync` / `PoolStateSync` actually carry.
+- `docs/adr/execution-pipeline.md`: how `Request` / `Response` / `SessionControl` thread through cell execution.
+- `docs/adr/blob-storage-and-content-addressing.md`: what `PUT_BLOB` is moving and where it lands.
 
 This document is the framing layer underneath all of them.
 
@@ -66,7 +66,7 @@ Both surfaces share the same 100 MiB outer ceiling (`MAX_FRAME_SIZE`) and the sa
 
 The fact that the same protocol-version preamble gates two different framing rules is intentional: pool/settings predate the typed-frame layer and were not worth migrating. New channels should adopt typed framing.
 
-## Decision 3: Eleven frame types, fixed numbering
+## Decision 3: Twelve frame types, fixed numbering
 
 `NotebookFrameType` is a `#[repr(u8)]` enum. Adding a new type requires a new byte, a new variant, and a CI-enforced contract test (`cargo test -p notebook-protocol`). The current set:
 
@@ -83,7 +83,9 @@ The fact that the same protocol-version preamble gates two different framing rul
 | `0x08` | `PutBlob` | Framed binary (see Decision 6) | client → daemon |
 | `0x09` | `CommsDocSync` | Binary, raw `automerge::sync::Message` bytes (`CommsDoc`) | bidirectional |
 | `0x0a` | `CommentsDocSync` | Binary, raw `automerge::sync::Message` bytes (`CommentsDoc`) | bidirectional |
-| `0x0b` | `KeyedDocSync` | `u32 header_len` + JSON `KeyedDocFrameHeader {kind, id, epoch}` + `automerge::sync::Message` bytes for one keyed document | bidirectional, per kind: clients send it only for kinds in `ProtocolCapabilities::keyed_doc_kinds`, and a runtime agent only for kinds in the coordinator's `runtime_agent_capabilities` session-control message; a peer subscribes by sending a frame, and refused writes yield a `doc_resync` session-control message |
+| `0x0b` | `KeyedDocSync` | `u32 header_len` + JSON `KeyedDocFrameHeader {kind, id, epoch}` + `automerge::sync::Message` bytes | bidirectional (per capability) |
+
+For `KeyedDocSync` (`0x0b`), clients send only kinds listed in `ProtocolCapabilities::keyed_doc_kinds`, and runtime agents send only kinds listed in the coordinator's `runtime_agent_capabilities` session-control message. A peer subscribes by sending a frame; refused writes return a `doc_resync` session-control message.
 
 ### Direction is policy, not encoding
 
@@ -197,13 +199,13 @@ The capability handshake (`ProtocolCapabilities::put_blob`) advertises `single_f
 
 After the handshake, the daemon sends a `ProtocolCapabilities` (for `NotebookSync`) or `NotebookConnectionInfo` (for `OpenNotebook` / `CreateNotebook`) struct. Both flatten `ProtocolCapabilities`. The fields that matter for the wire layer:
 
-- `protocol: "v4"` — string for backward-compatible string matching.
-- `protocol_version: 4` — numeric for explicit comparison.
-- `daemon_version` — e.g. `"2.0.0+abc123"`, useful for crash reports.
-- `put_blob.single_frame_max` — defaults to `frame_size_limits(PUT_BLOB).cap`. A future daemon could narrow this without breaking older clients.
-- `put_blob.multipart` — whether `Part` headers are supported. Always `true` today.
-- `put_blob.ephemeral_supported` — whether `durability = "ephemeral"` is honored. Always `true` today.
-- `actor_label` / `connection_scope` — populated from the identity layer (see Decision 3 of the identity ADR).
+- `protocol: "v4"`: string for backward-compatible string matching.
+- `protocol_version: 4`: numeric for explicit comparison.
+- `daemon_version`: e.g. `"2.0.0+abc123"`, useful for crash reports.
+- `put_blob.single_frame_max`: defaults to `frame_size_limits(PUT_BLOB).cap`. A future daemon could narrow this without breaking older clients.
+- `put_blob.multipart`: whether `Part` headers are supported. Always `true` today.
+- `put_blob.ephemeral_supported`: whether `durability = "ephemeral"` is honored. Always `true` today.
+- `actor_label` / `connection_scope`: populated from the identity layer (see Decision 3 of the identity ADR).
 
 ## Decision 7: Handshake variants pick the channel, not the framing
 
@@ -375,18 +377,16 @@ If the same upload were 40 MiB, step 3 would fail outbound with `"outbound frame
 
 The phase fields are deliberately ordered so a later snapshot never represents less progress than an earlier one (modulo the `failed` terminal). Clients can treat them as monotonic per-connection.
 
-## Open Questions
+## Open Follow-ups
 
-1. **`Request` cap of 16 MiB feels high.** It exists because `SendComm` envelopes carry widget buffers that JSON-expand ~4x from binary. A 4 MiB widget buffer becomes ~16 MiB on the wire. Moving widget buffers off the `Request` channel and onto `PutBlob` (with comm IDs that reference the resulting blob hash) would let `Request` drop to ~1 MiB. Tracked as a follow-up.
+1. **Lower the `Request` cap from 16 MiB.** `SendComm` envelopes currently JSON-expand binary widget buffers ~4x (a 4 MiB buffer becomes ~16 MiB on the wire). Moving widget buffers onto `PutBlob` and passing blob hashes in comm requests lets `Request` drop to ~1 MiB.
+2. **Stream large `Response` payloads.** At 64 MiB, `Response` is the largest single allocation (`DocBytes`, `HistoryResult`, large completions). Exceeding the cap drops the connection and forces a full room resync. Streaming multi-frame responses with an end marker would bound peak memory.
+3. **Separate runtime-agent and notebook request/response frames.** `0x01`/`0x02` carry either notebook or runtime-agent envelopes depending on the handshake channel, with no wire-level discriminator. A misrouted frame deserializes into the wrong schema. Use distinct frame types or an explicit `kind` field in a future protocol bump.
+4. **Emit correlated `Response` frames on hosted `Request` paths.** Hosted rooms currently acknowledge `execute_cell` through `SessionControl` (`cloud_frame_accepted` / `cloud_frame_rejected`) rather than a correlated `Response` envelope.
 
-2. **`Response` cap of 64 MiB is the largest single allocation in the protocol.** `DocBytes`, `HistoryResult`, and large completion replies live here. If a runaway response triggers the cap, the connection drops and the room re-syncs from scratch. There is no streaming path for large responses today; everything is one frame. A future improvement would be a streaming response framing (multiple `Response` frames with the same id, terminated by an end marker).
+## Open Questions (post-v4)
 
-3. **Forward-compat is daemon-to-client only.** A v5 daemon can send a v4 client an unknown frame type and the v4 client will skip it. The opposite direction is closed by the preamble check. If we ever want client-side frame extensions (e.g., a future browser client that emits a new frame type the daemon doesn't recognize), we need a separate capability-negotiation step or a relaxed preamble policy. Not v4.
-
-4. **Pool, SettingsSync, handshake, and capability messages require untyped framing in v4.** Pool, SettingsSync, the handshake JSON, and the post-handshake capability JSON all use the untyped framing. Migrating them to typed frames would require a v5 protocol bump. Worth doing as part of a future hosted-room WebSocket transport, where the URL path can carry the channel and the framing can be consistent.
-
-5. **Idle-peer timeout is the only liveness check.** There is no application-layer heartbeat on typed-frame connections. Presence has heartbeats (`PresenceMessage::Heartbeat`) but those are room-level, not connection-level. A peer that stops sending Presence but keeps sending Automerge sync will not be detected as orphaned. Worth considering an explicit `SessionControl::Ping` for v5.
-
-6. **No wire-level signature or MAC.** The identity ADR mandates server-side per-frame actor validation against `AuthenticatedConnection.principal`, but the bytes themselves carry no cryptographic binding. A trusted intermediary (Tauri relay) could rewrite an outbound frame's payload before forwarding. v1 inherits the same-UID trust model from the Unix socket; hosted rooms will inherit the TLS trust model from the WebSocket. Change-level signed authorship (Keyhive direction) is the eventual fix.
-
-7. **Runtime-agent reuses Request/Response type bytes.** `0x01`/`0x02` carry either `NotebookRequestEnvelope`/`NotebookResponseEnvelope` or `RuntimeAgentRequestEnvelope`/`RuntimeAgentResponseEnvelope` depending on which connection it is. There is no way to tell them apart from the type byte alone; the handshake variant determines the payload shape. A misrouted frame (e.g., a buggy proxy that crosses the streams) would deserialize incorrectly. Worth either a distinct type-byte block for runtime-agent traffic or an explicit `kind` field in the envelope.
+1. **Client-to-daemon forward compatibility.** Unknown frame skipping is daemon-to-client within v4; relaxing client-originated extensions requires capability negotiation or a preamble policy change in v5.
+2. **Typed framing for legacy channels.** `Pool`, `SettingsSync`, the handshake JSON, and untyped capability messages remain untyped in v4; unifying them requires a v5 bump.
+3. **Connection-level heartbeat.** Idle-peer timeout is the only liveness check; `PresenceMessage::Heartbeat` is room-level. Evaluate `SessionControl::Ping` for v5.
+4. **Wire-level signatures.** Server-side per-frame actor checks bind authorship to `AuthenticatedConnection.principal`, while Unix sockets rely on same-UID trust and hosted rooms on TLS. Change-level signed authorship (Keyhive direction) is the long-term fix.

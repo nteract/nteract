@@ -589,11 +589,11 @@ When adding new UI, define the semantic role first, then resolve it through all 
 
 ## Typography
 
-The system uses the native platform sans stack for application UI. This keeps the app feeling like a desktop tool and avoids a branded web-app voice. Type should be modest in scale: 30px is reserved for first-run onboarding titles, 18px for window-level headings, 14px for working UI, and 12px or 10px for toolbar labels, metadata, badges, and helper text.
+The system uses the native platform sans stack for application UI. This keeps the app feeling like a desktop tool and avoids a branded web-app voice. Type should stay modest in scale. Reserve 30px for first-run onboarding titles and 18px for window-level headings. Use 14px for working UI, and 12px or 10px for toolbar labels, metadata, badges, and helper text.
 
 Code, execution counts, inline package names, and collapsed source previews use a compact monospaced stack. Monospaced text is part of the product identity: it makes notebook state feel inspectable and exact. Use tabular numbers for execution counters and duration values.
 
-Rendered notebook documents have their own typography. Markdown and HTML outputs use 16px body text with a 1.65 line-height, normal kerning, and optimized legibility. Classic rendered documents use the same system UI family as the application. Cream rendered documents switch to a serif document face, led by KaTeX_Main with Georgia and Times New Roman fallbacks, so prose and equations feel warmer and more book-like while tables, controls, SVG, canvas, and form elements stay in the UI font.
+Rendered notebook documents have their own typography. Markdown and HTML outputs use 16px body text with a 1.65 line-height, normal kerning, and optimized legibility. Classic rendered documents use the same system UI family as the application. Cream rendered documents switch to a serif document face, led by KaTeX_Main with Georgia and Times New Roman fallbacks, so prose and equations feel warmer and more book-like. Tables, controls, SVG, canvas, and form elements stay in the UI font.
 
 Rendered document headings are larger and heavier than app headings: h1 is 30px, h2 is 24px, h3 is 20px, h4 is 18px, h5 is 16px, and h6 is 14px semibold. Keep heading line-height tight at 1.2. Use the document font for headings in prose outputs, but preserve the monospace font inside code blocks and inline code.
 
@@ -611,7 +611,7 @@ Spacing is based on small 4px and 8px increments. Prefer tight groups with clear
 
 ## Elevation & Depth
 
-Depth is functional and sparse. Most hierarchy comes from borders, tonal surfaces, opacity, and color rather than heavy shadows. Buttons and inputs may use very light shadows; menus and dialogs may float with medium shadows; drag previews may use the strongest shadow because they need to detach clearly from the notebook.
+Depth is functional and sparse. Most hierarchy comes from borders, tonal surfaces, opacity, and color rather than heavy shadows. Buttons and inputs may use very light shadows, while menus and dialogs float with medium shadows. Drag previews use the strongest shadow so they detach clearly from the notebook.
 
 Overlays should use a dark scrim and a short scale/fade entrance. Popovers and menus are compact, border-defined, and lightly elevated. Avoid glassmorphism, large blurred backdrops, dramatic gradients, or decorative depth.
 

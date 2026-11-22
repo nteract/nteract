@@ -49,9 +49,12 @@ identity and environment facts still arrive from different host adapters:
 
 If each host turns those facts into local strings and local UI affordances, the
 shared shell will drift. The user-facing result is especially confusing around
-agents: a user needs to know whether Kyle edited a notebook, Codex acted on
-Kyle's behalf, an anonymous public viewer is present, or a runtime peer wrote
-execution output.
+agents. A user needs to distinguish between four cases:
+
+- Kyle edited a notebook.
+- Codex acted on Kyle's behalf.
+- An anonymous public viewer is present.
+- A runtime peer wrote execution output.
 
 ## Goals
 
@@ -92,18 +95,18 @@ Use these terms consistently in UI copy, component names, and docs.
 | Public viewer | Authorized anonymous read access through an explicit public ACL row, not a fallback guest identity. |
 
 The principal identifier is the authority. Display names, emails, avatars, and
-labels are projections from authenticated/host-owned facts. Operators are
-accepted attribution supplied by a client or runtime connection; their kind is
-useful UI information, but it is not proof that the process really is Desktop,
-Codex, Python, or any other claimed operator. Access scope and capability
-projections are also advisory for rendering only; enforcement stays in the host,
+labels are projections from authenticated or host-owned facts.
+
+Operators are accepted attribution from a client or runtime connection. Their
+kind is useful UI information, not proof that the process really is Desktop,
+Codex, Python, or another claimed operator. Access scope and capability
+projections are advisory for rendering only. Enforcement stays in the host,
 room, or daemon authority.
 
-A runtime operator projects to a runtime-kind actor when it is visible in the
-UI. `runtime_peer` should not become a value in `NotebookShellAccessLevel`;
-model it as a separate capability and actor kind because runtime peers author
-execution lifecycle/output state, not notebook structure, sharing, or package
-management.
+A runtime operator projects to a runtime-kind actor when visible in the UI. Do
+not add `runtime_peer` to `NotebookShellAccessLevel`. Model it as a separate
+capability and actor kind instead. Runtime peers author execution lifecycle and
+output state, not notebook structure, sharing, or package management.
 
 ## Target Roles and Scenarios
 
@@ -113,7 +116,7 @@ Elements and production host adapters should cover these states first:
 |----------|----------------------------------|
 | Desktop local owner | Shows local identity, editable notebook controls, executable runtime, and manageable packages when daemon state allows. |
 | Desktop read-only file | Shows local identity, readable notebook state, disabled edit affordances, and environment facts that remain safe to inspect. |
-| Desktop remote room | Shows desktop app plus local daemon/socket identity connecting to a remote service with a stored API key or credential, without treating cloud browser auth as the only remote identity model. |
+| Desktop remote room | Shows desktop app and local daemon/socket identity connecting to a remote service with a stored API key or credential. Does not treat cloud browser auth as the only remote identity model. |
 | Cloud public viewer | Shows public viewer access, read-only controls, no collaborator identity leakage, and package/runtime facts safe for public notebooks. |
 | Cloud authenticated editor | Shows signed-in identity, editor affordances allowed by ACL-derived capabilities, and gated sharing/package/runtime controls. |
 | Cloud owner | Shows owner identity, sharing management, and the same notebook cells/header/rail as desktop. |
@@ -135,8 +138,8 @@ Elements and production host adapters should cover these states first:
    adapters only. The target projection carries the verified principal,
    accepted operator, and display metadata as structured host-owned facts.
    `NotebookShellCapabilities.access.actor` and
-   `NotebookShellCapabilities.runtime.actor` carry this projection today;
-   fallback helpers may parse durable labels while hosts grow richer profile
+   `NotebookShellCapabilities.runtime.actor` carry this projection today.
+   Fallback helpers may parse durable labels while hosts grow richer profile
    data.
 3. The actor projection must let UI derive human, local, public, agent,
    runtime, system, and unknown actor presentations from principal source plus
@@ -198,10 +201,12 @@ Elements and production host adapters should cover these states first:
 
 1. Elements should render the production nteract identity and environment
    components with fixture projections.
-2. Elements scenarios should include at least: local owner, public viewer, cloud
-   editor, cloud owner, delegated agent, runtime unavailable, read-only local,
-   desktop remote room, one-principal/multiple-operator, mixed-IdP,
-   credential-attention, runtime peer, and untrusted dependencies.
+2. Elements scenarios should include at least these states:
+   - local owner, read-only local, and desktop remote room
+   - public viewer, cloud editor, and cloud owner
+   - delegated agent and one-principal/multiple-operator
+   - mixed-IdP and credential-attention
+   - runtime unavailable, runtime peer, and untrusted dependencies
 3. Elements must remain runtime-free: no daemon, sync, generated WASM,
    iframe-host, Cloudflare, auth-provider, or local filesystem side effects.
 4. Elements should document the source boundary for every surface: which facts
@@ -213,10 +218,10 @@ Elements and production host adapters should cover these states first:
 6. Current Elements fixtures cover the scenario set above. Future catalog work
    should reuse `ElementsNotebookScenario` instead of reintroducing page-local
    identity, access, runtime, package, or trust mock state.
-7. Elements should call out convergence gaps directly: when cloud has a richer
-   hosted behavior or desktop has a richer daemon/local behavior, the catalog
-   should show the shared projection and identify which host-owned callback or
-   authority still needs to be wired.
+7. Elements should call out convergence gaps directly. When cloud has a richer
+   hosted behavior or desktop has a richer daemon/local behavior, show the
+   shared projection. Name which host-owned callback or authority still needs
+   to be wired.
 
 ## Shared Surface Projection
 
@@ -300,20 +305,21 @@ interface NotebookEnvironmentSurface {
 }
 ```
 
-Short-term code can keep deriving display-friendly `NotebookActorIdentity`
-objects and `NotebookEnvironmentSummary` cards from these surfaces, but new
-host adapter work should avoid adding more page-local strings that cannot map
-into the structured projection.
-Presentation helpers can derive actor categories such as agent, runtime, system,
-public, or human from the principal source and operator kind instead of storing a
-second enum that can drift. Display labels like "Codex for Kyle" are also
-derived from `operator` plus `principal`; they do not need a separate
-`onBehalfOf` field unless the product later models delegation chains between
-multiple principals.
-`source.provider` names the principal authority, not the credential transport:
-browser OAuth, an OIDC bearer token, and an Anaconda API key can all project the
-same Anaconda principal. The credential path stays in host/auth metadata; shared
-notebook UI sees provider `anaconda`.
+- **Adapter migration:** Short-term code can still derive display-friendly
+  `NotebookActorIdentity` objects and `NotebookEnvironmentSummary` cards from
+  these surfaces. New host adapter work should avoid adding page-local strings
+  that cannot map into the structured projection.
+- **Derived categories:** Presentation helpers can derive actor categories
+  (agent, runtime, system, public, or human) from the principal source and
+  operator kind. Do not store a second enum that can drift.
+- **Delegated labels:** Display labels like "Codex for Kyle" also derive from
+  `operator` plus `principal`. They do not need a separate `onBehalfOf` field
+  unless the product later models delegation chains between multiple principals.
+- **Provider vs. transport:** `source.provider` names the principal authority,
+  not the credential transport. Browser OAuth, an OIDC bearer token, and an
+  Anaconda API key can all project the same Anaconda principal. The credential
+  path stays in host/auth metadata, while shared notebook UI sees provider
+  `anaconda`.
 
 ## Placement
 
@@ -334,16 +340,16 @@ notebook UI sees provider `anaconda`.
 2. Desktop and cloud pass identity, access, and environment facts through shared
    shell props or shared view-model projections instead of duplicating component
    logic.
-3. `NotebookIdentityBadge`, `NotebookIdentityGroup`, and
-   `NotebookToolbarIdentity`, plus `NotebookCommandToolbar`,
-   `NotebookToolbarFrame`, and `NotebookEnvironmentSummary`, can render the
+3. `NotebookIdentityBadge`, `NotebookIdentityGroup`, `NotebookToolbarIdentity`,
+   `NotebookCommandToolbar`, `NotebookToolbarFrame`, and
+   `NotebookEnvironmentSummary` render without host imports. They cover the
    cloud owner, public viewer, delegated agent, local owner, desktop remote
    room, read-only, credential-attention, mixed-IdP, runtime-unavailable,
-   runtime-peer, and untrusted states without host imports.
+   runtime-peer, and untrusted states.
 4. Code-cell current-line, execution attribution, toolbar interaction state,
    and presence can be pointed at the same actor and interaction projections.
 5. The hosted public viewer path does not display anonymous viewers as named
-   collaborators, and public viewer presence remains connection-local or
+   collaborators. Public viewer presence remains connection-local or
    aggregate-only until a separate public-presence policy changes it.
 6. Shared components stay presentational. Auth, ACL mutation, trust mutation,
    package install, runtime launch, and file-system writes stay in host
@@ -361,7 +367,7 @@ notebook UI sees provider `anaconda`.
 4. Keep desktop and cloud adapters mapping their current facts into the shared
    identity, interaction, and environment projections as new host capabilities
    land.
-5. Keep package rail content package-focused and host-owned; render
+5. Keep package rail content package-focused and host-owned. Render
    `NotebookEnvironmentSummary` or a sibling shared component only where the
    product intentionally shows environment/access/runtime/trust summary facts.
 6. Connect execution/cell attribution to the shared actor projection.

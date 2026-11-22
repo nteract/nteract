@@ -7,44 +7,44 @@
 hosted storage/API decisions
 
 This memo grounds a possible Markdown/MDX document surface in the current
-nteract source tree and current editor/CRDT ecosystem. It is intentionally not an
-ADR yet. The goal is to identify the smallest credible product and architecture
-path for a calm Markdown Plan editor that can pair well with LLM authors, render
-richly, support presence/comments, publish to Cloud with ACLs, and eventually
-host constrained MDX-style components.
+nteract source tree and current editor/CRDT ecosystem. It is intentionally not
+an ADR yet. The goal is to find the smallest credible product and architecture
+path for a calm Markdown Plan editor. It needs to pair well with LLM authors,
+render richly, support presence and comments, publish to Cloud with ACLs, and
+eventually host constrained MDX-style components.
 
 ## Prototype Lessons, June 2026
 
-A hosted `/m` prototype proved the document type is promising, but also showed
-that a standalone Markdown app route is too easy to let drift away from the
-notebook product shell. The useful pieces should be harvested first, while the
-route, storage, and dashboard decisions stay in memo/RFC territory:
+A hosted `/m` prototype proved the document type is promising. It also showed
+that a standalone Markdown app route drifts too easily from the notebook product
+shell. Harvest the useful pieces first while route, storage, and dashboard
+decisions stay in memo/RFC territory:
 
-- Document title chrome should be shared with notebooks, including the
-  local-first title editing affordance and its no-layout-jump behavior.
-- View/edit mode controls, source/rendered/split controls, and outline panels
-  should use shared document controls with document-specific labels rather than
-  one-off Markdown route chrome.
-- Hosted catalog/auth state should be a pure projection over browser auth plus
-  the first-party app-session cookie. Notebook and future document catalogs
-  should use the same session-keyed cache pattern so `/n`, `/m`, or a future
-  dashboard do not rediscover auth behavior independently.
-- The first screen after creating a Markdown document must optimize time to
-  first written thought: create should land in edit/source-capable mode without
-  making the author click through view mode first.
-- The rendered Markdown and source editor should share document alignment and
-  width rules. Switching rendered/source/split should feel like a mode change,
+- Share document title chrome with notebooks, including the local-first title
+  editing affordance and its no-layout-jump behavior.
+- Use shared document controls with document-specific labels for view/edit mode,
+  source/rendered/split controls, and outline panels, rather than one-off
+  Markdown route chrome.
+- Keep hosted catalog/auth state as a pure projection over browser auth plus the
+  first-party app-session cookie. Share the same session-keyed cache pattern so
+  `/n`, `/m`, or a future dashboard do not rediscover auth behavior
+  independently.
+- Optimize time to first written thought on creation. Creating a Markdown
+  document should land directly in edit/source-capable mode without requiring a
+  click through view mode first.
+- Share document alignment and width rules between rendered Markdown and the
+  source editor. Switching rendered/source/split should feel like a mode change,
   not a page reflow.
-- Frontmatter can remain body content for now, but local files need a future
+- Keep frontmatter as body content for now. Local files still need a future
   association story for cloud document id, revision id, and published URL.
-- Do not add durable D1 tables, Durable Object classes, or public `/m` product
+- Defer durable D1 tables, Durable Object classes, and public `/m` product
   commitments until the dashboard/home route, sharing vocabulary, and document
   catalog model are designed alongside notebooks.
 
-Concrete follow-through from this prototype should be small PRs before a new
+Ship concrete follow-through from this prototype as small PRs before any new
 document route lands: shared title chrome, parameterized document controls,
-session-keyed hosted catalog cache, and this memo update. Those are generally
-useful even if the Markdown route is delayed or redesigned.
+session-keyed hosted catalog cache, and this memo update. Those pieces help even
+if the Markdown route is delayed or redesigned.
 
 ## Scope
 
@@ -203,18 +203,18 @@ boundary that Markdown documents should reuse:
   live-room recovery/cache.
 - `apps/notebook-cloud/AGENTS.md:66` requires explicit public viewer state via a
   D1 public ACL row.
-- `docs/adr/hosted-notebook-artifacts.md:35` defines durable published artifacts
-  as snapshot bundles.
-- `docs/adr/hosted-notebook-artifacts.md:169` keeps the cloud viewer a static
-  bundle, not a forked notebook UI.
-- `docs/adr/document-split.md:308` says cross-document head correlation belongs
-  at the publish boundary, not in live docs.
+- `docs/adr/hosted-notebook-artifacts.md` (Decision 1) defines durable published
+  artifacts as snapshot bundles.
+- `docs/adr/hosted-notebook-artifacts.md` (Decision 5) keeps the cloud viewer a
+  static bundle, not a forked notebook UI.
+- `docs/adr/document-split.md` (Open Question 4) says cross-document head
+  correlation belongs at the publish boundary, not in live docs.
 - `docs/adr/hosted-room-authorization.md:97` defines explicit public read ACLs.
-- `docs/adr/hosted-room-authorization.md:230` keeps anonymous public presence a
-  product policy layered over ACLs.
-- `docs/adr/identity-and-trust.md:431` states that publish/import boundaries
-  cannot trust historical local Automerge attribution; hosted rooms record the
-  publisher/importer identity they can vouch for.
+- `docs/adr/hosted-room-authorization.md` (Decision 4) keeps anonymous public
+  presence a product policy layered over ACLs.
+- `docs/adr/identity-and-trust.md` (Decision 6) states that publish/import
+  boundaries cannot trust historical local Automerge attribution; hosted rooms
+  record the publisher/importer identity they can vouch for.
 
 ## External Check, 2026-06-12
 
@@ -305,9 +305,9 @@ replicate `MarkdownDoc`, `CommentsDoc`, and any runtime/output/component sidecar
 state through the same room/snapshot/ACL patterns as notebooks.
 
 Automerge text gives natural collaborative source editing. Long LLM-authored
-Markdown files mean we should evolve document versioning and compaction sooner:
-record a durable version, copy the visible Automerge state into a fresh document
-when history gets too heavy, and keep old snapshots as version history.
+Markdown files mean we should evolve versioning and compaction sooner. Record a
+durable version, copy visible Automerge state into a fresh document when history
+grows heavy, and keep old snapshots as version history.
 
 ### 2. Keep The Viewer Zen And Projection-Driven
 
@@ -430,27 +430,27 @@ Source editor presence can continue to originate in CodeMirror line/column and
 offset positions. Rendered-view presence can be projected using source spans.
 Hover/focus in rendered mode can publish block/anchor/output/component targets.
 
-Public viewer presence should inherit the current hosted policy: authenticated
-viewers can participate normally, anonymous public viewers remain local-only or
+Public viewer presence should inherit the current hosted policy. Authenticated
+viewers participate normally; anonymous public viewers remain local-only or
 aggregate-only until the open hosted presence policy is settled.
 
 ### 7. Start As A Shared Document Surface, Package Later
 
 The pragmatic product route is:
 
-1. Add a tailored Markdown document surface that shares notebook app chrome,
-   title editing, mode controls, rail/outline, projection, markdown typography,
-   presence plumbing, comments projection, and cloud ACL/publish
-   infrastructure.
-2. Add MCP tools for Markdown document creation/update/commenting/publish.
+1. Add a tailored Markdown document surface that shares notebook infrastructure:
+   app chrome, title editing, mode controls, rail/outline, projection, markdown
+   typography, presence plumbing, comments projection, and cloud ACL/publish.
+2. Add MCP tools for Markdown document creation, update, commenting, and
+   publish.
 3. Package as a separate app only after the route proves the document model and
    editing loop.
 
-The first product question is whether documents belong under `/m`, under a
+The first product question is where documents belong: under `/m`, under a
 combined dashboard/home route, or under a kind-aware hosted catalog. The
-prototype showed that a new route can work technically, but user navigation,
-creation, sharing, recency, and naming should probably be solved with the
-notebook home rather than beside it.
+prototype showed a new route works technically. Still, navigation, creation,
+sharing, recency, and naming should probably be solved alongside the notebook
+home rather than as an isolated `/m` route.
 
 Suggested Cloud API shape:
 
@@ -461,102 +461,100 @@ POST /api/markdown-documents/:id/publish
 ```
 
 Return a document id, edit URL, live URL, and publish URL. Store durable
-snapshots in the same R2/D1 style as notebooks, with a document-kind field rather
-than a parallel hosting system.
+snapshots in the same R2/D1 style as notebooks, using a document-kind field
+rather than a parallel hosting system.
 
 Suggested MCP surface: create/get/update/publish Markdown documents, attach
-artifacts, and create/reply/resolve comments. Keep the first tool set small and
-let range-edit or component-specific tools appear when the route proves the
-workflow.
+artifacts, and create/reply/resolve comments. Keep the first tool set small; add
+range-edit or component-specific tools once the route proves the workflow.
 
 ## Open Comments
 
-OC-1: Document model
+### OC-1: Document model
 
 Use Automerge text/string for `body` initially. Treat compaction and versioning
-as part of the product path, not as a blocker: record a version, copy visible
-state into a fresh Automerge document when history gets heavy, and retain old
+as part of the product path, not a blocker. Record a version, copy visible state
+into a fresh Automerge document when history gets heavy, and retain old
 snapshots as version history. Benchmark LLM-heavy editing so we know when to
 compact.
 
-OC-2: Projection schema v2
+### OC-2: Projection schema v2
 
 The Rust engine has richer structure than the TypeScript plan exposes. Island
 projection fields (`content_hash`, `island_tag`, `island_inline`) now serialize
-in Rust JSON (`crates/nteract-markdown-engine/src/render_json.rs:210`) but are
+in Rust JSON (`crates/nteract-markdown-engine/src/render_json.rs:210`), but are
 missing from the TypeScript `MarkdownProjectionBlock` interface. Add
 `isolatedRegions`, `root` or a stable tree summary, parse diagnostics,
 `outputArtifacts`, and `componentArtifacts` to the WASM/TS schema before
-building much UI on top of the flattened shape. Inline JSX islands are created
+building more UI on top of the flattened shape. Inline JSX islands are created
 at `crates/nteract-markdown-engine/src/lib.rs:1204`.
 
-OC-3: Editor choice
+### OC-3: Editor choice
 
-Stay with CodeMirror plus projection. We already have full block knowledge from
-the markdown engine, and CodeMirror is the raw projection editor. Rich rendered
+Stay with CodeMirror plus projection. The markdown engine already gives us full
+block knowledge, and CodeMirror is the raw projection editor. Rich rendered
 editing should lean into the projection/block model rather than introduce a
 separate ProseMirror/Milkdown/Lexical document model.
 
-OC-4: MDX trust and component registry
+### OC-4: MDX trust and component registry
 
 Define the component registry before enabling live MDX rendering. Open question:
 is the registry per workspace, per Cloud room, per document, or per publisher?
 Also decide whether component implementations are bundled app components,
 uploaded artifacts, or MCP-created side files.
 
-OC-5: Comments ADR scope
+### OC-5: Comments ADR scope
 
 Either amend `notebook-comments-document.md` into a generic comments document
 ADR, or create a sibling `document-comments.md` ADR that references the notebook
 ADR and only changes locator types.
 
-OC-6: Public presence
+### OC-6: Public presence
 
 Hosted ADRs still leave public anonymous presence visibility open. Markdown
 publish should keep anonymous presence local/aggregate only until that decision
 is made.
 
-OC-7: Output lifecycle
+### OC-7: Output lifecycle
 
-When a code block changes, the output artifact should not disappear silently. The
-`source_hash` in the metadata comment should drive a visible stale state and an
-API path for reattaching/replacing the output.
+When a code block changes, the output artifact should not disappear silently.
+The `source_hash` in the metadata comment should drive a visible stale state and
+an API path for reattaching or replacing the output.
 
-OC-8: Import/publish attribution
+### OC-8: Import/publish attribution
 
 Cloud publish cannot trust local historical Automerge attribution. It should
 record the publisher/importer identity it can verify. Imported comments, if ever
 included, should carry imported authority fields rather than masquerading as
 cloud-stamped authorship.
 
-OC-9: Route versus app
+### OC-9: Route versus app
 
 Start as a shared document surface inside the hosted/desktop product shell.
 Package a separate app once the document model, comments, and Cloud posting flow
 are real. A new app or isolated route too early would duplicate
-rail/viewer/editor/auth infrastructure before the boundaries are known.
+rail/viewer/editor/auth infrastructure before boundaries are known.
 
-OC-10: File sync conflict policy
+### OC-10: File sync conflict policy
 
 Desktop syncing to a local `.md` file needs a conflict rule when both the
 Automerge document and filesystem file change. Likely policy: import external
-file edits as a new local actor/change when the file watcher sees a newer mtime,
-but preserve Automerge as the live collaboration source while the app is open.
+file edits as a new local actor/change when the file watcher sees a newer mtime.
+Preserve Automerge as the live collaboration source while the app is open.
 
 ## Suggested Next Spike
 
-1. Build an Elements fixture for a Markdown Plan shell that deliberately shares
-   notebook-like app chrome: title editing, document mode controls, source /
-   rendered / split controls, left rail outline, rendered Markdown, source
-   editor mode, rendered presence overlays, output-artifact placeholders, and
-   comments placeholders.
+1. Build an Elements fixture for a Markdown Plan shell sharing notebook-like app
+   chrome: title editing, document mode controls, source/rendered/split
+   controls, and left rail outline. Include rendered Markdown, source editor
+   mode, rendered presence overlays, output-artifact placeholders, and comments
+   placeholders.
 2. Extend the markdown projection engine to parse `<!-- nteract:output ... -->`
    comments after code blocks into output artifact references.
-3. Refresh TypeScript `MarkdownProjectionBlock` interface to match Rust island
-   fields (`content_hash`, `island_tag`, `island_inline`). Expose
-   `isolated_regions`, `root` or stable tree summary, parse diagnostics,
-   `outputArtifacts`, and `componentArtifacts` through the WASM/TypeScript
-   projection schema.
+3. Refresh TypeScript `MarkdownProjectionBlock` to match Rust island fields
+   (`content_hash`, `island_tag`, `island_inline`). Expose `isolated_regions`,
+   `root` or stable tree summary, parse diagnostics, `outputArtifacts`, and
+   `componentArtifacts` through the WASM/TypeScript projection schema.
 4. Draft a comments ADR amendment for generic document locators.
 5. Sketch the hosted catalog/dashboard shape before committing to `/m`-specific
    D1 tables or Durable Object classes.

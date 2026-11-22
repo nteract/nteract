@@ -1,4 +1,9 @@
-import { DATA_FORMAT_ADVICE, mediaGuide, mediaGuideIndex } from "./agent-media-guides.mjs";
+import {
+  DATA_FORMAT_ADVICE,
+  VISUAL_CHOICE_ADVICE,
+  mediaGuide,
+  mediaGuideIndex,
+} from "./agent-media-guides.mjs";
 import { identityProvider } from "./identity-provider.mjs";
 import { OAUTH_REFRESH_REUSE_SECONDS } from "./shared/oauth-grant.mjs";
 import {
@@ -633,6 +638,8 @@ Images are private Page assets, separate from Automerge history. The document
 contains a stable relative URL and alt text, never image bytes or an expiring
 signed URL. Each image read checks the Page's current permissions. Do not
 replace these URLs with public hosting or put base64 image data in Markdown.
+
+${VISUAL_CHOICE_ADVICE}
 
 ### Which path to use
 

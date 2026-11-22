@@ -73,9 +73,10 @@ Interrupt retains destructive host termination, discarding variables. Native
 variable-preserving interruption needs a host capability that can signal the
 buffer registered with Pyodide's `setInterruptBuffer` independently of a busy
 guest. On the qualified celld `6ab0d999` build, SharedArrayBuffer exists and local
-structured cloning retains its shared backing, but both LOADER environment
-transfer and cross-isolate RPC reject it; the browser Worker constructor is also
-absent. Local shared-memory support does not establish cross-isolate delivery.
+structured cloning retains its shared backing. However, both LOADER environment
+transfer and cross-isolate RPC reject it, and the browser Worker constructor is
+also absent. Local shared-memory support does not establish cross-isolate
+delivery.
 
 A separate Node worker-thread control with pinned Pyodide 0.28.3 interrupted a
 CPU loop through its native buffer and preserved the namespace. Unmodified

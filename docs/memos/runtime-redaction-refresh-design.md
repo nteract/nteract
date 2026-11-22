@@ -7,9 +7,9 @@
 The `[redact-opt]` daemon matcher optimizes the existing launch-time model:
 collect eligible environment values when the kernel starts, then redact matching
 text before RuntimeStateDoc or blob-store persistence. That remains the correct
-durable boundary for all kernels, but it cannot see secrets created later inside
-the kernel process by tools such as `python-dotenv`, SDK credential refreshers,
-or Deno code that mutates process-local environment state.
+durable boundary for all kernels. However, it cannot see secrets created later
+inside the kernel process by `python-dotenv`, SDK credential refreshers, or Deno
+code that mutates process-local environment state.
 
 The launcher-side cache keeps Python producer redaction cheap while preserving a
 bounded refresh window. It reduces the cost of rescanning `os.environ`, but it is
@@ -77,8 +77,8 @@ pub(crate) struct OutputRedactorHandle {
 ```
 
 An equivalent atomic-snapshot primitive is fine if the project avoids adding a
-dependency, but the key property is that output workers load the current
-`Arc<OutputRedactor>` at commit boundaries and then use an immutable
+dependency. The key property is that output workers load the current
+`Arc<OutputRedactor>` at commit boundaries, then use an immutable
 `&OutputRedactor` for that redaction operation. Candidate refresh builds a new
 snapshot off the hot path and swaps it into the handle. In-flight output may use
 the previous snapshot; later output observes the refreshed one.

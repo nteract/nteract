@@ -1,6 +1,6 @@
 # Arrow Manifest Durable Storage Design
 
-**Status:** Implemented, 2026-05-24 — save/load transforms, active-room GC,
+**Status:** Implemented, 2026-05-24. Save/load transforms, active-room GC,
 and characterization coverage landed; closed-room asset index remains open.
 
 ## Objective
@@ -29,9 +29,9 @@ binary table payload such as `application/vnd.apache.arrow.stream` or
 }
 ```
 
-That path works for a single selected table blob because
-`resolve_data_bundle()` rewrites the selected binary `ContentRef::Blob` to a
-top-level blob-ref MIME, and `convert_data_bundle()` reverses it on load.
+That path works for a single selected table blob. `resolve_data_bundle()`
+rewrites the selected binary `ContentRef::Blob` to a top-level blob-ref MIME,
+and `convert_data_bundle()` reverses it on load.
 
 Arrow stream manifests are different. The selected MIME is JSON:
 
@@ -147,7 +147,7 @@ For each durable slot, load:
    `content_type`.
 
 If the blob is missing, load keeps the manifest structurally intact but marks
-it unusable: drops only the manifest MIME from the loaded data bundle and
+it unusable. It drops only the manifest MIME from the loaded data bundle and
 preserves fallback siblings such as `text/plain` / `text/llm+plain`. A later
 renderer UX pass can add a manifest-level diagnostic field.
 
@@ -164,9 +164,9 @@ Retention has two separate cases:
 
 2. **Closed file-backed rooms (open gap).** RuntimeStateDoc outputs are not
    persisted into `NotebookDoc`. Saved `.ipynb` files contain output JSON, but
-   the GC walker scans active rooms, comm state, notebook-doc persisted
-   `.automerge` files, and execution records — not arbitrary saved `.ipynb`
-   files for output blob refs.
+   the GC walker scans only active rooms, comm state, notebook-doc persisted
+   `.automerge` files, and execution records. It does not scan arbitrary saved
+   `.ipynb` files for output blob refs.
 
 The durable JSON shape helps because `{ blob, size, content_type }` is
 self-describing and can be collected recursively once inside a structure the

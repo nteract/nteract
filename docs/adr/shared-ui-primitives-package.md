@@ -34,49 +34,44 @@ Two facts shape the fix:
 
 ## Decision
 
-Do not create a new package and do not copy components. **Alias sift at the
-app's literal components in the monorepo.** Add an `@` → repo `src` alias to
-sift's TypeScript and Vite configs, point sift's primitive imports at
-`@/components/ui/*` (the same specifier the app uses), delete sift's duplicate
-copies, and feed sift the app's token CSS so the shared primitives render with
-our palette.
+Do not create a new package and do not copy components. **Sift aliases the
+app's literal components in the monorepo.** Sift's TypeScript and Vite configs
+map `@` → repo `src`, primitive imports resolve `@/components/ui/*` (the same
+specifier the app uses), duplicate sift copies are removed, and sift imports the
+app's token CSS so shared primitives render with our palette.
 
-`src/components/ui/*` stays the single source of truth. It is already the
-design-sync surface; now sift consumes the same files. A primitive is edited once
+`src/components/ui/*` is the single source of truth. It is already the
+design-sync surface; sift consumes the same files. A primitive is edited once
 and every consumer — app, sift, and the guide — moves together.
 
 This is the general rule for the monorepo: **share UI by aliasing the real
-source, not by per-package copies.** A future package that needs a primitive
+source, not by per-package copies.** Any future package that needs a primitive
 aliases `@/components/ui/*` rather than vendoring its own.
 
-## Scope of the sift migration
+## Sift wiring rules
 
-Small and contained — only two real consumers:
+Sift consumes shared primitives directly through the `@` alias:
 
-- `sparkline.tsx` imports `Popover*` from sift's `ui/popover` → `@/components/ui/popover`.
-- `image-viewer.tsx` imports `Button` from sift's `ui/button` → `@/components/ui/button`.
-- sift's `ui/context-menu.tsx` is dead (nothing imports it) — delete.
-- sift's `lib/utils.ts` (`cn`) is byte-identical to the app's and, after the swap,
-  has no consumers — delete; the app components bring `@/lib/utils` through the alias.
-
-Plumbing:
-
-- `tsconfig.json`: add `"@/*": ["../../src/*"]` to `paths`.
-- `vite.config.ts` + `vite.lib.config.ts`: add `"@": resolve(__dirname, "../../src")`
-  to `resolve.alias` (safe next to `sift-wasm`; the `@` alias matches `@/…` only,
-  not `@radix-ui/…`).
-- `style.css`: `@import` the app token CSS (`../../src/styles/notebook-tokens.css`)
-  and `@source "../../src/components/ui"` so Tailwind compiles the utility classes
-  the aliased components use.
+- `sparkline.tsx` imports `Popover*` from `@/components/ui/popover`.
+- `image-viewer.tsx` imports `Button` from `@/components/ui/button`.
+- Sift keeps no local copies of `ui/context-menu.tsx`, `ui/button.tsx`,
+  `ui/popover.tsx`, or `lib/utils.ts` (`cn`). Aliased primitives bring
+  `@/lib/utils` through `@`.
+- `tsconfig.json` maps `"@/*": ["../../src/*"]` in `paths`.
+- `vite.config.ts` and `vite.lib.config.ts` map `"@": resolve(__dirname, "../../src")`
+  in `resolve.alias`. This matches `@/…` only and leaves `sift-wasm` and
+  `@radix-ui/…` untouched.
+- `style.css` imports `../../src/styles/notebook-tokens.css` and declares
+  `@source "../../src/components/ui"` so Tailwind compiles utility classes used
+  by aliased components.
 
 ## Consequences
 
 - **Single source of truth.** Sift and the app can no longer drift on primitives.
-- **Sift adopts our palette.** The shared primitives render with our monochrome
-  primary in place of sift's prototype blue — the intended "feels native." Visible
-  change to sift; worth a look before it ships.
-- **Contained blast radius.** No repo-wide rewrite; two import swaps, four deletes,
-  three config edits. Verified by sift's own `tsc`, `build:lib`, unit, and e2e.
+- **Sift adopts our palette.** Shared primitives render with our monochrome
+  primary in place of sift's prototype blue so sift feels native inside the app.
+- **Contained blast radius.** Sift validates this wiring through its own `tsc`,
+  `build:lib`, unit, and e2e checks without a repo-wide rewrite.
 
 ## Engine tokens and dark mode
 

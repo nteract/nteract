@@ -12,19 +12,18 @@ These principles ground every design decision that follows.
 
 uv, conda, and pixi are responsible for the integrity of their own caches,
 environment prefixes, and install operations. nteract trusts each package
-manager to police within its own domain and does not attempt to layer
-additional controls on top of that. If a malicious package can subvert the
-package manager's own integrity guarantees — poisoning a cache, corrupting a
-prefix — that is a bug in the package manager, not a gap nteract is responsible
-for closing.
+manager to police within its own domain and does not layer additional controls
+on top. If a malicious package subverts the package manager's own integrity
+guarantees (poisoning a cache or corrupting a prefix), that is a bug in the
+package manager. It is not a gap nteract is responsible for closing.
 
 ### 2. The sandbox protects the user's broader system
 
-The sandbox's mandate is to prevent package manager operations from escaping
-into OS-level territory that has nothing to do with package management:
-credential files, shell configs, dot-files, global directories, and other
-sensitive user data. This is a meaningful and achievable goal. The sandbox is
-not a control over what happens within the package manager's own domain.
+The sandbox prevents package manager operations from escaping into OS-level
+territory unrelated to package management: credential files, shell configs,
+dot-files, global directories, and other sensitive user data. This is a
+meaningful and achievable goal. The sandbox does not control what happens
+within the package manager's own domain.
 
 ### 3. Wheels are the preferred distribution format; sdist is opt-in
 
@@ -38,11 +37,10 @@ conda: binary archives are preferred; post-link scripts are opt-in.
 
 nteract executes Python **during package installation** in a sandboxed context
 (uv/pip builds, post-link scripts). Packages installed for use inside nteract
-must not share caches with packages installed outside nteract, which may have
-no sandboxing or isolation model. Mixing the two creates confusion about which
-packages have been vetted for sandbox execution and contaminates the nteract
-environment with installs that were never subject to nteract's trust model.
-nteract maintains its own cache directories, separate from the user's global
+must not share caches with external installs that may lack sandboxing or
+isolation. Mixing them blurs which packages were vetted for sandbox execution
+and contaminates nteract with installs outside its trust model. nteract
+therefore maintains its own cache directories, separate from the user's global
 package manager caches.
 
 Note: runtime kernel/agent execution is not yet sandboxed; see issue #1307 for
@@ -51,7 +49,7 @@ runtime agent sandboxing policy.
 ### 5. Arbitrary execution requires per-notebook isolation
 
 If a notebook opts into modes that permit arbitrary execution during environment
-creation — sdist builds, conda post-link scripts, or similar — the entire
+creation (sdist builds, conda post-link scripts, or similar), the entire
 environment, including caches, must be per-notebook. This prevents
 cross-contamination between notebooks: a malicious or buggy package in one
 notebook's dependency set cannot affect another notebook's environment. This is
@@ -62,8 +60,8 @@ a contamination-isolation requirement, not a security claim.
 ## Sandbox Modes
 
 There are three sandbox modes for package installation. The user-facing choice
-is binary — sandboxed or not — and the system selects between `restricted` and
-`standard` automatically based on context. The user never manually picks
+is binary (sandboxed or not). The system selects between `restricted` and
+`standard` automatically based on context, and the user never manually picks
 `restricted`.
 
 ### restricted
@@ -124,14 +122,14 @@ By default, nteract installs packages in a way that executes no user-supplied
 code. There are two mechanisms during package installation that can break this
 property:
 
-- **sdist builds**: when a PyPI package has no pre-built wheel available for
-  the current platform and Python version, the package manager must download the
-  source distribution and compile a wheel from it. This runs arbitrary Python —
-  `setup.py`, PEP 517 build backends, and any native build tooling they invoke.
+- **sdist builds**: when a PyPI package has no pre-built wheel for the current
+  platform and Python version, the package manager downloads the source
+  distribution and compiles a wheel. This runs arbitrary Python: `setup.py`,
+  PEP 517 build backends, and any native build tooling they invoke.
 - **Post-link scripts**: conda packages may include a shell script
   (`bin/.<name>-post-link.sh` on Unix, `Scripts/.<name>-post-link.bat` on
-  Windows) that runs after the package's files have been extracted into the
-  environment prefix. These scripts run arbitrary shell code.
+  Windows) that runs after extraction into the environment prefix. These scripts
+  run arbitrary shell code.
 
 Both are disabled by default. When either would be required, nteract detects
 this, notifies the user, and asks whether to proceed. If the user opts in, the
@@ -171,11 +169,11 @@ user.
 ### Remediation
 
 When a blocked sdist build or a skipped post-link script is detected, nteract
-notifies the user with the names of the affected packages and asks whether to
-proceed. If the user confirms, the environment is recreated from scratch with
-the relevant opt-in enabled (`--no-build` removed for sdists, or
-`.with_execute_link_scripts(true)` for conda post-link scripts), and the sandbox
-mode is automatically set to `restricted` for that notebook.
+notifies the user with the affected package names and asks whether to proceed.
+If the user confirms, nteract recreates the environment from scratch with the
+opt-in enabled (`--no-build` removed for sdists, or
+`.with_execute_link_scripts(true)` for conda post-link scripts). The sandbox
+mode automatically switches to `restricted` for that notebook.
 
 ---
 
@@ -183,19 +181,18 @@ mode is automatically set to `restricted` for that notebook.
 
 ### Successful build with denials
 
-When an environment build completes successfully but the sandbox denied some
-filesystem or network accesses, nteract does not surface this to the user. The
-denials are written to debug logs only. In the common case, denied paths during
-a successful build are optional probes — credential files, package manager
-config, private registry endpoints — that the tool checked for, didn't find
-accessible, and continued without. Surfacing these would train users to
-reflexively widen the sandbox after every successful build.
+When an environment build succeeds despite sandbox denials, nteract does not
+surface them to the user. Denials go to debug logs only. Denied paths during a
+successful build are usually optional probes (credential files, package manager
+config, or private registry endpoints) that the tool checked and continued
+without. Surfacing them would train users to reflexively widen the sandbox
+after every successful build.
 
 ### Failed build with denials
 
-When an environment build fails and the sandbox denied one or more accesses,
-nteract collects the full set of denied paths and network calls from the sandbox
-audit log in a single pass and presents them to the user:
+When an environment build fails with sandbox denials, nteract collects every
+denied path and network call from the sandbox audit log in one pass. It then
+presents them to the user:
 
 > **Environment build failed.** The sandbox blocked the following accesses.
 > Select any you want to allow and retry:
@@ -236,9 +233,9 @@ edit the pack file directly, or share it out-of-band with colleagues.
 
 ### Per-notebook pack reference
 
-A notebook may include a pack name in its metadata. This is a lookup key
-into the user's local pack store — nothing more. It contains no capability
-grants and provides no escalation path on its own.
+A notebook may include a pack name in its metadata. This is a lookup key into
+the user's local pack store, nothing more. It contains no capability grants and
+provides no escalation path on its own.
 
 ```jsonc
 // metadata.runt.sandbox
@@ -248,14 +245,14 @@ grants and provides no escalation path on its own.
 ```
 
 When the daemon sees this hint, it looks for `my-data-env` in the local pack
-store. If the pack exists, it is used as the sandbox policy for that
-notebook's environment builds. If it does not exist, the daemon falls back to
-the default sandbox mode silently — the missing pack is noted in debug logs
-but does not cause an error or prompt.
+store. If the pack exists, it is used as the sandbox policy for that notebook's
+environment builds. If it does not exist, the daemon falls back to the default
+sandbox mode silently. The missing pack is noted in debug logs without causing
+an error or prompt.
 
 Only locally user-created packs may be referenced this way. There is no
-registry resolution and no remote pack fetching. A notebook cannot reference
-a pack that the user has not already explicitly created on their machine.
+registry resolution and no remote pack fetching. A notebook cannot reference a
+pack that the user has not already explicitly created on their machine.
 
 ---
 
@@ -263,27 +260,26 @@ a pack that the user has not already explicitly created on their machine.
 
 ### Deno kernel sandboxing
 
-This memo covers Python environment builds only. Deno is used in nteract as a
-kernel runtime for TypeScript/JavaScript notebooks, not as a package manager
-that nteract orchestrates. Deno has a first-class native permission model
-(`--allow-net`, `--allow-read`, `--allow-write`, `--allow-run`, etc.) that is
-the appropriate control plane for Deno execution sandboxing. nteract notebooks
-already carry `metadata.runt.deno.permissions` for this purpose.
+This memo covers Python environment builds only. Deno is a kernel runtime for
+TypeScript/JavaScript notebooks, not a package manager orchestrated by nteract.
+Deno has a native permission model (`--allow-net`, `--allow-read`,
+`--allow-write`, `--allow-run`, etc.) that serves as the control plane for Deno
+execution sandboxing. nteract notebooks already carry
+`metadata.runt.deno.permissions` for this purpose.
 
-Deno package management (`npm:` imports, JSR) is handled by Deno itself at
-runtime, not by a separate install step that nteract runs, so the env-build
-sandbox described in this memo does not apply. Deno execution sandboxing is a
-separate concern and belongs in a future design covering runtime sandboxing
-(`nteract/runtime-*` packs), where the design would map nteract sandbox modes
-to sensible default Deno permission flags.
+Deno handles package management (`npm:` imports, JSR) at runtime rather than in
+a separate nteract install step, so this env-build sandbox does not apply. Deno
+execution sandboxing belongs in a future runtime-sandboxing design
+(`nteract/runtime-*` packs) that maps nteract sandbox modes to sensible default
+Deno permission flags.
 
 ### Registry-based packs
 
 This design restricts per-notebook pack references to locally user-created
-packs only. A natural future extension is registry-based packs, where an
-organisation publishes a named pack to a nono registry (e.g.
-`my-org/data-science`) and notebooks reference it by that name. This would
-require a publisher allowlist in the machine policy, pack signing and
+packs only. A future extension could add registry-based packs, where an
+organisation publishes a named pack to a nono registry (such as
+`my-org/data-science`) and notebooks reference it by name. Supporting that
+requires a publisher allowlist in the machine policy, pack signing and
 attestation infrastructure, and a trust decision flow for unknown publishers.
 That complexity is out of scope for this iteration. The pack namespace
 (`nteract/env-*`, `nteract/runtime-*`) is designed to accommodate registry

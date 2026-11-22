@@ -49,9 +49,11 @@ A blob ref is a JSON value whose identity is the content hash of the bytes:
 }
 ```
 
-The current desktop implementation uses lowercase SHA-256 hex without an
-algorithm prefix. The ref does not include a localhost URL, cloud URL, file
-path, or room id. The host owns resolution:
+The current desktop implementation uses bare lowercase SHA-256 hex without an
+algorithm prefix for blob refs. Algorithm-tagged source hashes may still appear
+in MIME-specific metadata when they are not blob addresses. The ref does not
+include a localhost URL, cloud URL, file path, or room id. The host owns
+resolution:
 
 - Desktop maps the hash to the local daemon blob server.
 - Hosted viewers map the hash to notebook artifact storage.
@@ -168,11 +170,8 @@ snapshot collection, and notebook-cloud blob-ref collection walk this slot
 alongside `chunks[]` and `coalesced` so the referenced payloads can be uploaded
 and resolved on demand.
 
-`blobs[]` is not yet a complete runtime-storage contract: the daemon's
-active-room GC walker does not retain its entries, and the durable `.ipynb`
-save/load transform below does not process them: neither the externalize nor
-restore step visits this slot. Producers must not depend on `blobs[]` until
-both paths are implemented.
+Producers must not depend on `blobs[]` for durable storage until daemon GC and
+`.ipynb` save/load support this slot (see [Open Follow-ups](#open-follow-ups)).
 
 The manifest may later grow `coalesced` entries for derived artifacts. Unknown
 fields must be preserved at save/load boundaries.
@@ -221,13 +220,17 @@ The upstreamable part is not the nteract name. It is the split:
 - GC, save, and publish code must understand nested manifest refs, not only
   top-level blob refs.
 
+## Open Follow-ups
+
+- Complete `blobs[]` runtime-storage support before producers depend on it.
+  The daemon's active-room GC walker does not yet retain `blobs[]` entries, and
+  the durable `.ipynb` save/load transform visits neither externalize nor
+  restore for this slot.
+
 ## Open Questions
 
 1. Whether an upstream Jupyter form should use a vendor-neutral MIME, a
    top-level `attachments`-like message field, or metadata alongside existing
    MIME entries.
-2. Hash representation is resolved for nteract blob refs: use bare lowercase
-   SHA-256 hex. Algorithm-tagged source hashes may still appear in
-   MIME-specific metadata when they are not blob addresses.
-3. How much of `summary` and `query` belongs in the generic blob-ref protocol
+2. How much of `summary` and `query` belongs in the generic blob-ref protocol
    versus MIME-specific metadata.

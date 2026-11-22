@@ -65,11 +65,11 @@ local client/daemon -> room host or bridge <-> remote daemon(runtime_peer)
   `NotebookSync` and `RuntimeAgent`, with the handshake variant selecting the
   envelope shape. That is workable locally but fragile as a cross-machine
   boundary.
-- The hosted dispatch contract is now implemented in `runtimed-wasm`:
-  owner-scoped `REQUEST` frames are validated by the room host, become queued
+- The hosted dispatch contract is now implemented in `runtimed-wasm`. The room
+  host validates owner-scoped `REQUEST` frames and turns them into queued
   executions with coordinator-owned provenance in `RuntimeStateDoc`
-  (`receive_request`), and the runtime peer consumes them through normal
-  `RuntimeStateDoc` sync while the shared policy rejects runtime-peer-forged
+  (`receive_request`). The runtime peer consumes them through normal
+  `RuntimeStateDoc` sync, while the shared policy rejects runtime-peer-forged
   execution intent. Active-target selection and disconnect/liveness gating
   remain open in `../adr/remote-workstation-doc-agents.md`.
 
@@ -139,10 +139,11 @@ document path that later references the content hash.
 - Hosted publish now validates reachability: a snapshot revision is rejected
   with `424 missing_blobs` when any materialized render ref is missing from
   the destination blob store, before any D1 revision row is recorded.
-- Blob reads are unauthenticated on the local loopback HTTP origin and rely on
-  same-machine isolation plus hash unguessability; that surface is now
-  declared permanently single-user (`../adr/blob-storage-and-content-addressing.md`
-  open question 3). Hosted reads ride the viewer-authorized
+- Local `/blob/{hash}` reads on the loopback HTTP server are unauthenticated
+  for origin separation and do not provide same-machine or cross-origin
+  confidentiality (`../adr/blob-storage-and-content-addressing.md` Decision 4;
+  `../adr/output-frame-security.md`, `Loopback HTTP surface` and
+  `Blob confidentiality`). Hosted reads ride the viewer-authorized
   `/api/n/:id/blobs/:hash` route; private sharing still needs the capability
   mechanism tracked as HCA-6.
 
@@ -179,12 +180,12 @@ document path that later references the content hash.
   daemon paths. `RuntimeStateDoc` remains runtime-peer writable for lifecycle,
   execution progress, output, and comm topology state. Mutable widget state
   writes belong in `CommsDoc`, where editor/owner authority can be scoped to
-  existing widget comm state. Execution intent creation still belongs to the
-  room-host request path
+  existing widget comm state.
+- Keep execution intent creation on the room-host request path
   (`ExecuteCell`/`RunAllCells`) so a runtime peer cannot enqueue work by syncing
-  a forged execution entry.
-  Future blob-reference validation should build on that policy rather than
-  reintroducing a separate runtime-state authorization surface.
+  a forged execution entry. Future blob-reference validation should build on
+  that policy rather than reintroducing a separate runtime-state authorization
+  surface.
 - Keep `BlobBackend` storage concerns separate from `BlobResolver` read
   authority. The former stores bytes; the latter decides how an authorized
   viewer obtains them.
