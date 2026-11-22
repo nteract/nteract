@@ -272,8 +272,8 @@ test("every mutation the lifecycle makes can reject before or after it applies, 
       // cut point as well: a cut before it leaves the rows for the retry. The
       // delete first brings the tag table's own schema current, so that
       // migration's statements are cut points too.
-      cuts: 270,
-      runs: 1040,
+      cuts: 280,
+      runs: 1080,
       indexRetirement: 27,
       titleProjection: 18,
       titleRecord: 12,
@@ -294,6 +294,7 @@ test("a tombstone whose write or sync rejected repeats its barrier on retry, so 
   // document is already gone, so nothing they describe can come back.
   const record = reference.mutations.indexOf("put host/document");
   assert.deepEqual(reference.mutations.slice(0, record + 2), [
+    "delete host/activity-epoch",
     "delete host/content-activity",
     "delete host/title-projection",
     "delete host/title-projection/pending",

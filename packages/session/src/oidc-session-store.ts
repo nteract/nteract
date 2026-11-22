@@ -1,6 +1,7 @@
 import type { SessionDatabase, SessionDatabaseValue } from "./session-database.ts";
 import type { CloudAppSession } from "./app-session.ts";
 import {
+  SESSION_KEYRING_MAX_KEYS,
   sessionKeyByKid,
   sessionKeyring,
   splitSealed,
@@ -116,22 +117,77 @@ export function serverSessionContext(env: ServerSessionEnvironment, origin: stri
   ]);
 }
 
+export interface ServerSessionLookupEntry {
+  readonly kid: string;
+  readonly id: string;
+}
+
+export interface ServerSessionLookup {
+  readonly entries: readonly ServerSessionLookupEntry[];
+  readonly origin: string;
+}
+
+async function loadServerSessionByIds(
+  env: ServerSessionEnvironment,
+  ids: readonly string[],
+  context: string,
+  now: number,
+): Promise<ServerSessionRow | null> {
+  if (
+    !Array.isArray(ids) ||
+    ids.length < 1 ||
+    ids.length > SESSION_KEYRING_MAX_KEYS ||
+    ids.some((id) => typeof id !== "string" || !id) ||
+    typeof context !== "string" ||
+    !context
+  )
+    return null;
+  const db = await oidcDatabase(env);
+  const row = await db
+    .prepare(`SELECT * FROM oidc_server_sessions WHERE ${idMatch([...ids])}
+    AND idle_expires_at > ? AND absolute_expires_at > ?`)
+    .bind(...ids, now, now)
+    .first<ServerSessionRow>();
+  return row?.context === context ? row : null;
+}
+
+/**
+ * Derives the non-secret D1 lookup entries (`{ kid, id }[]`) and expected
+ * public origin for a request's server session cookie, without exposing the
+ * raw cookie token. Tagging each ID with its keyring `kid` lets later
+ * re-checks reject sessions whose signing key was retired.
+ */
+export async function serverSessionLookup(
+  env: ServerSessionEnvironment,
+  request: Request,
+): Promise<ServerSessionLookup | null> {
+  const token = cookieValue(request, SERVER_SESSION_COOKIE);
+  if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
+  const keys = requiredKeyring(env).keys;
+  const entries = await Promise.all(
+    keys.map(async (key) => ({
+      kid: key.kid,
+      id: await sessionIdFor(key, token),
+    })),
+  );
+  const origin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN?.trim() || new URL(request.url).origin)
+    .origin;
+  return { entries, origin };
+}
+
 export async function loadServerSession(
   env: ServerSessionEnvironment,
   request: Request,
   now: number,
 ): Promise<ServerSessionRow | null> {
-  const token = cookieValue(request, SERVER_SESSION_COOKIE);
-  if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
-  const db = await oidcDatabase(env);
-  const ids = await serverSessionIds(env, token);
-  const row = await db
-    .prepare(`SELECT * FROM oidc_server_sessions WHERE ${idMatch(ids)}
-    AND idle_expires_at > ? AND absolute_expires_at > ?`)
-    .bind(...ids, now, now)
-    .first<ServerSessionRow>();
-  const origin = env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN?.trim() || new URL(request.url).origin;
-  return row?.context === serverSessionContext(env, new URL(origin).origin) ? row : null;
+  const lookup = await serverSessionLookup(env, request);
+  if (!lookup) return null;
+  return loadServerSessionByIds(
+    env,
+    lookup.entries.map((entry) => entry.id),
+    serverSessionContext(env, lookup.origin),
+    now,
+  );
 }
 
 export async function readServerAppSession(
@@ -143,6 +199,59 @@ export async function readServerAppSession(
   if (!row || row.access_expires_at <= now) return null;
   const session: CloudAppSession = JSON.parse(row.session_json);
   return session.expiresAt > now ? session : null;
+}
+
+/**
+ * Re-reads an existing server OIDC session by its HMAC-derived lookup IDs and
+ * expected context, without holding the raw session cookie token.
+ */
+export async function readServerAppSessionByIds(
+  env: ServerSessionEnvironment,
+  ids: readonly string[],
+  context: string,
+  now: number,
+): Promise<CloudAppSession | null> {
+  const row = await loadServerSessionByIds(env, ids, context, now);
+  if (!row || row.access_expires_at <= now) return null;
+  const session: CloudAppSession = JSON.parse(row.session_json);
+  return session.expiresAt > now ? session : null;
+}
+
+/**
+ * Re-reads a server OIDC session from a `ServerSessionLookup` stored without
+ * the raw cookie token. Filters out any lookup ID whose `kid` is no longer in
+ * the current keyring and recomputes the expected context from `env` so
+ * key retirement and issuer/client/origin changes take effect on re-check.
+ */
+export async function readServerAppSessionByLookup(
+  env: ServerSessionEnvironment,
+  lookup: ServerSessionLookup,
+  now: number,
+): Promise<CloudAppSession | null> {
+  if (
+    !lookup ||
+    !Array.isArray(lookup.entries) ||
+    lookup.entries.length < 1 ||
+    lookup.entries.length > SESSION_KEYRING_MAX_KEYS ||
+    typeof lookup.origin !== "string" ||
+    !lookup.origin
+  )
+    return null;
+  const expectedOrigin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN?.trim() || lookup.origin).origin;
+  if (expectedOrigin !== lookup.origin) return null;
+  const activeKids = new Set(requiredKeyring(env).keys.map((key) => key.kid));
+  const ids = lookup.entries
+    .filter(
+      (entry) =>
+        entry &&
+        typeof entry.kid === "string" &&
+        typeof entry.id === "string" &&
+        entry.id.length > 0 &&
+        activeKids.has(entry.kid),
+    )
+    .map((entry) => entry.id);
+  if (!ids.length) return null;
+  return readServerAppSessionByIds(env, ids, serverSessionContext(env, expectedOrigin), now);
 }
 
 /** Status requests renew idle time without manufacturing new identity proof. */

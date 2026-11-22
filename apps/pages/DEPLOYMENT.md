@@ -1694,16 +1694,18 @@ not added to the Page's member list. Someone Kilo no longer lists keeps that
 access until their evidence ends: up to 8 hours after their last exchange, or
 sooner when a newer exchange no longer names the organization. Each isolate
 caches a record for at most 30 seconds, so a request sees a new record at
-most 30 seconds after the exchange that wrote it, and an open sync socket,
-which re-authenticates every 15 seconds, at most 45 seconds after.
+most 30 seconds after the exchange that wrote it, and an open sync socket
+(which re-checks every 60 seconds on a hibernated OIDC tab, or every 15 seconds
+on a resident socket) sees it within at most 90 seconds (45 seconds on resident).
 
 A Project's owner can share it with one organization the same way
 (`acl.organizationAccess` on the Project record, set through
 `manage_project_access`):
 
 - **Inherited access.** Organization members hold that role on the Project and
-  every Page in it while both their org lease and the Page host's 15-second
-  Project lease are current. Nobody is added to the Project's member list, and
+  every Page in it while both their org lease and the Page host's 60-second
+  Project lease (invalidated immediately on Project ACL changes via
+  `/internal/project-access-changed`) are current. Nobody is added to the Project's member list, and
   nothing is written on its Pages.
 - **Discovery via opened hints.** Because there is no member list to receive
   hints, the owner shares the Project's link directly. Opening the Project

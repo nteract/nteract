@@ -1474,12 +1474,22 @@ actor strings inside imported history.
 Browser sessions renew while open and on return to the tab. A return to the tab
 or an explicit check that lands while a session request is in flight queues one
 fresh request after it, and only the fresh answer applies (the
-[session-refresh machine](viewer/session-refresh-machine.mjs)). Sync sockets retain
-the credential expiry observed on admission and reconnect with current credentials.
-Project-inherited leases renew in place per Page host through
-[project-lease.mjs](worker/project-lease.mjs): one Project lookup ahead of
-`valid_until` extends unchanged sockets, closes revoked or downgraded sockets with
-`access_changed`, and leaves deadlines untouched to fail closed with `4503
+[session-refresh machine](viewer/session-refresh-machine.mjs)). Browser OIDC sync
+sockets whose attachment fits within 1,900 bytes use Durable Object WebSocket
+hibernation (`ctx.acceptWebSocket` and `alarm()`) when supported by the host
+runtime, keeping only non-secret policy fields and HMAC-derived `{ kid, id }`
+lookup entries in each socket attachment ([hibernation.mjs](worker/hibernation.mjs));
+non-OIDC credentials (API keys, OAuth, Kilo tokens) and oversized attachments stay
+on the resident path. A single Page alarm drives browser dwell ticks (`page.read` /
+`page.visit`), 60-second OIDC session and organization membership re-checks
+(`readServerAppSessionByLookup` and `organizationLeases`), Project safety-net
+lease renewals, and fail-closed lease expiry. `PageActivity` stores its `{ epoch,
+revision }` in the Page DO key `host/activity-epoch` so hibernated tabs keep
+receiving agent updates across DO eviction. Project access changes and
+cross-Project moves push `/internal/project-access-changed` (`Space` -> `Catalog`
+-> `Page`) so revoked or downgraded sockets close immediately with `4409
+access_changed`, backed by a 60-second fail-closed Project lease
+([project-lease.mjs](worker/project-lease.mjs)) that closes with `4503
 project_lease_expired` if the Project stays unavailable. API-key sockets renew
 bounded leases through provider verification; caching means provider revocation is
 not instantaneous. A pending or late check cannot revive an expired, disconnected,
@@ -1502,9 +1512,9 @@ cadence until it parks. A tab reconnecting after its old socket died takes that 
 place ([Plain Automerge sync](#plain-automerge-sync)).
 
 A Page tab hidden for five minutes in a row (`PARK_AFTER_MS`, a constant)
-parks: it closes its sync socket and stops reconnecting, so the Page's
-Durable Object stops renewing the socket's lease every 15 s and ticking usage
-every second. Showing the tab before then cancels the countdown. A parked tab
+parks: it closes its sync socket and stops reconnecting, so the Page's Durable
+Object deletes its alarm (or stops resident timers) and stops scheduling
+periodic session re-checks and dwell ticks. Showing the tab before then cancels the countdown. A parked tab
 reconnects as soon as `visibilitychange` (or `pageshow`) reports it visible,
 with no backoff, no Offline or Reconnecting status and no banner; the status
 keeps saying Saved while it reconnects, catch-up brings in edits made
@@ -4359,8 +4369,10 @@ owner's Projects; a Project change feed comes later.
 
 The Page host resolves inherited access on each request from anyone but the
 owner: the Page's placement from the owner's Catalog, the Project's ACL, then
-the placement again. The answer is a snapshot that grants for 15 seconds
-([project-access.mjs](worker/project-access.mjs)). A Page outside any Project,
+the placement again. The answer is a snapshot that grants for 60 seconds
+([project-access.mjs](worker/project-access.mjs)); Project access changes and
+cross-Project moves also push `/internal/project-access-changed` so open
+sockets re-evaluate immediately. A Page outside any Project,
 or in a Project that is gone, settles with no snapshot, and inherited access
 ends for every caller. A read that doesn't finish, or a placement that moves
 between the two reads, settles nothing. That caller gets nothing inherited
@@ -4659,7 +4671,8 @@ once done, replays `{ project_id, deleted: true }`:
    step that refuses further writes. Only this trash sends
    `base_comment_heads`: the Catalog drops it from a caller's `delete_page`.
    An edit or comment that landed after the preview (the owner still owns the
-   content, and members' leases last 15 s) reopens the Space and the request
+   content, and members' leases last 60 s as a backstop behind push
+   invalidation) reopens the Space and the request
    is refused with `purge_preview_invalid`.
 3. The Catalog purges the content document through the Page's permanent
    deletion path, at the revision the trash reported: its content and

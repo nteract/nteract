@@ -26,6 +26,8 @@ export {
   openServerSecret,
   randomSecret,
   readServerAppSession,
+  readServerAppSessionByIds,
+  readServerAppSessionByLookup,
   revokeServerSession,
   revokeServerSessionsFor,
   sealServerSecret,
@@ -35,9 +37,12 @@ export {
   serverSessionCookie,
   serverSessionId,
   serverSessionIds,
+  serverSessionLookup,
   touchServerSession,
   type ExpiredOidcTable,
   type ServerSessionEnvironment,
+  type ServerSessionLookup,
+  type ServerSessionLookupEntry,
   type ServerSessionRow,
 } from "./oidc-session-store.ts";
 export {

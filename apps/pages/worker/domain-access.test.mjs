@@ -1399,7 +1399,7 @@ test("a company domain grant is Page-only: a Project never carries one to its Pa
   const container = {
     ...projectObject(record),
     members: {},
-    valid_until: now + PROJECT_ACCESS_LEASE_MS,
+    valid_until: Math.min(now + PROJECT_ACCESS_LEASE_MS, lease.expiresAt - 10_000),
   };
   const inProject = (acl) => ({
     pageId: "in-project",
@@ -1415,7 +1415,7 @@ test("a company domain grant is Page-only: a Project never carries one to its Pa
   const own = pageAccess(shared, domainReader, { now });
   assert.equal(own.canWrite, true);
   assert.equal(own.source, "domain");
-  assert.ok(lease.expiresAt > now + PROJECT_ACCESS_LEASE_MS);
+  assert.ok(lease.expiresAt > container.valid_until);
   assert.equal(audienceEditUntil(shared, domainReader, { now }), lease.expiresAt);
   // A tombstone on the Page blocks its domain grant there too.
   const removed = inProject({

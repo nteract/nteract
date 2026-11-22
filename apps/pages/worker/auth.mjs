@@ -1,3 +1,4 @@
+import { readServerAppSessionByLookup, serverSessionLookup } from "@nteract/session";
 import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { readAccessToken } from "./oauth-store.mjs";
 import { oauthDriverName } from "./oauth-clients.mjs";
@@ -478,6 +479,32 @@ async function authenticateRequest(request, env) {
     },
     env,
   );
+}
+
+/** Derive the non-secret D1 lookup entries (`{ kid, id }[]`, `origin`) for an
+ * OIDC session cookie so a hibernating WebSocket attachment can re-check
+ * revocation on alarm without storing the raw cookie token. Expected keyring
+ * kids and context are re-verified from `env` on each 60 s re-check. */
+export async function extractOidcSessionCheck(request, env) {
+  return serverSessionLookup(env, request);
+}
+
+/** Re-check an OIDC session directly against `oidc_server_sessions` by its
+ * derived lookup entries and current keyring/context. Returns
+ * `{ principal, canWrite, expiresAt }` or throws a 401 `credential_expired`
+ * refusal if the session was revoked, expired, retired, or no longer matches `env`. */
+export async function revalidateOidcSession(sessionCheck, env, nowMs = Date.now()) {
+  const session = await readServerAppSessionByLookup(env, sessionCheck, Math.floor(nowMs / 1000));
+  if (!session)
+    throw withAdmissionReason(
+      new HttpError(401, "Sign in to Pages", "auth_required"),
+      "credential_expired",
+    );
+  return {
+    principal: session.principal,
+    canWrite: true,
+    expiresAt: session.expiresAt * 1000,
+  };
 }
 
 /** Self-account data only; never use this projection for collaborative presence. */

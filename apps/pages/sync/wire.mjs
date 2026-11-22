@@ -152,6 +152,93 @@ export function socketTransport(
 }
 
 /**
+ * SyncHost transport for a Cloudflare/celld hibernatable WebSocket accepted
+ * via `ctx.acceptWebSocket(socket)`. Events arrive through Durable Object
+ * methods (`webSocketMessage`, `webSocketClose`, `webSocketError`) and are
+ * forwarded via the returned controller.
+ */
+export function hibernatingSocketTransport(
+  socket,
+  { maxFrameBytes = MAX_FRAME_BYTES, onRejected = () => {} } = {},
+) {
+  const messages = new Set();
+  const closes = new Set();
+  let closed = false;
+  let pendingClose = null;
+  let closeDetail = {};
+  const finish = (detail = {}) => {
+    if (closed) return;
+    closed = true;
+    closeDetail = detail;
+    for (const h of closes) h(detail);
+  };
+  const transport = {
+    get closed() {
+      return closed;
+    },
+    send(frame) {
+      if (closed) return;
+      try {
+        socket.send(encodeFrame(frame));
+      } catch {
+        finish({ code: 1006, reason: "send_failed" });
+      }
+    },
+    onMessage(handler) {
+      messages.add(handler);
+    },
+    onClose(handler) {
+      if (closed) handler(closeDetail);
+      else closes.add(handler);
+    },
+    close(code = 1000, reason = "Disconnected") {
+      const detail = { code, reason };
+      pendingClose = detail;
+      try {
+        socket.close(code, reason);
+      } catch {
+        /* Already closed. */
+      }
+      finish(detail);
+    },
+  };
+  return {
+    transport,
+    deliverMessage(data) {
+      if (closed) return;
+      const raw =
+        data instanceof ArrayBuffer
+          ? new Uint8Array(data)
+          : ArrayBuffer.isView(data)
+            ? bytes(data)
+            : null;
+      const frame = raw && raw.byteLength <= maxFrameBytes ? decodeFrame(raw) : null;
+      if (!frame) {
+        try {
+          onRejected(
+            !raw
+              ? "unsupported_frame"
+              : raw.byteLength > maxFrameBytes
+                ? "frame_too_large"
+                : "unsupported_frame",
+          );
+        } catch {
+          /* Telemetry must never prevent rejecting a malformed frame. */
+        }
+        return transport.close(4400, "request_rejected");
+      }
+      for (const h of messages) h(frame);
+    },
+    deliverClose(code, reason) {
+      finish(pendingClose ?? { code, reason, peer: true });
+    },
+    deliverError() {
+      finish(pendingClose ?? { code: 1006, reason: "error" });
+    },
+  };
+}
+
+/**
  * An in-process transport pair for tests and benchmarks in place of a socket.
  * Frames go through the same codec
  * and arrive asynchronously, in order. Bytes and frames are counted.

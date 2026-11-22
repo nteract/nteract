@@ -98,6 +98,8 @@ export class PageActivity {
     profiles,
     onChange = () => {},
     now = Date.now,
+    epoch = crypto.randomUUID(),
+    revision = 0,
   }) {
     this.pageId = pageId;
     this.access = access;
@@ -105,8 +107,8 @@ export class PageActivity {
     this.profiles = profiles;
     this.onChange = onChange;
     this.now = now;
-    this.epoch = crypto.randomUUID();
-    this.revision = 0;
+    this.epoch = epoch;
+    this.revision = revision;
     this.progress = new Map();
     this.selections = new Map();
     // API agents by principal and driver. Records follow agent-presence.mjs.

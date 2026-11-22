@@ -20,6 +20,7 @@ test("catalogLane: only the cards header on /internal/catalog leaves the queue",
   assert.equal(lane("/internal/projection", { [CARDS_LANE_HEADER]: CARDS_LANE }), "queued");
   assert.equal(lane("/internal/location"), "location");
   assert.equal(lane("/internal/project-discovery"), "discovery");
+  assert.equal(lane("/internal/space/access-changed"), "discovery");
 });
 
 async function cardsWorld(t) {

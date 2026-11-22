@@ -497,6 +497,13 @@ export class Space {
           // The response's status is not read: the Catalog writes the opened
           // hint before it removes the member hint, so a failure leaves at
           // worst the member hint, which the list re-checks.
+          if (
+            ["set_role", "set_organization_access", GRANT_ORGANIZATION_MEMBER].includes(args.action)
+          ) {
+            const push = notifyProjectAccessChanged(this.env, next);
+            if (typeof this.ctx.waitUntil === "function") this.ctx.waitUntil(push);
+            else void push;
+          }
           if (args.action === "set_role" && args.role === null)
             await this.env.CATALOGS.getByName(args.principal).fetch(
               new Request("https://pages.internal/internal/project-discovery", {
@@ -732,4 +739,31 @@ export class Space {
         await this.ctx.storage.delete(name);
     return json(receipt);
   }
+}
+
+/** Best-effort push telling the Project's content Page and the owner's Catalog
+ * (which fans out to child Pages) that this Project's ACL changed. Open sync
+ * sockets re-evaluate immediately; the periodic lease remains the fail-closed
+ * backstop if a push is dropped. */
+async function notifyProjectAccessChanged(env, record) {
+  const notifications = [];
+  const init = { method: "POST", signal: AbortSignal.timeout(5_000) };
+  if (env.PAGES && record.document_id) {
+    notifications.push(
+      env.PAGES.getByName(record.document_id).fetch(
+        new Request("https://pages.internal/internal/project-access-changed", init),
+      ),
+    );
+  }
+  if (env.CATALOGS && record.owner && record.space_id) {
+    notifications.push(
+      env.CATALOGS.getByName(record.owner).fetch(
+        new Request("https://pages.internal/internal/space/access-changed", {
+          ...init,
+          body: JSON.stringify({ space_id: record.space_id }),
+        }),
+      ),
+    );
+  }
+  await Promise.allSettled(notifications);
 }

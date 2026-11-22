@@ -143,8 +143,10 @@ import {
   accountIdentity,
   agentLabel,
   driverLabel,
+  extractOidcSessionCheck,
   requireSameOrigin,
   requireWrite,
+  revalidateOidcSession,
   HttpError,
   errorResponse,
   logFailure,
@@ -153,6 +155,13 @@ import {
   sessionTag,
   withDomainAccess,
 } from "./auth.mjs";
+import {
+  OIDC_REAUTH_MS,
+  encodeSocketAttachment,
+  nextAlarmAt,
+  parseSocketAttachment,
+} from "./hibernation.mjs";
+import { hibernatingSocketTransport } from "../sync/wire.mjs";
 import {
   incompleteHistory,
   isHistoryCapacityError,
@@ -183,8 +192,10 @@ import {
   PlainSync,
   clearPrefixes,
   plainSessionReplaced,
+  transportReason,
   treeOf,
 } from "./plain-sync.mjs";
+import { organizationLeases } from "./organization-memberships.mjs";
 import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
 import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
 import { DocumentPolicy, PermissionDenied, leaseExpiryError } from "./policy.mjs";
@@ -797,6 +808,10 @@ const INDEX_REPORT_PENDING = "host/index/report-pending";
  * the Catalogs and the index, when it first observed it, and whether writers
  * holding that title keep their own time (`title-projection.mjs`). */
 const TITLE_PROJECTION_KEY = "host/title-projection";
+/** Normative in the Page Durable Object: `{ epoch, revision }` for `PageActivity`
+ * so hibernated tabs keep one activity epoch and strictly advancing revisions
+ * across DO eviction. Deleted in `forgetContent()`. */
+const ACTIVITY_EPOCH_KEY = "host/activity-epoch";
 /** `true` while a projection of the title to the owner's and members'
  * Catalogs hasn't been seen to land everywhere. Written before the title it
  * sends is stored, removed once every Catalog took it. A check from the host
@@ -2433,6 +2448,22 @@ export class Catalog {
   async run(request, { lane = "queued" } = {}) {
     try {
       const pathname = new URL(request.url).pathname;
+      if (pathname === "/internal/space/access-changed") {
+        if (request.headers.has("authorization") || request.headers.has("cookie"))
+          throw new HttpError(403, "Host only");
+        const value = await readJson(request);
+        requireSpaceIdArgument(value.space_id);
+        const { entries } = (await this.scans.read(this.storage)).scan;
+        const pageIds = [];
+        for (const [pageId, entry] of entries) {
+          if (entry.state === "pending" || entry.state === "trashed") continue;
+          if (deriveLocation(entries, pageId).space_id === value.space_id) pageIds.push(pageId);
+        }
+        const push = notifyPagesAccessChanged(this.env, pageIds);
+        if (typeof this.ctx.waitUntil === "function") this.ctx.waitUntil(push);
+        else void push;
+        return json({ ok: true, notified: pageIds.length });
+      }
       if (pathname === "/internal/project-discovery") {
         if (request.headers.has("authorization") || request.headers.has("cookie"))
           throw new HttpError(403, "Host only");
@@ -3812,6 +3843,10 @@ export class Catalog {
       .filter(({ page_id }) => entries.get(page_id).state === "trashed")
       .map(({ page_id }) => page_id);
     const trashed = trashedIds.length;
+    run.sourceSpace = sourceSpace;
+    run.movedActiveIds = subtreeOf(entries, pageId)
+      .filter(({ page_id }) => entries.get(page_id)?.state !== "trashed")
+      .map(({ page_id }) => page_id);
     run.plan = plan;
     run.trashedDescendants = trashedIds;
     run.receipt = {
@@ -3884,6 +3919,11 @@ export class Catalog {
       for (let at = 0; at < puts.length; at += perPut)
         await target.put(Object.fromEntries(puts.slice(at, at + perPut)));
     });
+    if (run.sourceSpace !== plan.moved.space_id && run.movedActiveIds?.length) {
+      const push = notifyPagesAccessChanged(this.env, run.movedActiveIds);
+      if (typeof this.ctx.waitUntil === "function") this.ctx.waitUntil(push);
+      else void push;
+    }
   }
 
   async createSpace(request, identity, args, limit) {
@@ -5235,6 +5275,13 @@ export class Page {
     this.env = env;
     this.wires = new Set();
     this.wirePrincipals = new Map();
+    this.hibernated = new Map();
+    this.hibernatedByConn = new Map();
+    this.oidcSessionChecks = new WeakMap();
+    this.rehydrated = false;
+    this.rehydrating = null;
+    this.scheduledAlarmAt = undefined;
+    this.storedActivity = null;
     this.tail = Promise.resolve();
     this.startupState = pageStartup.initial;
     // `ready` means the host record is read. Booting the repo and loading the
@@ -5340,6 +5387,7 @@ export class Page {
       this.contentActivity?.stop();
       this.projectLease?.stop();
       this.pageCard?.stop();
+      this.scheduledAlarmAt = undefined;
       this.unwatchContent();
     };
     stop();
@@ -5644,6 +5692,14 @@ export class Page {
         this.applyProjectAccessUpdate();
       }
     }
+    if (
+      this.supportsHibernation() &&
+      identity.credentialKind === "oidc" &&
+      request.headers.get("upgrade")?.toLowerCase() === "websocket"
+    ) {
+      const check = await extractOidcSessionCheck(request, this.env);
+      if (check) this.oidcSessionChecks.set(identity, check);
+    }
     return identity;
   }
 
@@ -5676,15 +5732,17 @@ export class Page {
    * extending unchanged Project leases and closing revoked sockets at once. */
   applyProjectAccessUpdate() {
     if (!this.plain) return;
-    const { closed } = this.runExtendLeases();
+    const { extended, closed } = this.runExtendLeases();
+    if (extended > 0) this.persistHibernatedAttachments();
     if (closed > 0) {
       this.activity?.prune();
       this.broadcastProfiles();
     }
     const deadline = this.nextProjectLeaseDeadline();
-    if (deadline !== null) this.projectLease?.leaseBound(deadline);
+    if (deadline !== null) this.ensureProjectLease().leaseBound(deadline);
     else if (this.projectLease && this.projectLease.state.name !== "idle")
       this.projectLease.socketsGone();
+    if (extended > 0 || closed > 0 || deadline !== null) void this.scheduleNextAlarm();
   }
 
   /** Run `plain.extendLeases()` while suppressing per-socket `socketsGone()`
@@ -5715,12 +5773,509 @@ export class Page {
       });
     }
     if (!this.plain) return null;
-    const { closed } = this.runExtendLeases();
+    const { extended, closed } = this.runExtendLeases();
+    if (extended > 0) this.persistHibernatedAttachments();
     if (closed > 0) {
       this.activity?.prune();
       this.broadcastProfiles();
     }
-    return this.nextProjectLeaseDeadline();
+    const deadline = this.nextProjectLeaseDeadline();
+    if (deadline === null && this.projectLease && this.projectLease.state.name !== "idle")
+      this.projectLease.socketsGone();
+    return deadline;
+  }
+
+  supportsHibernation() {
+    return (
+      typeof this.ctx?.acceptWebSocket === "function" &&
+      typeof this.ctx?.getWebSockets === "function" &&
+      typeof this.ctx?.storage?.setAlarm === "function"
+    );
+  }
+
+  hasOpenSyncSockets() {
+    return (
+      (this.wires?.size ?? 0) > 0 ||
+      (typeof this.ctx?.getWebSockets === "function" && this.ctx.getWebSockets().length > 0)
+    );
+  }
+
+  isProjectBound(conn) {
+    const validUntil = this.projectAccess?.valid_until;
+    return (
+      Number.isFinite(validUntil) &&
+      conn.expiresAt === validUntil &&
+      leaseExpiryError(conn.identity, conn.expiresAt).reason === "project_lease_expired"
+    );
+  }
+
+  persistSocketAttachment(entry) {
+    if (!entry || entry.conn.closed) return;
+    const attachment = encodeSocketAttachment({
+      senderId: entry.conn.senderId,
+      started: entry.started,
+      expiresAt: entry.conn.expiresAt,
+      reauthAt: entry.reauthAt,
+      projectBound: this.isProjectBound(entry.conn),
+      joined: [...entry.joined],
+      features: entry.conn.features,
+      formats: entry.conn.formats,
+      access: entry.conn.access,
+      identity: entry.conn.identity,
+      sessionCheck: entry.sessionCheck,
+      usageState: entry.usageSession.state,
+      pageId: this.metadata?.pageId,
+    });
+    if (!attachment) {
+      // Attachment outgrew the 2 KiB cap (e.g. many joined docs): close with a
+      // retryable code so the client reconnects cleanly instead of drifting
+      // with stale deadlines or missing subscriptions after eviction.
+      void entry.wire.disconnect(4503, "temporarily_unavailable");
+      return;
+    }
+    try {
+      entry.ws.serializeAttachment(attachment);
+    } catch {
+      /* Socket already closed or detached. */
+    }
+  }
+
+  persistHibernatedAttachments() {
+    for (const entry of Array.from(this.hibernated.values())) this.persistSocketAttachment(entry);
+  }
+
+  recordSocketJoined(conn, doc) {
+    const entry = this.hibernatedByConn.get(conn);
+    if (!entry || !doc?.id || entry.joined.has(doc.id)) return;
+    entry.joined.add(doc.id);
+    this.persistSocketAttachment(entry);
+  }
+
+  async scheduleNextAlarm({ throwOnError = false } = {}) {
+    if (!this.supportsHibernation() || this.storageRefusal()) return;
+    const sockets = [];
+    for (const entry of this.hibernated.values()) {
+      if (entry.conn.closed) continue;
+      sockets.push({
+        closed: false,
+        driver: entry.conn.identity?.driver,
+        usageState: entry.usageSession.state,
+        reauthAt: entry.reauthAt,
+        expiresAt: entry.conn.expiresAt,
+      });
+    }
+    const target = nextAlarmAt({
+      sockets,
+      projectLeaseState: this.projectLease?.state ?? null,
+      now: Date.now(),
+    });
+    if (target === null) {
+      if (this.scheduledAlarmAt !== null) {
+        this.scheduledAlarmAt = null;
+        try {
+          await this.ctx.storage.deleteAlarm?.();
+        } catch (error) {
+          this.scheduledAlarmAt = undefined;
+          if (throwOnError) throw error;
+        }
+      }
+      return;
+    }
+    if (target !== this.scheduledAlarmAt) {
+      this.scheduledAlarmAt = target;
+      try {
+        await this.ctx.storage.setAlarm(target);
+      } catch (error) {
+        this.scheduledAlarmAt = undefined;
+        if (throwOnError) throw error;
+      }
+    }
+  }
+
+  /** Restore surviving hibernated WebSockets once per cold Durable Object wake. */
+  ensureRehydrated() {
+    if (this.rehydrated || typeof this.ctx?.getWebSockets !== "function") return Promise.resolve();
+    if (this.rehydrating) return this.rehydrating;
+    const run = (async () => {
+      const sockets = this.ctx.getWebSockets();
+      if (!sockets.length) {
+        this.rehydrated = true;
+        return;
+      }
+      // Preserve activity epoch across eviction and advance revision strictly
+      // past any previously broadcast snapshot so open tabs keep accepting
+      // agent progress and presence updates without reconnecting.
+      if (!this.storageRefusal()) {
+        const storedActivity = await this.ctx.storage.get(ACTIVITY_EPOCH_KEY).catch(() => null);
+        if (storedActivity?.epoch) {
+          const nextRevision = Math.max((storedActivity.revision ?? 0) + 1, Date.now());
+          this.storedActivity = { epoch: storedActivity.epoch, revision: nextRevision };
+          if (this.activity) {
+            this.activity.epoch = storedActivity.epoch;
+            this.activity.revision = nextRevision;
+          }
+          await this.ctx.storage.put(ACTIVITY_EPOCH_KEY, this.storedActivity).catch(() => {});
+        }
+      }
+      const parsed = [];
+      let needsProject = false;
+      for (const ws of sockets) {
+        if (this.hibernated.has(ws)) continue;
+        let raw = null;
+        try {
+          raw = ws.deserializeAttachment?.();
+        } catch {
+          raw = null;
+        }
+        const att = parseSocketAttachment(raw);
+        if (!att) {
+          try {
+            ws.close(4503, "temporarily_unavailable");
+          } catch {
+            /* Already closed. */
+          }
+          continue;
+        }
+        if (att.projectBound || (this.metadata && att.identity.principal !== this.metadata.owner))
+          needsProject = true;
+        parsed.push({ ws, att });
+      }
+      let projectFailed = false;
+      if (needsProject && this.projectAccess === null && this.metadata) {
+        const observed = this.projectAccessState ?? PROJECT_ACCESS_EMPTY;
+        try {
+          const snapshot = await resolveProjectAccess(this.env, this.metadata);
+          this.projectAccessState = projectAccessStep(
+            this.projectAccessState ?? PROJECT_ACCESS_EMPTY,
+            { observed, owner: this.metadata.owner, snapshot },
+          );
+        } catch (error) {
+          if (error?.code !== "project_policy_unavailable") throw error;
+          projectFailed = true;
+        }
+      }
+      let restored = 0;
+      for (const { ws, att } of parsed) {
+        if (projectFailed && att.projectBound) {
+          try {
+            ws.close(4503, "project_lease_expired");
+          } catch {
+            /* Already closed. */
+          }
+          continue;
+        }
+        this.attachHibernatedSocket({ ws, att, rehydrated: true });
+        restored++;
+      }
+      if (this.plain && this.hibernated.size > 0) {
+        const { extended, closed } = this.runExtendLeases();
+        if (extended > 0) this.persistHibernatedAttachments();
+        if (closed > 0) {
+          this.activity?.prune();
+          this.broadcastProfiles();
+        }
+      }
+      // Broadcast the fresh activity snapshot (preserved epoch, higher
+      // revision) so open tabs clear any expired pre-eviction progress.
+      if (restored > 0 && this.hibernated.size > 0) this.broadcastActivity();
+      const deadline = this.nextProjectLeaseDeadline();
+      if (deadline !== null) this.ensureProjectLease().leaseBound(deadline);
+      this.rehydrated = true;
+      await this.scheduleNextAlarm();
+    })();
+    this.rehydrating = run;
+    const clear = () => {
+      if (this.rehydrating === run) this.rehydrating = null;
+    };
+    void run.then(clear, clear);
+    return run;
+  }
+
+  /** Register a hibernatable OIDC WebSocket (freshly accepted or rehydrated on
+   * cold wake) with PlainSync, usage tracking, and close cleanup. */
+  attachHibernatedSocket({ ws, att, labels = {}, rehydrated = false }) {
+    const controller = hibernatingSocketTransport(ws, {
+      onRejected: (reason) =>
+        logAdmissionDenied(
+          withAdmissionReason(
+            Object.assign(new Error("Unsupported sync frame"), { status: 400 }),
+            transportReason(reason),
+          ),
+          { stage: "native", identity: att.identity },
+        ),
+    });
+    const conn = rehydrated
+      ? this.plain.rehydrate(controller.transport, {
+          identity: att.identity,
+          senderId: att.senderId,
+          features: att.features,
+          formats: att.formats,
+          access: att.access,
+          expiresAt: att.expiresAt,
+          joined: att.joined,
+        })
+      : this.plain.accept(ws, att.identity, {
+          features: att.features,
+          formats: att.formats,
+          senderId: att.senderId,
+          transport: controller.transport,
+        });
+    const wire = {
+      disconnect: async (code, reason) =>
+        conn.transport.close(code ?? 1000, reason ?? "Disconnected"),
+    };
+    conn.wire = wire;
+    const syncUsage = {
+      surface: "browser-sync",
+      identity: att.identity,
+      labels,
+      pageId: this.metadata?.pageId ?? att.pageId,
+    };
+    const usageSession = new UsageSession({
+      ...syncUsage,
+      owner: this.metadata?.owner,
+      env: this.env,
+      ctx: this.ctx,
+    });
+    if (rehydrated) usageSession.state = att.usageState;
+    else usageSession.event("admit");
+    const entry = {
+      ws,
+      wire,
+      conn,
+      controller,
+      started: att.started,
+      reauthAt: att.reauthAt,
+      joined: new Set(att.joined ?? []),
+      sessionCheck: att.sessionCheck,
+      usageSession,
+      syncUsage,
+    };
+    this.wires.add(wire);
+    this.wirePrincipals.set(wire, att.identity.principal);
+    this.hibernated.set(ws, entry);
+    this.hibernatedByConn.set(conn, entry);
+    conn.transport.onClose((detail) => {
+      usageSession.event("close");
+      flushUsage(this.env, this.ctx);
+      this.hibernated.delete(ws);
+      this.hibernatedByConn.delete(conn);
+      this.wires.delete(wire);
+      this.wirePrincipals.delete(wire);
+      if (
+        !this.extendingLeases &&
+        this.projectLease &&
+        this.projectLease.state.name !== "idle" &&
+        this.nextProjectLeaseDeadline() === null
+      )
+        this.projectLease.socketsGone();
+      this.activity?.prune();
+      this.broadcastProfiles();
+      const closeCode =
+        !detail?.peer &&
+        Number.isSafeInteger(detail?.code) &&
+        detail.code >= 1000 &&
+        detail.code <= 4999
+          ? detail.code
+          : undefined;
+      const closeReason = syncCloseReason(detail);
+      logUsage(
+        {
+          action: "sync.close",
+          ...syncUsage,
+          latencyMs: Date.now() - entry.started,
+          ...(closeCode !== undefined && { closeCode }),
+          ...(closeReason && { closeReason, outcome: closeReason }),
+        },
+        this.env,
+      );
+      void this.scheduleNextAlarm();
+    });
+    return entry;
+  }
+
+  async webSocketMessage(ws, message) {
+    await this.ready;
+    await this.documentReady();
+    await this.ensureRehydrated();
+    const entry = this.hibernated.get(ws);
+    if (!entry) {
+      try {
+        ws.close(4503, "temporarily_unavailable");
+      } catch {
+        /* Already closed. */
+      }
+      return;
+    }
+    entry.controller.deliverMessage(message);
+    this.contentActivity?.pump();
+    flushUsage(this.env, this.ctx);
+    await this.scheduleNextAlarm();
+  }
+
+  async webSocketClose(ws, code, reason) {
+    await this.ready;
+    if (!this.rehydrated && this.hibernated.size === 0 && this.ctx.getWebSockets?.().length === 0) {
+      let raw = null;
+      try {
+        raw = ws.deserializeAttachment?.();
+      } catch {
+        raw = null;
+      }
+      const att = parseSocketAttachment(raw);
+      if (att) {
+        const syncUsage = {
+          surface: "browser-sync",
+          identity: att.identity,
+          labels: {},
+          pageId: this.metadata?.pageId ?? att.pageId,
+        };
+        const usageSession = new UsageSession({
+          ...syncUsage,
+          owner: this.metadata?.owner,
+          env: this.env,
+          ctx: this.ctx,
+        });
+        usageSession.state = att.usageState;
+        usageSession.event("close");
+        logUsage(
+          {
+            action: "sync.close",
+            ...syncUsage,
+            latencyMs: Date.now() - att.started,
+            closeReason: "client_close",
+            outcome: "client_close",
+          },
+          this.env,
+        );
+        flushUsage(this.env, this.ctx);
+      }
+      this.scheduledAlarmAt = undefined;
+      await this.scheduleNextAlarm();
+      return;
+    }
+    await this.documentReady();
+    await this.ensureRehydrated();
+    this.hibernated.get(ws)?.controller.deliverClose(code, reason);
+  }
+
+  async webSocketError(ws) {
+    await this.ready;
+    if (!this.rehydrated && this.hibernated.size === 0 && this.ctx.getWebSockets?.().length === 0) {
+      this.scheduledAlarmAt = undefined;
+      await this.scheduleNextAlarm();
+      return;
+    }
+    await this.documentReady();
+    await this.ensureRehydrated();
+    this.hibernated.get(ws)?.controller.deliverError();
+  }
+
+  /** Unified Durable Object alarm driving dwell ticks (`page.read`/`page.visit`),
+   * Project safety-net lease renewal, periodic 60 s OIDC and organization
+   * membership re-checks, and fail-closed expiry without resident timers. */
+  async alarm() {
+    this.scheduledAlarmAt = undefined;
+    await this.ready;
+    if (!this.hasOpenSyncSockets()) return;
+    await this.documentReady();
+    await this.ensureRehydrated();
+    const now = Date.now();
+
+    // 1. Browser dwell ticks (30 s `page.read` / `page.visit`, then daily).
+    for (const entry of Array.from(this.hibernated.values())) {
+      if (entry.conn.closed) continue;
+      if (
+        entry.conn.identity?.driver === "Browser" &&
+        entry.usageSession.state.name === "open" &&
+        entry.usageSession.state.nextAt <= now
+      ) {
+        entry.usageSession.event("tick");
+        this.persistSocketAttachment(entry);
+      }
+    }
+    flushUsage(this.env, this.ctx);
+
+    // 2. Project safety-net lease renewal (one shared lookup for all sockets).
+    if (
+      this.projectLease &&
+      this.projectLease.state.name === "armed" &&
+      this.projectLease.state.at <= now
+    ) {
+      await this.projectLease.tick(now);
+      this.persistHibernatedAttachments();
+    }
+
+    // 3. Periodic 60 s OIDC session and organization membership re-checks
+    // (deduplicated per session lookup + origin and per principal).
+    const oidcChecks = new Map();
+    const orgChecks = new Map();
+    for (const entry of Array.from(this.hibernated.values())) {
+      if (entry.conn.closed || !Number.isFinite(entry.reauthAt) || entry.reauthAt > now) continue;
+      const first = entry.sessionCheck.entries[0];
+      const key = `${first.kid}:${first.id}:${entry.sessionCheck.origin}`;
+      if (!oidcChecks.has(key))
+        oidcChecks.set(
+          key,
+          revalidateOidcSession(entry.sessionCheck, this.env, now).then(
+            (result) => ({ ok: true, result }),
+            (error) => ({ ok: false, error }),
+          ),
+        );
+      const outcome = await oidcChecks.get(key);
+      if (entry.conn.closed) continue;
+      if (!outcome.ok) {
+        void entry.wire.disconnect(admissionCloseCode(outcome.error), admissionCode(outcome.error));
+        continue;
+      }
+      const checked = outcome.result;
+      if (
+        checked.principal !== entry.conn.identity.principal ||
+        checked.canWrite !== entry.conn.identity.canWrite
+      ) {
+        const denied = new PermissionDenied("Credential changed");
+        void entry.wire.disconnect(admissionCloseCode(denied), admissionCode(denied));
+        continue;
+      }
+      // Refresh organization leases from D1 so directory removals close
+      // hibernated sockets within the same 60 s alarm window.
+      const orgKey = `${entry.conn.identity.principal}:${checked.expiresAt}`;
+      if (!orgChecks.has(orgKey)) {
+        const baseIdentity = { ...entry.conn.identity, expiresAt: checked.expiresAt };
+        orgChecks.set(orgKey, organizationLeases(this.env, baseIdentity, now));
+      }
+      let nextOrgs;
+      try {
+        nextOrgs = await orgChecks.get(orgKey);
+      } catch (error) {
+        if (!entry.conn.closed)
+          void entry.wire.disconnect(admissionCloseCode(error), admissionCode(error));
+        continue;
+      }
+      if (entry.conn.closed) continue;
+      const nextIdentity = Object.freeze({
+        ...entry.conn.identity,
+        expiresAt: checked.expiresAt,
+        organizations: nextOrgs.length ? Object.freeze(nextOrgs) : undefined,
+      });
+      if (!this.plain.refreshIdentity(entry.conn, nextIdentity)) continue;
+      entry.reauthAt = now + OIDC_REAUTH_MS;
+      this.persistSocketAttachment(entry);
+    }
+
+    // 4. Fail-closed expiry enforcement for every open hibernated socket.
+    const checkAt = Date.now();
+    for (const entry of Array.from(this.hibernated.values())) {
+      if (entry.conn.closed) continue;
+      if (Number.isFinite(entry.conn.expiresAt) && entry.conn.expiresAt <= checkAt) {
+        const error = leaseExpiryError(entry.conn.identity, entry.conn.expiresAt);
+        void entry.wire.disconnect(admissionCloseCode(error), admissionCloseReason(error));
+      }
+    }
+
+    // 5. Schedule the next earliest alarm; propagate write failures so the
+    // runtime retries the alarm instead of silently stopping maintenance.
+    await this.scheduleNextAlarm({ throwOnError: true });
   }
 
   /** Resolve the Project access for `identity` on `metadata` and record it
@@ -6038,7 +6593,10 @@ export class Page {
     this.contentActivity?.stop();
     this.projectLease?.stop();
     this.pageCard?.stop({ deleting: true });
+    this.scheduledAlarmAt = undefined;
+    this.storedActivity = null;
     this.unwatchContent();
+    await this.ctx.storage.delete(ACTIVITY_EPOCH_KEY);
     await this.ctx.storage.delete(CONTENT_ACTIVITY_KEY);
     await this.ctx.storage.delete(TITLE_PROJECTION_KEY);
     await this.ctx.storage.delete(PROJECTION_PENDING);
@@ -6444,10 +7002,13 @@ export class Page {
       onWrite: (conn, doc) => this.browserWrite(conn, conn.identity, doc.kind),
       // A browser receives host messages once it has joined the document
       // that carries them, the Page document (document-modules.mjs).
-      onJoined: () => {
-        this.broadcastProfiles();
-        this.broadcastActivity();
-        this.broadcastActorSnapshot();
+      onJoined: (conn, doc, hostMessages) => {
+        this.recordSocketJoined(conn, doc);
+        if (hostMessages) {
+          this.broadcastProfiles();
+          this.broadcastActivity();
+          this.broadcastActorSnapshot();
+        }
       },
     });
     // A deleted Page serves nothing: its documents are gone, and a record
@@ -6489,6 +7050,10 @@ export class Page {
       readAccess: (identity) => this.policy.account(identity),
       profiles: () => this.plain.profiles(),
       onChange: (snapshot) => this.broadcastActivity(snapshot),
+      ...(this.storedActivity && {
+        epoch: this.storedActivity.epoch,
+        revision: this.storedActivity.revision,
+      }),
     });
     return this.activity;
   }
@@ -6864,7 +7429,11 @@ export class Page {
       holdUntilSettled(this.ctx, work.then(noop, noop));
       return work;
     };
-    if (["/api/sync", "/api/saved"].includes(new URL(request.url).pathname)) {
+    if (
+      ["/api/sync", "/api/saved", "/internal/project-access-changed"].includes(
+        new URL(request.url).pathname,
+      )
+    ) {
       const running = this.run(request);
       return settle(running);
     }
@@ -6925,6 +7494,24 @@ export class Page {
       if (url.pathname === LINK_PREVIEW_PATH) return await this.linkPreviewResponse(request);
       if ([PREVIEW_READ, PREVIEW_MANAGE].includes(url.pathname))
         return await publicationHost(this, request);
+      if (url.pathname === "/internal/project-access-changed") {
+        if (request.headers.has("authorization") || request.headers.has("cookie"))
+          throw new HttpError(403, "Host only");
+        // With no open sync sockets, future HTTP requests already fetch fresh
+        // Project policy on admission; keep the last settled snapshot intact
+        // so `projectUnavailable` still distinguishes known members during an outage.
+        if (!this.hasOpenSyncSockets()) return new Response(null, { status: 204 });
+        await this.documentReady();
+        await this.ensureRehydrated();
+        try {
+          const deadline = await this.renewProjectLease();
+          if (deadline !== null) this.ensureProjectLease().leaseBound(deadline);
+        } catch (error) {
+          if (error?.code !== "project_policy_unavailable") throw error;
+        }
+        await this.scheduleNextAlarm();
+        return new Response(null, { status: 204 });
+      }
       // A shared-Page check of a host that hasn't booted answers from its
       // record when it can (page-startup.mjs).
       if (url.pathname === "/internal/catalog") {
@@ -6932,6 +7519,7 @@ export class Page {
         if (answer) return answer;
       }
       await this.documentReady();
+      await this.ensureRehydrated();
       // This request is live: content effects deferred from the repository's
       // loop, or a coalesced time whose timer never fired, run now.
       this.contentActivity?.pump();
@@ -8542,6 +9130,7 @@ export class Page {
         this.contentActivity?.stop();
         this.projectLease?.stop();
         this.pageCard?.stop();
+        this.scheduledAlarmAt = undefined;
         this.unwatchContent();
         this.activity?.close();
         this.plain.disconnectAll();
@@ -8955,7 +9544,6 @@ export class Page {
     const pair = new WebSocketPair();
     const client = pair[0],
       socket = pair[1];
-    socket.accept();
     const syncUsage = {
       surface: "browser-sync",
       identity,
@@ -8963,16 +9551,15 @@ export class Page {
       pageId: this.metadata?.pageId,
     };
     const started = Date.now();
-    let conn;
+    // Validate admission before calling `ctx.acceptWebSocket`, so a refused
+    // connection never enters the runtime's hibernatable socket table.
+    let admittedAccess;
+    let admittedExpiresAt;
     try {
-      // The tab's presence id (plainSender): it keys presence labels, and the
-      // host stamps every relay with it.
-      conn = this.plain.accept(socket, identity, {
-        features,
-        formats,
-        senderId: sender.senderId,
-      });
+      admittedAccess = this.policy.account(identity);
+      admittedExpiresAt = this.policy.leaseExpiresAt(identity);
     } catch (error) {
+      socket.accept();
       logAdmissionDenied(error, { stage: "native", identity });
       logUsage(
         {
@@ -8991,6 +9578,113 @@ export class Page {
       }
       return new Response(null, { status: 101, webSocket: client });
     }
+    const sessionCheck = this.oidcSessionChecks?.get(identity) ?? null;
+    const reauthAt = started + OIDC_REAUTH_MS;
+    const projectBound =
+      Number.isFinite(admittedExpiresAt) &&
+      this.projectAccess?.valid_until === admittedExpiresAt &&
+      leaseExpiryError(identity, admittedExpiresAt).reason === "project_lease_expired";
+    const attachment =
+      this.supportsHibernation() && sessionCheck
+        ? encodeSocketAttachment({
+            senderId: sender.senderId,
+            started,
+            expiresAt: admittedExpiresAt,
+            reauthAt,
+            projectBound,
+            joined: [],
+            features,
+            formats,
+            access: {
+              generation: admittedAccess.generation,
+              role: admittedAccess.role,
+              canWrite: admittedAccess.canWrite,
+              canComment: admittedAccess.canComment,
+              trashed: admittedAccess.trashed,
+            },
+            identity,
+            sessionCheck,
+            usageState: { name: "open", nextAt: started + 30_000 },
+            pageId: this.metadata?.pageId,
+          })
+        : null;
+    // Verify the slimmed attachment identity still satisfies policy before
+    // registering the socket with `ctx.acceptWebSocket`.
+    let parsedAttachment = attachment ? parseSocketAttachment(attachment) : null;
+    if (parsedAttachment) {
+      try {
+        this.policy.account(parsedAttachment.identity);
+      } catch {
+        parsedAttachment = null;
+      }
+    }
+
+    if (parsedAttachment) {
+      this.ctx.acceptWebSocket(socket);
+      socket.serializeAttachment(attachment);
+      this.rehydrated = true;
+      let entry;
+      try {
+        entry = this.attachHibernatedSocket({
+          ws: socket,
+          att: parsedAttachment,
+          labels: syncUsage.labels,
+          rehydrated: false,
+        });
+      } catch (error) {
+        try {
+          socket.close(admissionCloseCode(error), admissionCode(error));
+        } catch {
+          /* Already closed. */
+        }
+        throw error;
+      }
+      this.persistSocketAttachment(entry);
+      if (sender.replaces && !sender.replaces.closed) {
+        const replaced = plainSessionReplaced();
+        logAdmissionDenied(replaced, { stage: "native", identity });
+        sender.replaces.transport.close(admissionCloseCode(replaced), admissionCode(replaced));
+      }
+      const projectDeadline = this.nextProjectLeaseDeadline();
+      if (projectDeadline !== null) this.ensureProjectLease().leaseBound(projectDeadline);
+      logUsage(
+        {
+          action: "sync.open",
+          ...syncUsage,
+          admitted: true,
+          outcome: "ok",
+          latencyMs: Date.now() - started,
+        },
+        this.env,
+      );
+      const activity = this.activityState();
+      if (!this.storedActivity && !this.storageRefusal()) {
+        this.storedActivity = { epoch: activity.epoch, revision: activity.revision };
+        const saveEpoch = this.ctx.storage
+          .put(ACTIVITY_EPOCH_KEY, this.storedActivity)
+          .catch(() => {});
+        if (typeof this.ctx.waitUntil === "function") this.ctx.waitUntil(saveEpoch);
+        else void saveEpoch;
+      }
+      this.broadcastProfiles();
+      this.broadcastActivity();
+      this.broadcastActorSnapshot();
+      const alarm = this.scheduleNextAlarm();
+      if (typeof this.ctx.waitUntil === "function") this.ctx.waitUntil(alarm);
+      else void alarm;
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    // Resident fallback when the credential is not an OIDC session with a
+    // derived lookup, the runtime lacks WebSocket hibernation, the serialized
+    // attachment exceeds Cloudflare's 2 KiB cap, or the slimmed attachment
+    // identity does not satisfy policy.
+    socket.accept();
+    const conn = this.plain.accept(socket, identity, {
+      features,
+      formats,
+      senderId: sender.senderId,
+    });
     const wire = {
       disconnect: async (code, reason) =>
         conn.transport.close(code ?? 1000, reason ?? "Disconnected"),
@@ -9063,6 +9757,7 @@ export class Page {
         this.nextProjectLeaseDeadline() === null
       )
         this.projectLease.socketsGone();
+      if (this.hibernated.size > 0) void this.scheduleNextAlarm();
       this.activity?.prune();
       this.broadcastProfiles();
       const closeCode =
@@ -9107,6 +9802,31 @@ export class Page {
     );
     return new Response(null, { status: 101, webSocket: client });
   }
+}
+
+/** Fan out best-effort Project access change notices to child Page DOs with a
+ * rolling concurrency limit and per-call timeout so one slow Page cannot delay
+ * revocations for the rest of the Project. */
+async function notifyPagesAccessChanged(env, pageIds) {
+  if (!env.PAGES || !pageIds?.length) return;
+  const CONCURRENCY = 8;
+  let next = 0;
+  const worker = async () => {
+    while (next < pageIds.length) {
+      const pageId = pageIds[next++];
+      try {
+        await env.PAGES.getByName(pageId).fetch(
+          new Request("https://pages.internal/internal/project-access-changed", {
+            method: "POST",
+            signal: AbortSignal.timeout(5_000),
+          }),
+        );
+      } catch {
+        /* Best-effort push; the 60 s Project lease is the fail-closed backstop. */
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pageIds.length) }, () => worker()));
 }
 
 const HOST_CLOSE_REASONS = Object.freeze({

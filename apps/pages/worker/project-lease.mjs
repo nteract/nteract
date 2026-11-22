@@ -6,10 +6,10 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  *
  * One runner per Page host renews the shared Project snapshot ahead of
  * `valid_until`, so healthy Project readers stay connected across lease
- * boundaries without closing and reconnecting every 15 seconds. One Project
- * lookup serves every open socket on the Page. When the Project is
- * unavailable, existing socket deadlines remain untouched and each socket's
- * own expiry timer still closes fail-closed at `valid_until`.
+ * boundaries without closing and reconnecting. One Project lookup serves every
+ * open socket on the Page. When the Project is unavailable, existing socket
+ * deadlines remain untouched and each socket still closes fail-closed at
+ * `valid_until`.
  *
  * States, each carrying a monotonic `token` fencing late refresh outcomes:
  * - idle: no open socket is bound to the Page's Project lease.
@@ -18,15 +18,16 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  * - refreshing: one `resolve` call for `token` is running.
  * - stopped: terminal state once the Page host retires or deletes.
  *
- * Where effects run. On celld 0.6.3 a timer or fetch started inside a closed
- * request context is dropped. Each open resident socket passes its lifetime
- * into `serve(until)`; one active socket acts as the timer/fetch driver at a
- * time, and if that socket closes while another remains open, the next socket
- * takes over and re-arms the pending renewal in its own live request.
+ * Where effects run. On runtimes with WebSocket hibernation, the Page's single
+ * Durable Object alarm calls `tick(now)` directly without keeping resident
+ * timers alive. On resident fallback sockets (such as non-OIDC sockets or
+ * runtimes without hibernation), each open socket passes its lifetime into
+ * `serve(until)` so timers and fetches stay inside a live request context on
+ * celld 0.6.3; if the driver socket closes, another live socket takes over.
  */
 
-export const PROJECT_LEASE_RENEW_AHEAD_MS = 5_000;
-export const PROJECT_LEASE_RETRY_MS = 1_000;
+export const PROJECT_LEASE_RENEW_AHEAD_MS = 10_000;
+export const PROJECT_LEASE_RETRY_MS = 2_000;
 
 /** When to start renewing a lease that ends at `validUntil`, from `now`. */
 export const renewAt = (validUntil, now) =>
@@ -184,6 +185,7 @@ export class ProjectLease {
   #driver = null;
   #runners = new Map();
   #pendingResolve = null;
+  #refreshOwner = null;
 
   constructor({
     resolve,
@@ -215,9 +217,37 @@ export class ProjectLease {
     this.#step({ type: "stop" });
   }
 
+  /** Run one due renewal directly from a Durable Object alarm without using
+   * resident `setTimeout` timers. Returns when the refresh settles. */
+  async tick(current = this.now()) {
+    if (this.#state.name !== "armed" || current < this.#state.at) return;
+    const result = this.#step({ type: "due", now: current }, { runEffects: false });
+    if (result.rejected) return;
+    const resolveEffect = result.effects.find((effect) => effect.type === "resolve");
+    if (!resolveEffect) return;
+    this.#refreshOwner = "alarm";
+    let validUntil;
+    try {
+      validUntil = await this.resolve();
+    } catch (error) {
+      if (this.#refreshOwner === "alarm") this.#refreshOwner = null;
+      this.onError(error);
+      this.#step(
+        { type: "unavailable", token: resolveEffect.token, now: this.now() },
+        { runEffects: false },
+      );
+      return;
+    }
+    if (this.#refreshOwner === "alarm") this.#refreshOwner = null;
+    this.#step(
+      { type: "resolved", token: resolveEffect.token, validUntil, now: this.now() },
+      { runEffects: false },
+    );
+  }
+
   /** Keep renewal timers and fetches inside a live resident socket's request.
-   * One socket drives at a time; when it closes, another live socket takes
-   * over and re-arms the timer (or retries an interrupted refresh). */
+   * One socket drives at a time; when it closes, another live socket (or the
+   * Page DO alarm for hibernated peers) takes over and re-arms the renewal. */
   async serve(until) {
     let open = true;
     const runner = { wake: null };
@@ -230,12 +260,14 @@ export class ProjectLease {
         this.#clearTimer();
         this.#pendingResolve = null;
         this.#driver = null;
-        if (this.#state.name === "refreshing" && this.#runners.size > 0)
+        if (this.#state.name === "refreshing" && this.#refreshOwner === "runner") {
+          this.#refreshOwner = null;
           this.#step({
             type: "unavailable",
             token: this.#state.token,
             now: this.now(),
           });
+        }
         this.#wakeOne();
       }
       runner.wake?.();
@@ -266,10 +298,10 @@ export class ProjectLease {
     }
   }
 
-  #step(event) {
+  #step(event, { runEffects = true } = {}) {
     const result = projectLeaseMachine.step(this.#state, event);
     this.#state = result.state;
-    if (result.rejected) return result;
+    if (result.rejected || !runEffects) return result;
     for (const effect of result.effects) {
       if (effect.type === "cancel") {
         this.#clearTimer();
@@ -330,15 +362,18 @@ export class ProjectLease {
   }
 
   #runResolve(activeToken) {
+    this.#refreshOwner = "runner";
     void (async () => {
       let validUntil;
       try {
         validUntil = await this.resolve();
       } catch (error) {
+        if (this.#refreshOwner === "runner") this.#refreshOwner = null;
         this.onError(error);
         this.#step({ type: "unavailable", token: activeToken, now: this.now() });
         return;
       }
+      if (this.#refreshOwner === "runner") this.#refreshOwner = null;
       this.#step({ type: "resolved", token: activeToken, validUntil, now: this.now() });
     })();
   }

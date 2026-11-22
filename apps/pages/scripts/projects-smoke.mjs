@@ -1839,8 +1839,9 @@ try {
   assert.equal(missing.body.code, "move_destination_required");
   complete("move_page moved the Page between Projects and out to Your items over MCP");
 
-  // A real browser claims an email invitation, then crosses two hard Project
-  // lease deadlines. Capture protocol facts only, never cookies or signer keys.
+  // A real browser claims an email invitation, stays connected across one full
+  // 60-second Project lease via alarm renewal, then closes immediately on
+  // event-driven Project revocation push. Capture protocol facts only.
   const leaseProject = await ok("owner", "create_project", {
     title: "Inherited lease fixture",
     nonce: crypto.randomUUID(),
@@ -1907,13 +1908,14 @@ try {
   const events = () => member.evaluate(() => window.__leaseEvents);
   const openedBefore = (await events()).filter((event) => event.name === "open").length;
   const closedBefore = (await events()).filter((event) => event.name === "close").length;
-  // Wait past one full 15-second Project lease; in-place renewal keeps the socket open.
-  await member.waitForTimeout(17000);
+  // Wait past one full 60-second Project lease and OIDC re-check; alarm-driven
+  // in-place renewal keeps the hibernated socket open without closing.
+  await member.waitForTimeout(62000);
   const afterLease = await events();
   assert.equal(
     afterLease.filter((event) => event.name === "close").length,
     closedBefore,
-    "in-place Project lease renewal keeps the socket open across the 15-second boundary",
+    "in-place Project lease renewal keeps the socket open across the 60-second boundary",
   );
   assert.equal(afterLease.filter((event) => event.name === "open").length, openedBefore);
   await expect(leaseContent).toHaveAttribute("contenteditable", "true");
@@ -1921,7 +1923,7 @@ try {
   await expect(member.getByText(/Server unreachable|Sign in again/)).toHaveCount(0);
   report.projectLease = { cycles: afterLease };
   complete(
-    "An accepted Project editor stayed connected across the 15-second lease boundary without closing",
+    "An accepted Project editor stayed connected across the 60-second lease boundary without closing",
   );
   await member.evaluate(() => {
     window.__leaseHold = window.__leaseEvents.filter((event) => event.name === "open").at(-1).id;
@@ -1948,7 +1950,7 @@ try {
   report.projectLease.revocation_ms = Date.now() - revokedAt;
   assert.ok(
     report.projectLease.revocation_ms <= 15000,
-    "revocation is bounded by the inherited lease",
+    "event-driven Project revocation push closes the live socket promptly",
   );
   await expect(leaseContent).toHaveCount(0);
   const downloaded = member.waitForEvent("download");
