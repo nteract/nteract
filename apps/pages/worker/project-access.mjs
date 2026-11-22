@@ -1,10 +1,12 @@
 import { projectObject } from "./authz.mjs";
 import { projectPolicyUnavailable } from "./policy.mjs";
 
-// Leases are transient and never stored in a Page record. A failed refresh
+// Leases are transient and never stored in a Page record. Revocations and Page
+// moves push immediately via `/internal/project-access-changed`; this 60 s
+// lease is the fail-closed backstop if a push is missed. A failed refresh
 // grants nothing inherited to its caller and leaves the host's snapshot as it
 // was; direct grants remain independently effective.
-export const PROJECT_ACCESS_LEASE_MS = 15_000;
+export const PROJECT_ACCESS_LEASE_MS = 60_000;
 
 export const PROJECT_ACCESS_EMPTY = Object.freeze({
   name: "unavailable",

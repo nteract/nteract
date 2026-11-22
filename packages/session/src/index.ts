@@ -26,6 +26,7 @@ export {
   openServerSecret,
   randomSecret,
   readServerAppSession,
+  readServerAppSessionByIds,
   revokeServerSession,
   revokeServerSessionsFor,
   sealServerSecret,

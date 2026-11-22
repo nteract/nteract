@@ -28,7 +28,8 @@ export const CARDS_LANE = "cards";
 export function catalogLane(request) {
   const { pathname } = new URL(request.url);
   if (pathname === "/internal/location") return "location";
-  if (pathname === "/internal/project-discovery") return "discovery";
+  if (pathname === "/internal/project-discovery" || pathname === "/internal/space/access-changed")
+    return "discovery";
   if (pathname === "/internal/catalog" && request.headers.get(CARDS_LANE_HEADER) === CARDS_LANE)
     return "cards";
   return "queued";

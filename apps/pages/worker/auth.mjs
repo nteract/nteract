@@ -1,3 +1,10 @@
+import {
+  SERVER_SESSION_COOKIE,
+  cookieValue,
+  readServerAppSessionByIds,
+  serverSessionContext,
+  serverSessionIds,
+} from "@nteract/session";
 import { pagesPublicOrigin } from "../agent-guide.mjs";
 import { readAccessToken } from "./oauth-store.mjs";
 import { oauthDriverName } from "./oauth-clients.mjs";
@@ -478,6 +485,51 @@ async function authenticateRequest(request, env) {
     },
     env,
   );
+}
+
+/** Derive the non-secret D1 lookup keys (`ids`, `origin`) for an OIDC session
+ * cookie so a hibernating WebSocket attachment can re-check revocation on
+ * alarm without ever storing the raw cookie token. The expected context is
+ * recomputed from `env` on each alarm check so issuer/client/origin changes
+ * take effect immediately. */
+export async function extractOidcSessionCheck(request, env) {
+  const token = cookieValue(request, SERVER_SESSION_COOKIE);
+  if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
+  const ids = await serverSessionIds(env, token);
+  const origin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN?.trim() || new URL(request.url).origin)
+    .origin;
+  return { ids, origin };
+}
+
+/** Re-check an OIDC session directly against `oidc_server_sessions` by its
+ * derived lookup keys and current environment context. Returns
+ * `{ principal, canWrite, expiresAt }` or throws a 401 `credential_expired`
+ * refusal if the session was revoked, expired, or no longer matches `env`. */
+export async function revalidateOidcSession(sessionCheck, env, nowMs = Date.now()) {
+  const expectedOrigin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN?.trim() || sessionCheck.origin)
+    .origin;
+  if (expectedOrigin !== sessionCheck.origin)
+    throw withAdmissionReason(
+      new HttpError(401, "Sign in to Pages", "auth_required"),
+      "credential_expired",
+    );
+  const context = serverSessionContext(env, expectedOrigin);
+  const session = await readServerAppSessionByIds(
+    env,
+    sessionCheck.ids,
+    context,
+    Math.floor(nowMs / 1000),
+  );
+  if (!session)
+    throw withAdmissionReason(
+      new HttpError(401, "Sign in to Pages", "auth_required"),
+      "credential_expired",
+    );
+  return {
+    principal: session.principal,
+    canWrite: true,
+    expiresAt: session.expiresAt * 1000,
+  };
 }
 
 /** Self-account data only; never use this projection for collaborative presence. */

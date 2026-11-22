@@ -116,6 +116,30 @@ export function serverSessionContext(env: ServerSessionEnvironment, origin: stri
   ]);
 }
 
+async function loadServerSessionByIds(
+  env: ServerSessionEnvironment,
+  ids: readonly string[],
+  context: string,
+  now: number,
+): Promise<ServerSessionRow | null> {
+  if (
+    !Array.isArray(ids) ||
+    ids.length < 1 ||
+    ids.length > 2 ||
+    ids.some((id) => typeof id !== "string" || !id) ||
+    typeof context !== "string" ||
+    !context
+  )
+    return null;
+  const db = await oidcDatabase(env);
+  const row = await db
+    .prepare(`SELECT * FROM oidc_server_sessions WHERE ${idMatch([...ids])}
+    AND idle_expires_at > ? AND absolute_expires_at > ?`)
+    .bind(...ids, now, now)
+    .first<ServerSessionRow>();
+  return row?.context === context ? row : null;
+}
+
 export async function loadServerSession(
   env: ServerSessionEnvironment,
   request: Request,
@@ -123,15 +147,9 @@ export async function loadServerSession(
 ): Promise<ServerSessionRow | null> {
   const token = cookieValue(request, SERVER_SESSION_COOKIE);
   if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
-  const db = await oidcDatabase(env);
   const ids = await serverSessionIds(env, token);
-  const row = await db
-    .prepare(`SELECT * FROM oidc_server_sessions WHERE ${idMatch(ids)}
-    AND idle_expires_at > ? AND absolute_expires_at > ?`)
-    .bind(...ids, now, now)
-    .first<ServerSessionRow>();
   const origin = env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN?.trim() || new URL(request.url).origin;
-  return row?.context === serverSessionContext(env, new URL(origin).origin) ? row : null;
+  return loadServerSessionByIds(env, ids, serverSessionContext(env, new URL(origin).origin), now);
 }
 
 export async function readServerAppSession(
@@ -140,6 +158,23 @@ export async function readServerAppSession(
   now: number,
 ): Promise<CloudAppSession | null> {
   const row = await loadServerSession(env, request, now);
+  if (!row || row.access_expires_at <= now) return null;
+  const session: CloudAppSession = JSON.parse(row.session_json);
+  return session.expiresAt > now ? session : null;
+}
+
+/**
+ * Re-reads an existing server OIDC session by its HMAC-derived lookup IDs and
+ * expected context, without holding the raw session cookie token. Used by
+ * hibernating Durable Object alarms to check revocation and expiry.
+ */
+export async function readServerAppSessionByIds(
+  env: ServerSessionEnvironment,
+  ids: readonly string[],
+  context: string,
+  now: number,
+): Promise<CloudAppSession | null> {
+  const row = await loadServerSessionByIds(env, ids, context, now);
   if (!row || row.access_expires_at <= now) return null;
   const session: CloudAppSession = JSON.parse(row.session_json);
   return session.expiresAt > now ? session : null;

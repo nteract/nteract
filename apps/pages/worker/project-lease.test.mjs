@@ -17,9 +17,9 @@ const stopped = (token = 0) => ({ name: "stopped", token });
 const refused = (state, rejected) => ({ state, effects: [], rejected });
 
 test("the project lease machine covers every state, event and guard case", async () => {
-  const lease1 = T0 + 15_000;
-  const lease2 = T0 + 30_000;
-  const earlier = T0 + 12_000;
+  const lease1 = T0 + 60_000;
+  const lease2 = T0 + 120_000;
+  const earlier = T0 + 45_000;
   await runTable(projectLeaseMachine, [
     // idle
     {
@@ -311,7 +311,7 @@ test("ProjectLease renews across multiple cycles, retries unavailability, and ha
           code: "project_policy_unavailable",
         });
       }
-      return clock.now() + 15_000;
+      return clock.now() + 60_000;
     },
   });
 
@@ -328,35 +328,35 @@ test("ProjectLease renews across multiple cycles, retries unavailability, and ha
     }),
   );
 
-  runner.leaseBound(T0 + 15_000);
-  await clock.advance(9_999);
+  runner.leaseBound(T0 + 60_000);
+  await clock.advance(49_999);
   assert.equal(calls, 0);
   await clock.advance(1);
-  assert.equal(calls, 1, "renews 5 s before the 15 s lease ends");
+  assert.equal(calls, 1, "renews 10 s before the 60 s lease ends");
   assert.equal(runner.state.name, "armed");
-  assert.equal(runner.state.validUntil, T0 + 25_000);
+  assert.equal(runner.state.validUntil, T0 + 110_000);
 
   // Driver socket A closes while socket B stays open: socket B takes over the timer.
   closeA();
   await doneA;
-  await clock.advance(10_000);
+  await clock.advance(50_000);
   assert.equal(calls, 2, "second live socket drives the next renewal");
 
-  // Two transient failures retry at 1 s intervals, then recover before validUntil.
+  // Two transient failures retry at 2 s intervals, then recover before validUntil.
   failNext = 2;
-  await clock.advance(10_000);
+  await clock.advance(50_000);
   assert.equal(calls, 3, "initial attempt fails");
   assert.equal(runner.state.name, "armed");
-  await clock.advance(1_000);
+  await clock.advance(2_000);
   assert.equal(calls, 4, "first retry fails");
-  await clock.advance(1_000);
+  await clock.advance(2_000);
   assert.equal(calls, 5, "second retry succeeds before lease expiry");
-  assert.equal(runner.state.validUntil, clock.now() + 15_000);
+  assert.equal(runner.state.validUntil, clock.now() + 60_000);
 
   // Unavailability exhausting the remaining lease drops to idle cleanly.
   failNext = 10;
+  await clock.advance(50_000);
   await clock.advance(10_000);
-  await clock.advance(5_000);
   assert.equal(runner.state.name, "idle");
   assert.equal(clock.count(), 0);
 
@@ -382,15 +382,15 @@ test("ProjectLease ignores stale in-flight resolution after socketsGone and reco
       close = resolve;
     }),
   );
-  runner.leaseBound(T0 + 15_000);
-  await clock.advance(10_000);
+  runner.leaseBound(T0 + 60_000);
+  await clock.advance(50_000);
   assert.equal(runner.state.name, "refreshing");
   assert.equal(resolvers.length, 1);
 
   // All sockets disconnect, then a fresh socket binds and enters a new refresh.
   runner.socketsGone();
-  runner.leaseBound(clock.now() + 15_000);
-  await clock.advance(10_000);
+  runner.leaseBound(clock.now() + 60_000);
+  await clock.advance(50_000);
   assert.equal(resolvers.length, 2);
   assert.equal(runner.state.token, 2);
 
@@ -401,7 +401,7 @@ test("ProjectLease ignores stale in-flight resolution after socketsGone and reco
   assert.equal(runner.state.token, 2);
 
   // Second (current) refresh resolves with a new deadline.
-  resolvers[1](clock.now() + 15_000);
+  resolvers[1](clock.now() + 60_000);
   for (let i = 0; i < 6; i++) await Promise.resolve();
   assert.equal(runner.state.name, "armed");
 
@@ -435,12 +435,12 @@ test("ProjectLease re-arms if the runtime fires its timer 1 ms early", async () 
       close = resolve;
     }),
   );
-  runner.leaseBound(T0 + 15_000);
+  runner.leaseBound(T0 + 60_000);
   for (let i = 0; i < 4; i++) await Promise.resolve();
   assert.equal(scheduled.length, 1);
 
   // Fire 1 ms early: must re-arm for the remaining 1 ms instead of dropping the timer.
-  now = T0 + 9_999;
+  now = T0 + 49_999;
   scheduled[0].fn();
   assert.equal(calls, 0);
   assert.equal(runner.state.name, "armed");
@@ -448,7 +448,7 @@ test("ProjectLease re-arms if the runtime fires its timer 1 ms early", async () 
   assert.equal(scheduled[1].delay, 1);
 
   // Fire on time: renewal runs.
-  now = T0 + 10_000;
+  now = T0 + 50_000;
   scheduled[1].fn();
   for (let i = 0; i < 6; i++) await Promise.resolve();
   assert.equal(calls, 1);

@@ -243,7 +243,7 @@ export class PlainSync {
         },
         admitted: (conn, doc, fresh, claims) => this.#admitted(conn, doc, fresh, claims),
         joined: (conn, doc) => {
-          if (!conn.trusted && this.#moduleOf(doc)?.hostMessages) onJoined(conn, doc);
+          if (!conn.trusted) onJoined(conn, doc, Boolean(this.#moduleOf(doc)?.hostMessages));
         },
         refused: (conn, doc, refusal) => this.#refused(conn, doc, refusal, family),
         synced: (conn, _doc, round) => {
@@ -304,20 +304,24 @@ export class PlainSync {
 
   /** Accept an authenticated browser socket. Returns the connection.
    * `formats` are the `{ type, format }` pairs the client reads; a
-   * connection without them reads every served document. */
-  accept(socket, identity, { features = [], formats, senderId }) {
-    const transport = socketTransport(socket, {
-      onRejected: (reason) =>
-        logAdmissionDenied(
-          withAdmissionReason(
-            Object.assign(new Error("Unsupported sync frame"), { status: 400 }),
-            transportReason(reason),
+   * connection without them reads every served document. When `transport` is
+   * provided (hibernatable WebSocket), it is used directly instead of
+   * wrapping `socket` with event listeners. */
+  accept(socket, identity, { features = [], formats, senderId, transport } = {}) {
+    const wireTransport =
+      transport ??
+      socketTransport(socket, {
+        onRejected: (reason) =>
+          logAdmissionDenied(
+            withAdmissionReason(
+              Object.assign(new Error("Unsupported sync frame"), { status: 400 }),
+              transportReason(reason),
+            ),
+            { stage: "native", identity },
           ),
-          { stage: "native", identity },
-        ),
-    });
+      });
     const access = this.policy.account(identity);
-    const conn = this.host.accept(transport, {
+    const conn = this.host.accept(wireTransport, {
       identity,
       principal: identity.principal,
       displayName: identity.displayName,
@@ -331,6 +335,31 @@ export class PlainSync {
       rounds: ROUNDS_EMPTY,
       refusals: new Map(),
     });
+    return conn;
+  }
+
+  /** Restore a hibernated socket after Durable Object wake. Keeps the
+   * admission-time `access` and `expiresAt` until `extendLeases()` or an
+   * alarm check updates or closes it, and rejoins previously synced docs. */
+  rehydrate(
+    transport,
+    { identity, senderId, features = [], formats, access, expiresAt, joined = [] },
+  ) {
+    const conn = this.host.accept(transport, {
+      identity,
+      principal: identity.principal,
+      displayName: identity.displayName,
+      driver: identity.driver,
+      senderId,
+      features,
+      formats,
+      access,
+      role: access.role,
+      expiresAt,
+      rounds: ROUNDS_EMPTY,
+      refusals: new Map(),
+    });
+    this.host.rejoin(conn, joined);
     return conn;
   }
 
@@ -377,7 +406,8 @@ export class PlainSync {
   /** Re-evaluate every browser connection after a Project access refresh.
    * Already-expired sockets fail closed; connections whose access changed
    * close with `access_changed`; unchanged connections advance their lease
-   * deadline so each socket's own expiry timer re-arms in its own context. */
+   * deadline so the host's alarm (hibernating) or socket timer (resident)
+   * enforces the refreshed bound. */
   extendLeases() {
     const now = this.now();
     let extended = 0;

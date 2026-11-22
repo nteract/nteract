@@ -5,6 +5,7 @@ import { projectObject } from "./authz.mjs";
 import { DocumentPolicy, leaseExpiryError } from "./policy.mjs";
 import {
   PROJECT_ACCESS_EMPTY,
+  PROJECT_ACCESS_LEASE_MS,
   projectAccessStep,
   resolveProjectAccess,
 } from "./project-access.mjs";
@@ -168,7 +169,7 @@ test("Project snapshots come only from complete owner Catalog placement", async 
     PROJECTS: { getByName: () => ({ fetch: async () => Response.json(project) }) },
   };
   const snapshot = await resolveProjectAccess(env, metadata, now);
-  assert.equal(snapshot.valid_until, 16000);
+  assert.equal(snapshot.valid_until, now + PROJECT_ACCESS_LEASE_MS);
   assert.equal(snapshot.id, project.space_id);
   env.CATALOGS.getByName = () => ({
     fetch: async () => Response.json({ complete: false, space_id: project.space_id }),

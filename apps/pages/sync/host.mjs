@@ -384,6 +384,17 @@ export class SyncHost {
     return conn;
   }
 
+  /** Re-attach a rehydrated hibernated connection to documents it had joined
+   * before Durable Object eviction, with fresh Automerge sync state so both
+   * host fan-out and incoming browser frames converge immediately. */
+  rejoin(conn, docIds) {
+    for (const id of docIds) {
+      const doc = this.#docs.get(id);
+      if (!doc || !(conn.trusted || this.policy.canRead(conn, doc))) continue;
+      if (!doc.conns.has(conn)) doc.conns.set(conn, A.initSyncState());
+    }
+  }
+
   /** Close every connection the predicate selects with an application code. */
   disconnect(predicate, code = 4409, reason = "access_changed") {
     for (const conn of [...this.#conns])

@@ -14,6 +14,7 @@ import {
   openServerSecret,
   randomSecret,
   readServerAppSession,
+  readServerAppSessionByIds,
   revokeServerSession,
   revokeServerSessionsFor,
   sealServerSecret,
@@ -552,5 +553,43 @@ describe("keyring rotation", () => {
     const { id, context } = await insertSession(env, NOW);
     const sealed = db.row(id)!.sealed;
     await assert.rejects(openServerSecret(env, sealed, `session:other:${context}`));
+  });
+});
+
+describe("readServerAppSessionByIds", () => {
+  it("reads an active session by derived IDs, enforces context and expiry boundaries, and drops revoked rows", async () => {
+    const { db, env } = setup();
+    const { token, id, context } = await insertSession(env, NOW, {
+      accessExpiresAt: NOW + 600,
+    });
+    const ids = await serverSessionIds(env, token);
+    const active = await readServerAppSessionByIds(env, ids, context, NOW);
+    assert.equal(active?.principal, "user-1");
+
+    // Wrong context or malformed IDs are refused.
+    assert.equal(await readServerAppSessionByIds(env, ids, "wrong-context", NOW), null);
+    assert.equal(await readServerAppSessionByIds(env, [], context, NOW), null);
+    assert.equal(await readServerAppSessionByIds(env, [id, id, id], context, NOW), null);
+    assert.equal(await readServerAppSessionByIds(env, [""], context, NOW), null);
+
+    // Boundary seconds refuse expired access, idle, or absolute windows.
+    assert.equal(await readServerAppSessionByIds(env, ids, context, NOW + 600), null);
+    db.set(id, "access_expires_at = ?, idle_expires_at = ?", NOW + 9_999, NOW + 100);
+    assert.equal(
+      (await readServerAppSessionByIds(env, ids, context, NOW + 99))?.principal,
+      "user-1",
+    );
+    assert.equal(await readServerAppSessionByIds(env, ids, context, NOW + 100), null);
+    db.set(id, "idle_expires_at = ?, absolute_expires_at = ?", NOW + 9_999, NOW + 200);
+    assert.equal(
+      (await readServerAppSessionByIds(env, ids, context, NOW + 199))?.principal,
+      "user-1",
+    );
+    assert.equal(await readServerAppSessionByIds(env, ids, context, NOW + 200), null);
+
+    // Revoking the row causes immediate null.
+    db.set(id, "absolute_expires_at = ?", NOW + 9_999);
+    await revokeServerSession(env, request(token));
+    assert.equal(await readServerAppSessionByIds(env, ids, context, NOW), null);
   });
 });

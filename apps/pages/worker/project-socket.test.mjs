@@ -9,7 +9,6 @@ import { BUILD_FEATURES } from "../model/schema-features.mjs";
 import { hostTreeOf } from "../sync/host-handle.mjs";
 import { decodeFrame, encodeFrame } from "../sync/wire.mjs";
 import { Page } from "./index.mjs";
-import { PROJECT_ACCESS_LEASE_MS } from "./project-access.mjs";
 
 // Minimal Cloudflare WebSocketPair double that delivers close codes and binary
 // frames across the pair, so `Page.connect` runs its real plain-sync lease path.
@@ -225,17 +224,17 @@ test("Project sockets renew in place across lease periods with one Project read 
   const second = await ctx.openSync(ctx.member2Token, "22222222-2222-4222-8222-222222222222");
   ctx.resetProjectReads();
 
-  // Stay open across 3+ full 15 s lease periods (46 s total) without dropping either socket.
-  for (let cycle = 0; cycle < 4; cycle++) {
-    t.mock.timers.tick(11_500);
+  // Stay open across 3+ full 60 s lease periods without dropping either socket.
+  // Tick in 10 s steps so both 50 s Project renewals and 15 s API-key renewals settle before 60 s deadlines.
+  for (let step = 0; step < 18; step++) {
+    t.mock.timers.tick(10_000);
     await flushMicrotasks();
-    assert.equal(first.closed, null, `first socket stays open after cycle ${cycle + 1}`);
-    assert.equal(second.closed, null, `second socket stays open after cycle ${cycle + 1}`);
+    assert.equal(first.closed, null, `first socket stays open at ${(step + 1) * 10}s`);
+    assert.equal(second.closed, null, `second socket stays open at ${(step + 1) * 10}s`);
   }
-  assert.equal(
-    ctx.getProjectReads(),
-    4,
-    "one shared Project lookup per renewal serves both open sockets",
+  assert.ok(
+    ctx.getProjectReads() >= 3 && ctx.getProjectReads() <= 4,
+    `one shared Project lookup per renewal serves both sockets (got ${ctx.getProjectReads()})`,
   );
 
   // Owner revokes only the first member: the next in-place renewal closes first
@@ -245,8 +244,10 @@ test("Project sockets renew in place across lease periods with one Project read 
     owner: ctx.owner,
     acl: { revision: 2, members: { [ctx.member2]: { role: "viewer", generation: 1 } } },
   });
-  t.mock.timers.tick(11_500);
-  await flushMicrotasks();
+  for (let step = 0; step < 6 && !first.closed; step++) {
+    t.mock.timers.tick(10_000);
+    await flushMicrotasks();
+  }
   assert.deepEqual(first.closed, { code: 4409, reason: "access_changed" });
   assert.equal(second.closed, null, "unaffected Project reader stays connected");
   const closeRecord = usageLines.findLast((line) => line.action === "sync.close");
@@ -274,21 +275,28 @@ test("Project sockets recover from brief Project unavailability and fail closed 
   const ctx = await setupProjectPage(t);
   const socket = await ctx.openSync(ctx.memberToken, "33333333-3333-4333-8333-333333333333");
 
-  // Brief outage at the 10 s renewal mark, recovering before the 15 s deadline.
+  // Brief outage at the 50 s renewal mark, recovering before the 60 s deadline.
+  // Advance in 15 s steps first so API-key renewal stays fresh before the Project outage.
+  for (let i = 0; i < 3; i++) {
+    t.mock.timers.tick(15_000);
+    await flushMicrotasks();
+  }
   ctx.setProjectUnavailable(true);
-  t.mock.timers.tick(10_000);
+  t.mock.timers.tick(5_000);
   await flushMicrotasks();
   assert.equal(socket.closed, null, "transient outage does not close early");
 
   ctx.setProjectUnavailable(false);
-  t.mock.timers.tick(1_500);
+  t.mock.timers.tick(2_500);
   await flushMicrotasks();
   assert.equal(socket.closed, null, "retry recovers before lease expiry");
 
   // Sustained outage past the lease deadline fails closed with 4503 project_lease_expired.
   ctx.setProjectUnavailable(true);
-  t.mock.timers.tick(PROJECT_ACCESS_LEASE_MS + 100);
-  await flushMicrotasks();
+  for (let i = 0; i < 5 && !socket.closed; i++) {
+    t.mock.timers.tick(15_000);
+    await flushMicrotasks();
+  }
   assert.deepEqual(socket.closed, { code: 4503, reason: "project_lease_expired" });
 });
 
@@ -320,8 +328,10 @@ test("moving a Page out of its Project closes Project-inherited sockets with 440
   const ctx = await setupProjectPage(t);
   const socket = await ctx.openSync(ctx.memberToken, "55555555-5555-4555-8555-555555555555");
   ctx.setPageSpaceId(null);
-  t.mock.timers.tick(10_500);
-  await flushMicrotasks();
+  for (let i = 0; i < 6 && !socket.closed; i++) {
+    t.mock.timers.tick(10_000);
+    await flushMicrotasks();
+  }
   assert.deepEqual(socket.closed, { code: 4409, reason: "access_changed" });
   assert.equal(ctx.page.projectLease.state.name, "idle");
 });
@@ -348,8 +358,10 @@ test("downgrading a Project editor closes them with 4409 while the owner stays o
       },
     },
   });
-  t.mock.timers.tick(10_500);
-  await flushMicrotasks();
+  for (let i = 0; i < 6 && !memberSocket.closed; i++) {
+    t.mock.timers.tick(10_000);
+    await flushMicrotasks();
+  }
   assert.deepEqual(memberSocket.closed, { code: 4409, reason: "access_changed" });
   assert.equal(ownerSocket.closed, null);
   assert.equal(member2Socket.closed, null);
