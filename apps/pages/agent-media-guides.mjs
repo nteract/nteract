@@ -267,6 +267,8 @@ node check-view.mjs entry.js --data activity=activity.parquet --import activity-
 
 The runner enforces the frame's import-map and CSP rules, mounts \`render({ model, el, signal, host })\` against local \`--data\` files (supporting \`.arrayBuffer()\`, \`.text()\`, \`.json()\`, \`.csv()\`, \`.parquet()\`, and \`.slice()\`), steps \`requestAnimationFrame\`, fires a light/dark theme switch through \`host.onContextChange\`, and aborts \`signal\` to verify cleanup and flag leaked timers or listeners. Pass \`--anywidget\` and \`--state '{...}'\` to check an anywidget AFM export, or \`--json\` for machine-readable output. Upload the exact file you tested via \`create_page_asset_upload\` (rather than re-transcribing it inline) so stored bytes match what passed.
 
+The runner is not a sandbox. The view runs in your Node process with your user's file and network access; the import and \`fetch\` rules only mimic the frame. Dry-run views you wrote, not a module copied from someone else's Page.
+
 ## Read part of a file
 
 For a large file, read only the bytes you need: \`await model.get("activity").slice(0, 4).arrayBuffer()\` reads those four bytes, and slice(start, end) counts as Blob.slice does. \`import activity from "data/activity"\` gives the same file, bound to the one the view mounted with; after a change its calls fail as aborted, so use model.get("activity") for the current file. Each range uses the Page's existing access checks. Read the Parquet source with read_page and source_id to discover its columns. To show part of a table, filter it in the view, for example table.toArray().slice(0, 28).
