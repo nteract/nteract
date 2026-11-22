@@ -249,6 +249,16 @@ test("Project sockets renew in place across lease periods with one Project read 
   await flushMicrotasks();
   assert.deepEqual(first.closed, { code: 4409, reason: "access_changed" });
   assert.equal(second.closed, null, "unaffected Project reader stays connected");
+  // Closing `first` mid-batch must not disarm renewal for `second` across future lease periods.
+  for (let cycle = 0; cycle < 2; cycle++) {
+    t.mock.timers.tick(11_500);
+    await flushMicrotasks();
+    assert.equal(
+      second.closed,
+      null,
+      `second socket keeps renewing after first closed (cycle ${cycle + 1})`,
+    );
+  }
   const closeRecord = usageLines.findLast((line) => line.action === "sync.close");
   assert.equal(closeRecord.close_code, 4409);
   assert.equal(closeRecord.close_reason, "access_changed");

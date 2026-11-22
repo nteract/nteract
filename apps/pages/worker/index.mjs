@@ -5676,7 +5676,7 @@ export class Page {
    * extending unchanged Project leases and closing revoked sockets at once. */
   applyProjectAccessUpdate() {
     if (!this.plain) return;
-    const { closed } = this.plain.extendLeases();
+    const { closed } = this.runExtendLeases();
     if (closed > 0) {
       this.activity?.prune();
       this.broadcastProfiles();
@@ -5685,6 +5685,18 @@ export class Page {
     if (deadline !== null) this.projectLease?.leaseBound(deadline);
     else if (this.projectLease && this.projectLease.state.name !== "idle")
       this.projectLease.socketsGone();
+  }
+
+  /** Run `plain.extendLeases()` while suppressing per-socket `socketsGone()`
+   * checks until the entire batch has updated, so closing one revoked socket
+   * cannot disarm renewal for unchanged peers still earlier in the loop. */
+  runExtendLeases() {
+    this.extendingLeases = true;
+    try {
+      return this.plain.extendLeases();
+    } finally {
+      this.extendingLeases = false;
+    }
   }
 
   /** Refresh this Page's Project snapshot once for all open Project-bound
@@ -5703,7 +5715,7 @@ export class Page {
       });
     }
     if (!this.plain) return null;
-    const { closed } = this.plain.extendLeases();
+    const { closed } = this.runExtendLeases();
     if (closed > 0) {
       this.activity?.prune();
       this.broadcastProfiles();
@@ -9045,6 +9057,7 @@ export class Page {
       this.wires.delete(wire);
       this.wirePrincipals.delete(wire);
       if (
+        !this.extendingLeases &&
         this.projectLease &&
         this.projectLease.state.name !== "idle" &&
         this.nextProjectLeaseDeadline() === null
