@@ -6195,10 +6195,11 @@ export class Page {
       // fails too, throw, so the runtime's own retries are left.
       this.alarmFailures = (this.alarmFailures ?? 0) + 1;
       const retryAt = Date.now() + alarmRetryDelay(this.alarmFailures);
+      this.scheduledAlarmAt = retryAt;
       try {
         await this.ctx.storage.setAlarm(retryAt);
-        this.scheduledAlarmAt = retryAt;
       } catch {
+        this.scheduledAlarmAt = undefined;
         throw error;
       }
     }

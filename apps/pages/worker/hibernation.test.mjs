@@ -986,7 +986,7 @@ test("a failed alarm arms the next try, backing off, while sockets stay open", a
   storage.alarmAt = null;
   await alarm();
   assert.equal(page.alarmFailures, 0, "a pass that succeeds resets the wait");
-  assert.equal(storage.alarmAt, null, "a pass that succeeds schedules its own wake");
+  assert.equal(storage.alarmAt, null, "a pass that succeeds arms no retry");
 
   // With arming broken too, the alarm throws so the runtime retries it.
   failing = true;
