@@ -1778,6 +1778,31 @@ impl Drop for KernelLaunchAttempt {
     }
 }
 
+/// Connection state of the room's prompt agent (capability `"prompt"`).
+///
+/// Mirrors the kernel runtime-agent fields on [`NotebookRoom`] but is fully
+/// independent: the prompt agent never touches kernel lifecycle, presence or
+/// queue state, and a prompt agent loss never affects the kernel.
+#[derive(Default)]
+pub struct PromptAgentSlot {
+    /// Handle to the prompt agent subprocess. Dropping it kills the process
+    /// group.
+    pub handle: Mutex<Option<crate::runtime_agent_handle::RuntimeAgentHandle>>,
+    /// Provenance: the only prompt agent id the connect handler accepts.
+    pub current_id: RwLock<Option<String>>,
+    /// True while the agent named by `current_id` has a live sync connection.
+    /// Set while holding a `current_id` guard and cleared while holding its
+    /// write guard, so it never outlives that agent.
+    pub connected: std::sync::atomic::AtomicBool,
+    /// Bumped on every prompt agent spawn so cleanup can tell whether a newer
+    /// spawn replaced the handle it is about to clear.
+    pub generation: AtomicU64,
+    /// Readiness signal for the spawn in flight; the connect handler `take()`s it.
+    pub pending_connect_tx: Mutex<Option<oneshot::Sender<()>>>,
+    /// Single-flight gate for `ensure_prompt_agent`.
+    pub(crate) spawn_phase: std::sync::Mutex<super::peer_prompt_agent::PromptSpawnPhase>,
+}
+
 pub struct NotebookRoom {
     /// Permanent, immutable UUID for this room, independent of the display
     /// path or string lookup keys used by callers. Rooms are still looked up
@@ -1886,6 +1911,14 @@ pub struct NotebookRoom {
     /// is checked while holding each field's lock, so if it hasn't changed,
     /// no newer spawn has (or can) store a value in that field.
     pub(crate) runtime_agent_generation: Arc<AtomicU64>,
+    /// Prompt agent connection state (capability `"prompt"`). Independent of
+    /// the kernel runtime agent fields above.
+    pub prompt_agent: PromptAgentSlot,
+    /// Sender into the room's prompt coordinator task (started lazily by
+    /// `crate::prompt_cells`). `take()`n on room teardown so the task exits.
+    pub(crate) prompt_coordinator: std::sync::Mutex<
+        Option<tokio::sync::mpsc::UnboundedSender<crate::prompt_cells::PromptCoordinatorMsg>>,
+    >,
     /// Monotonic counter for execution queue ordering.
     /// The coordinator bumps this for each ExecuteCell and stamps the seq
     /// on the execution entry. The runtime agent sorts by seq to determine order.
@@ -2601,6 +2634,8 @@ impl NotebookRoom {
             runtime_agent_request_tx: Arc::new(Mutex::new(None)),
             pending_runtime_agent_connect_tx: Arc::new(Mutex::new(None)),
             runtime_agent_generation: Arc::new(AtomicU64::new(0)),
+            prompt_agent: PromptAgentSlot::default(),
+            prompt_coordinator: std::sync::Mutex::new(None),
             next_queue_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_runtime_agent_id: Arc::new(RwLock::new(None)),
             kernel_launch_gate: KernelLaunchGate::default(),

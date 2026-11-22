@@ -411,6 +411,15 @@ pub(crate) async fn handle_notebook_request(
     // with an actionable message instead of launching a local kernel that
     // would fight the cloud room over runtime state.
     if let Some(bridge) = daemon.hosted_bridge_for_room(room.id).await {
+        if let NotebookRequest::ExecuteCell { cell_id, .. }
+        | NotebookRequest::ExecuteCellGuarded { cell_id, .. } = &request
+        {
+            if crate::prompt_cells::is_prompt(room, cell_id).await {
+                return NotebookResponse::Error {
+                    error: crate::prompt_cells::PROMPT_CELLS_HOSTED.to_string(),
+                };
+            }
+        }
         match &request {
             NotebookRequest::ExecuteCell {
                 cell_id,
@@ -453,7 +462,11 @@ pub(crate) async fn handle_notebook_request(
                 )
                 .await;
             }
-            NotebookRequest::InterruptExecution {} => {
+            // A `cell_id` names a prompt Stop: never a kernel interrupt.
+            NotebookRequest::InterruptExecution { cell_id: Some(_) } => {
+                return NotebookResponse::InterruptSent {};
+            }
+            NotebookRequest::InterruptExecution { cell_id: None } => {
                 return handle_hosted_interrupt_execution(&bridge);
             }
             NotebookRequest::SendComm { message } => {
@@ -521,6 +534,20 @@ pub(crate) async fn handle_notebook_request(
             cell_id,
             execution_id,
         } => {
+            // Prompt cells run on the prompt agent, not the kernel: route them
+            // before the kernel gate.
+            if let Some(response) = crate::prompt_cells::route_execute(
+                room,
+                &daemon,
+                &cell_id,
+                execution_id.as_deref(),
+                None,
+                submitter_actor_label,
+            )
+            .await
+            {
+                return response;
+            }
             let disable_auto_format = {
                 let settings = daemon.settings.read().await;
                 settings.get_all().disable_auto_format
@@ -540,6 +567,20 @@ pub(crate) async fn handle_notebook_request(
             execution_id,
             observed_heads,
         } => {
+            // Same prompt routing as `ExecuteCell`; a prompt cell needs no
+            // trust approval, so this runs before the guarded trust check.
+            if let Some(response) = crate::prompt_cells::route_execute(
+                room,
+                &daemon,
+                &cell_id,
+                execution_id.as_deref(),
+                Some(&observed_heads),
+                submitter_actor_label,
+            )
+            .await
+            {
+                return response;
+            }
             let disable_auto_format = {
                 let settings = daemon.settings.read().await;
                 settings.get_all().disable_auto_format
@@ -555,7 +596,9 @@ pub(crate) async fn handle_notebook_request(
             .await
         }
 
-        NotebookRequest::InterruptExecution {} => interrupt_execution::handle(room).await,
+        NotebookRequest::InterruptExecution { cell_id } => {
+            interrupt_execution::handle(room, cell_id).await
+        }
 
         NotebookRequest::ShutdownKernel {} => shutdown_kernel::handle(room).await,
 

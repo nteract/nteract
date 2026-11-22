@@ -516,7 +516,7 @@ fn request_required_scope(
         | NotebookRequest::ExecuteCellGuarded { .. }
         | NotebookRequest::GetHistory { .. }
         | NotebookRequest::Complete { .. }
-        | NotebookRequest::InterruptExecution {}
+        | NotebookRequest::InterruptExecution { .. }
         | NotebookRequest::ShutdownKernel {}
         | NotebookRequest::RunAllCells { .. }
         | NotebookRequest::RunAllCellsGuarded { .. }
