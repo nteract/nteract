@@ -1,8 +1,19 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vite-plus/test";
-import { CellContainer } from "../CellContainer";
+import { CellContainer, CellGutterToneContext } from "../CellContainer";
 
 describe("CellContainer", () => {
+  it("takes its ribbon colour from a surrounding gutter tone but keeps its cell type", () => {
+    const { container } = render(
+      <CellGutterToneContext.Provider value="promptAnswer">
+        <CellContainer id="answer-cell" cellType="code" codeContent={<div>source</div>} />
+      </CellGutterToneContext.Provider>,
+    );
+    const cell = container.querySelector('[data-slot="cell-container"]');
+    expect(cell).toHaveAttribute("data-cell-type", "code");
+    expect(container.querySelector('[data-slot="cell-ribbon"]')).toHaveClass("from-purple-200/30");
+  });
+
   it("keeps state lane inside the cell surface instead of outside the rail edge", () => {
     const { container } = render(
       <CellContainer

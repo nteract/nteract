@@ -1,4 +1,4 @@
-import { forwardRef, type ReactNode } from "react";
+import { createContext, forwardRef, type ReactNode, useContext } from "react";
 import { cn } from "@/lib/utils";
 import {
   cellContentColumnInset,
@@ -7,6 +7,13 @@ import {
   notebookCellLayoutVars,
 } from "./cell-layout";
 import { type GutterColorConfig, getGutterColors } from "./gutter-colors";
+
+/**
+ * Gutter colour key for the cells inside this provider, overriding their own
+ * cell type (`data-cell-type` keeps the real type). Prompt answers use it to
+ * share the prompt's colour while staying ordinary markdown/code cells.
+ */
+export const CellGutterToneContext = createContext<string | null>(null);
 
 interface CellContainerProps {
   id: string;
@@ -113,7 +120,8 @@ export const CellContainer = forwardRef<HTMLDivElement, CellContainerProps>(
     ref,
   ) => {
     const focusState = outputFocused ? "focused" : outputDimmed ? "dimmed" : undefined;
-    const colors = getGutterColors(cellType, customGutterColors);
+    const gutterTone = useContext(CellGutterToneContext);
+    const colors = getGutterColors(gutterTone ?? cellType, customGutterColors);
     const ribbonColor = isFocused ? colors.ribbon.focused : colors.ribbon.default;
     const outputRibbonColor = isFocused ? colors.outputRibbon.focused : colors.outputRibbon.default;
     const bgColor = isFocused ? colors.background.focused : undefined;

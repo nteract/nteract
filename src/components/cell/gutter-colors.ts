@@ -12,6 +12,22 @@ export interface GutterColorConfig {
   };
 }
 
+const ai: GutterColorConfig = {
+  ribbon: {
+    default: "bg-purple-200/75 dark:bg-purple-800/70",
+    focused: "bg-purple-400/80 dark:bg-purple-600/80",
+  },
+  outputRibbon: {
+    default:
+      "bg-gradient-to-b from-purple-200/30 to-purple-200/65 dark:from-purple-800/30 dark:to-purple-800/65",
+    focused:
+      "bg-gradient-to-b from-purple-400/30 to-purple-400/70 dark:from-purple-600/35 dark:to-purple-600/75",
+  },
+  background: {
+    focused: "bg-purple-50/20 dark:bg-purple-900/10",
+  },
+};
+
 /**
  * Default ribbon colors for built-in cell types.
  * Colors are designed to keep cell-type ribbons visually consistent.
@@ -62,20 +78,12 @@ export const defaultGutterColors: Record<string, GutterColorConfig> = {
       focused: "bg-amber-50/20 dark:bg-amber-900/10",
     },
   },
-  ai: {
-    ribbon: {
-      default: "bg-purple-200/75 dark:bg-purple-800/70",
-      focused: "bg-purple-400/80 dark:bg-purple-600/80",
-    },
-    outputRibbon: {
-      default:
-        "bg-gradient-to-b from-purple-200/30 to-purple-200/65 dark:from-purple-800/30 dark:to-purple-800/65",
-      focused:
-        "bg-gradient-to-b from-purple-400/30 to-purple-400/70 dark:from-purple-600/35 dark:to-purple-600/75",
-    },
-    background: {
-      focused: "bg-purple-50/20 dark:bg-purple-900/10",
-    },
+  ai,
+  // Answers to a prompt: ordinary cells drawn in the prompt's output style.
+  promptAnswer: {
+    ribbon: ai.outputRibbon,
+    outputRibbon: ai.outputRibbon,
+    background: ai.background,
   },
   raw: {
     ribbon: {

@@ -370,7 +370,8 @@ function AppContent() {
   const daemonInfo = useDaemonInfo();
 
   // Apply theme to this window
-  const { defaultPythonEnv } = useSyncedTheme();
+  const { defaultPythonEnv, featureFlags } = useSyncedTheme();
+  const promptCellsEnabled = featureFlags.prompt_cells;
 
   // Stable peer ID for presence (generated once per window lifetime)
   const peerIdRef = useRef(crypto.randomUUID());
@@ -412,6 +413,7 @@ function AppContent() {
     applyExecutionCountFromDaemon,
     setCellSourceHidden,
     setCellOutputsHidden,
+    setCellMetadataAt,
     flushSync,
     getHandle,
     getEngine,
@@ -671,6 +673,7 @@ function AppContent() {
     executeCell,
     executeCellGuarded,
     interruptKernel,
+    interruptPrompt,
     shutdownKernel,
     syncEnvironment,
     approveProjectEnvironment,
@@ -1664,6 +1667,7 @@ function AppContent() {
     checkTrust,
     approveTrust,
     launchKernel,
+    promptCellsEnabled,
     executeCell: executeCellWithPerf,
     executeCellGuarded: executeCellGuardedWithPerf,
     shutdownKernel,
@@ -1742,6 +1746,20 @@ function AppContent() {
       return addCell(type, afterCellId);
     },
     [addCell, shellCapabilities.canEditStructure],
+  );
+
+  // A prompt cell is a raw cell carrying `metadata.nteract.prompt`.
+  const handleAddPromptCell = useCallback(
+    (afterCellId?: string | null) => {
+      if (!shellCapabilities.canEditStructure) {
+        logger.debug("[App] handleAddPromptCell: structure edit capability unavailable, skipping");
+        return null;
+      }
+      const cell = addCell("raw", afterCellId);
+      if (cell) setCellMetadataAt(cell.id, ["nteract", "prompt"], {});
+      return cell;
+    },
+    [addCell, setCellMetadataAt, shellCapabilities.canEditStructure],
   );
 
   // Cmd+S keyboard shortcut. The native menu item is routed through
@@ -2558,6 +2576,9 @@ function AppContent() {
                     onFocusCell={handleNotebookViewFocus}
                     onExecuteCell={handleExecuteCell}
                     onInterruptKernel={interruptKernel}
+                    onInterruptPrompt={interruptPrompt}
+                    promptCellsEnabled={promptCellsEnabled}
+                    onAddPromptCell={handleAddPromptCell}
                     onDeleteCell={deleteCell}
                     onUpdateCellSource={updateCellSource}
                     onAddCell={handleAddCell}

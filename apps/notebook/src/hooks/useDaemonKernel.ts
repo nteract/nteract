@@ -251,6 +251,9 @@ export function useDaemonKernel({
     [client],
   );
 
+  /** Stop a prompt run: `interrupt_execution` carrying the prompt cell id. */
+  const interruptPrompt = useCallback((cellId: string) => client.interruptPrompt(cellId), [client]);
+
   const shutdownKernel = useCallback(
     () => client.shutdownKernel() as Promise<NotebookResponse>,
     [client],
@@ -314,6 +317,7 @@ export function useDaemonKernel({
     executeCell,
     executeCellGuarded,
     interruptKernel,
+    interruptPrompt,
     shutdownKernel,
     syncEnvironment,
     approveProjectEnvironment,

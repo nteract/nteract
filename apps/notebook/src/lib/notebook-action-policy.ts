@@ -8,6 +8,7 @@ import {
   type NotebookResponse,
 } from "runtimed";
 import { getNotebookCellsSnapshot as getDefaultNotebookCellsSnapshot } from "@/components/notebook/state/cell-store";
+import { isPromptCell } from "@/lib/prompt-cells";
 import { logger } from "./logger";
 import { type PendingTrustAction } from "./trust-actions";
 
@@ -18,6 +19,7 @@ interface TrustGateInfo {
 interface NotebookActionCellSnapshot {
   id: string;
   cell_type: string;
+  metadata?: Record<string, unknown>;
 }
 
 interface NotebookActionPolicyOptions {
@@ -28,6 +30,8 @@ interface NotebookActionPolicyOptions {
   envSyncState: RuntimeEnvSyncState | null;
   getObservedHeads: () => string[];
   getNotebookCellsSnapshot?: () => readonly NotebookActionCellSnapshot[];
+  /** `prompt_cells` feature flag. */
+  promptCellsEnabled?: boolean;
   resetEnvProgress: () => void;
   flushSync: () => Promise<boolean>;
   checkTrust: () => Promise<TrustGateInfo | null>;
@@ -172,6 +176,7 @@ export function useNotebookActionPolicy({
   envSyncState,
   getObservedHeads,
   getNotebookCellsSnapshot = getDefaultNotebookCellsSnapshot,
+  promptCellsEnabled = false,
   resetEnvProgress,
   flushSync,
   checkTrust,
@@ -894,7 +899,11 @@ export function useNotebookActionPolicy({
       }
 
       const cell = getNotebookCellsSnapshot().find((candidate) => candidate.id === cellId);
-      if (!cell || cell.cell_type !== "code") return;
+
+      // Prompt cells run on the prompt agent: no kernel start or trust gating.
+      // Flag off, a prompt cell is a plain raw cell and Run ignores it.
+      const isPrompt = promptCellsEnabled && cell !== undefined && isPromptCell(cell);
+      if (!cell || (cell.cell_type !== "code" && !isPrompt)) return;
 
       if (executingCellsRef.current.has(cellId)) {
         logger.debug("[notebook-action-policy] handleExecuteCell: already in flight for", cellId);
@@ -903,6 +912,16 @@ export function useNotebookActionPolicy({
       executingCellsRef.current.add(cellId);
 
       try {
+        if (isPrompt) {
+          // The daemon rejects the run when the feature is disabled; show its message.
+          try {
+            const response = await executeCell(cellId);
+            if (response.result === "error") setTrustActionNotice(response.error);
+          } catch (error) {
+            setTrustActionNotice(error instanceof Error ? error.message : String(error));
+          }
+          return;
+        }
         if (kernelStatus === KERNEL_STATUS.AWAITING_PROJECT_TRUST) {
           setBlockedTrustAction(captureExecuteTrustAction(cellId));
           showProjectTrustDialog();
@@ -947,6 +966,7 @@ export function useNotebookActionPolicy({
       executeCell,
       getNotebookCellsSnapshot,
       kernelStatus,
+      promptCellsEnabled,
       sessionReady,
       setBlockedTrustAction,
       showProjectTrustDialog,

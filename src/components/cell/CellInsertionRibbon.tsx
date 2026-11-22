@@ -1,9 +1,9 @@
-import { Code, LetterText } from "lucide-react";
+import { Code, LetterText, Sparkles } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { notebookCellLayoutVars } from "./cell-layout";
 
-export type CellInsertionType = "code" | "markdown";
+export type CellInsertionType = "code" | "markdown" | "prompt";
 
 interface CellInsertionRibbonProps {
   terminal?: boolean;
@@ -11,45 +11,56 @@ interface CellInsertionRibbonProps {
   onActiveTypeChange?: (type: CellInsertionType | null) => void;
   onInsert: (type: CellInsertionType) => void;
   forceActionsVisible?: boolean;
+  includePrompt?: boolean;
   className?: string;
 }
 
 const insertionRibbonClasses: Record<CellInsertionType, string> = {
   code: "bg-sky-400 dark:bg-sky-600",
   markdown: "bg-emerald-400 dark:bg-emerald-600",
+  prompt: "bg-purple-400 dark:bg-purple-600",
 };
 
 const terminalInsertionRibbonClasses: Record<CellInsertionType, string> = {
   code: "bg-gradient-to-b from-sky-400 via-sky-400/60 to-sky-400/0 dark:from-sky-600 dark:via-sky-600/60 dark:to-sky-600/0",
   markdown:
     "bg-gradient-to-b from-emerald-400 via-emerald-400/60 to-emerald-400/0 dark:from-emerald-600 dark:via-emerald-600/60 dark:to-emerald-600/0",
+  prompt:
+    "bg-gradient-to-b from-purple-400 via-purple-400/60 to-purple-400/0 dark:from-purple-600 dark:via-purple-600/60 dark:to-purple-600/0",
 };
 
 const actionButtonIntentClasses: Record<CellInsertionType, string> = {
   code: "border-sky-500/20 bg-sky-500/12 text-sky-700 hover:bg-sky-500/16 dark:border-sky-300/20 dark:text-sky-300",
   markdown:
     "border-emerald-500/20 bg-emerald-500/12 text-emerald-700 hover:bg-emerald-500/16 dark:border-emerald-300/20 dark:text-emerald-300",
+  prompt:
+    "border-purple-500/20 bg-purple-500/12 text-purple-700 hover:bg-purple-500/16 dark:border-purple-300/20 dark:text-purple-300",
 };
 
 const insertionBridgeSurfaceClasses: Record<CellInsertionType, string> = {
   code: "bg-sky-500/12 dark:bg-sky-400/10",
   markdown: "bg-emerald-500/12 dark:bg-emerald-400/10",
+  prompt: "bg-purple-500/12 dark:bg-purple-400/10",
 };
 
 const insertionBridgeBorderClasses: Record<CellInsertionType, string> = {
   code: "border-sky-500/20 dark:border-sky-300/20",
   markdown: "border-emerald-500/20 dark:border-emerald-300/20",
+  prompt: "border-purple-500/20 dark:border-purple-300/20",
 };
 
 const insertionTrailingRuleIntentClasses: Record<CellInsertionType, string> = {
   code: "bg-gradient-to-r from-sky-400/35 via-border/35 to-transparent dark:from-sky-300/30 dark:via-border/30",
   markdown:
     "bg-gradient-to-r from-emerald-400/35 via-border/35 to-transparent dark:from-emerald-300/30 dark:via-border/30",
+  prompt:
+    "bg-gradient-to-r from-purple-400/35 via-border/35 to-transparent dark:from-purple-300/30 dark:via-border/30",
 };
 
 const insertionTypeOrder: Record<CellInsertionType, number> = {
   code: 0,
   markdown: 1,
+  prompt: 2,
 };
 
 export function CellInsertionRibbon({
@@ -58,6 +69,7 @@ export function CellInsertionRibbon({
   onActiveTypeChange,
   onInsert,
   forceActionsVisible = false,
+  includePrompt = false,
   className,
 }: CellInsertionRibbonProps) {
   const [uncontrolledActiveType, setUncontrolledActiveType] = useState<CellInsertionType | null>(
@@ -100,7 +112,7 @@ export function CellInsertionRibbon({
       "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
       isBridged ? "rounded-none" : "rounded-full",
       bridgeActiveType === type && "rounded-l-none rounded-r-full",
-      bridgeActiveType && type === "markdown" && "ml-1",
+      bridgeActiveType && type !== "code" && "ml-1",
       isActive
         ? actionButtonIntentClasses[type]
         : isBridgeLead && bridgeClasses
@@ -248,13 +260,13 @@ export function CellInsertionRibbon({
             onClick={() => onInsert("code")}
             className={actionButtonClass("code")}
           >
-            {bridgeActiveType === "markdown" ? (
+            {bridgeActiveType && bridgeActiveType !== "code" ? (
               <span
                 data-slot="cell-adder-action-bridge-gap"
                 className={cn(
                   "pointer-events-none absolute left-full top-1/2 h-6 w-1 -translate-y-1/2 border-y",
-                  insertionBridgeSurfaceClasses.markdown,
-                  insertionBridgeBorderClasses.markdown,
+                  insertionBridgeSurfaceClasses[bridgeActiveType],
+                  insertionBridgeBorderClasses[bridgeActiveType],
                 )}
                 aria-hidden="true"
               />
@@ -272,9 +284,35 @@ export function CellInsertionRibbon({
             onClick={() => onInsert("markdown")}
             className={actionButtonClass("markdown")}
           >
+            {bridgeActiveType === "prompt" ? (
+              <span
+                data-slot="cell-adder-action-bridge-gap"
+                className={cn(
+                  "pointer-events-none absolute left-full top-1/2 h-6 w-1 -translate-y-1/2 border-y",
+                  insertionBridgeSurfaceClasses.prompt,
+                  insertionBridgeBorderClasses.prompt,
+                )}
+                aria-hidden="true"
+              />
+            ) : null}
             <LetterText className="size-3" aria-hidden="true" />
             <span>Markdown</span>
           </button>
+          {includePrompt ? (
+            <button
+              type="button"
+              title="Add prompt cell"
+              aria-label="Add prompt cell"
+              tabIndex={actionTabIndex}
+              onPointerEnter={() => setActiveType("prompt")}
+              onFocus={() => setActiveType("prompt")}
+              onClick={() => onInsert("prompt")}
+              className={actionButtonClass("prompt")}
+            >
+              <Sparkles className="size-3" aria-hidden="true" />
+              <span>Prompt</span>
+            </button>
+          ) : null}
         </div>
         <span
           data-slot="cell-adder-trailing-rule"

@@ -37,6 +37,7 @@ import type { MarkdownHeadingAnchor } from "@/components/outputs/markdown-headin
 import type { Runtime } from "@/hooks/useSyncedSettings";
 import { ErrorBoundary } from "@/lib/error-boundary";
 import { cn } from "@/lib/utils";
+import { isPromptCell, promptResponse } from "@/lib/prompt-cells";
 import type { TracebackCellTarget } from "@/components/outputs/traceback-output";
 import { usePresenceContext } from "@/components/notebook/presence-context";
 import { EditorRegistryProvider, useEditorRegistry } from "../hooks/useEditorRegistry";
@@ -60,7 +61,7 @@ import {
 import { logger } from "../lib/logger";
 import { useOutputProjectionFailures } from "@/components/notebook/state/runtime-store-projection";
 import { computeCanMutateCells } from "@/components/notebook/mutation-gate";
-import { getFocusAfterCellDeletion } from "../lib/cell-deletion-focus";
+import { getFocusAfterCellsDeletion } from "../lib/cell-deletion-focus";
 import { isCellOutputsHidden } from "../lib/cell-visibility";
 import {
   getCellById,
@@ -77,11 +78,17 @@ import type { CodeCell as CodeCellType, NotebookCell } from "../types";
 import { CodeCell, type HiddenGroupCellSummary } from "./CodeCell";
 import { MarkdownCell } from "./MarkdownCell";
 import { RawCell } from "./RawCell";
+import { PromptAnswerFrame, PromptAnswerStreamCell } from "./PromptAnswer";
+import { PromptDeleteDialog } from "./PromptDeleteDialog";
 import type { SourceCommentThread } from "../lib/comment-highlights";
 import type { OutputCommentAnchor, SourceRangeCommentAnchor } from "../lib/comment-source-anchor";
 
 type AddCellResult = NotebookCell | null;
-type AddCellHandler = (type: CellInsertionType, afterCellId?: string | null) => AddCellResult;
+type AddCellHandler = (
+  type: Exclude<CellInsertionType, "prompt">,
+  afterCellId?: string | null,
+) => AddCellResult;
+type InsertCellHandler = (type: CellInsertionType, afterCellId?: string | null) => AddCellResult;
 type ChangeCellTypeHandler = (cellId: string, type: "code" | "markdown") => void;
 
 export interface NotebookViewProps {
@@ -98,6 +105,12 @@ export interface NotebookViewProps {
   onExecuteCell: (cellId: string) => void;
   onRequestExecuteCell?: (cellId: string) => void;
   onInterruptKernel: () => void;
+  /** Stop a prompt run (`interrupt_execution` with the prompt cell id). */
+  onInterruptPrompt?: (cellId: string) => void;
+  /** `prompt_cells` flag. Off (default, and in the hosted viewer): no prompt UI at all. */
+  promptCellsEnabled?: boolean;
+  /** Insert a prompt cell; with the flag on, the insertion ribbon offers "Prompt". */
+  onAddPromptCell?: (afterCellId?: string | null) => AddCellResult;
   onDeleteCell: (cellId: string) => void;
   onUpdateCellSource?: (cellId: string, source: string) => void;
   onAddCell: AddCellHandler;
@@ -130,13 +143,35 @@ const NOTEBOOK_TAIL_PIN_THRESHOLD_PX = 96;
 function CellAdder({
   afterCellId,
   onAdd,
+  includePrompt,
   terminal = false,
 }: {
   afterCellId?: string | null;
-  onAdd: AddCellHandler;
+  onAdd: InsertCellHandler;
+  includePrompt: boolean;
   terminal?: boolean;
 }) {
-  return <CellInsertionRibbon terminal={terminal} onInsert={(type) => onAdd(type, afterCellId)} />;
+  return (
+    <CellInsertionRibbon
+      terminal={terminal}
+      includePrompt={includePrompt}
+      onInsert={(type) => onAdd(type, afterCellId)}
+    />
+  );
+}
+
+function DeleteCellButton({ onDelete }: { onDelete: () => void }) {
+  return (
+    <button
+      type="button"
+      tabIndex={-1}
+      onClick={onDelete}
+      className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-destructive"
+      title="Delete cell"
+    >
+      <Trash2 className="size-3.5" />
+    </button>
+  );
 }
 
 function CellErrorFallback({
@@ -238,6 +273,13 @@ function CellDragPreview({ cellId }: { cellId: string }) {
 /** Check if a cell has both source and outputs hidden via metadata.
  *  We intentionally don't check outputs.length so cells stay collapsed
  *  when outputs are transiently cleared during re-execution. */
+/** Ids of the cells answering `promptCellId`, in notebook order. */
+function promptAnswerIds(cells: readonly NotebookCell[], promptCellId: string): string[] {
+  return cells
+    .filter((candidate) => promptResponse(candidate)?.promptCellId === promptCellId)
+    .map((candidate) => candidate.id);
+}
+
 function isCellFullyHidden(cell: NotebookCell): boolean {
   if (cell.cell_type !== "code") return false;
   const jupyter = cell.metadata?.jupyter as
@@ -304,6 +346,7 @@ function SortableCell({
   index,
   renderCell,
   onAddCell,
+  includePrompt,
   onDeleteCell,
   isLastCell,
   isHiddenInGroup,
@@ -319,7 +362,8 @@ function SortableCell({
     dragHandleProps?: Record<string, unknown>,
     isDragging?: boolean,
   ) => React.ReactNode;
-  onAddCell: AddCellHandler;
+  onAddCell: InsertCellHandler;
+  includePrompt: boolean;
   onDeleteCell: (cellId: string) => void;
   isLastCell?: boolean;
   isHiddenInGroup?: boolean;
@@ -369,7 +413,9 @@ function SortableCell({
         onCommandFocus(cellId);
       }}
     >
-      {canMutateCells && index === 0 && <CellAdder afterCellId={null} onAdd={onAddCell} />}
+      {canMutateCells && index === 0 && (
+        <CellAdder afterCellId={null} onAdd={onAddCell} includePrompt={includePrompt} />
+      )}
       <ErrorBoundary
         fallback={(error, resetErrorBoundary) => (
           <CellErrorFallback
@@ -387,7 +433,14 @@ function SortableCell({
           isDragging={isDragging}
         />
       </ErrorBoundary>
-      {canMutateCells && <CellAdder afterCellId={cellId} onAdd={onAddCell} terminal={isLastCell} />}
+      {canMutateCells && (
+        <CellAdder
+          afterCellId={cellId}
+          onAdd={onAddCell}
+          includePrompt={includePrompt}
+          terminal={isLastCell}
+        />
+      )}
     </div>
   );
 }
@@ -406,6 +459,9 @@ function NotebookViewContent({
   onExecuteCell,
   onRequestExecuteCell,
   onInterruptKernel,
+  onInterruptPrompt,
+  promptCellsEnabled = false,
+  onAddPromptCell,
   onDeleteCell,
   onUpdateCellSource,
   onAddCell,
@@ -586,15 +642,17 @@ function NotebookViewContent({
   cellIdsRef.current = cellIds;
   const { focusCell } = useEditorRegistry();
 
-  const addCellFromControl = useCallback<AddCellHandler>(
+  const includePrompt = promptCellsEnabled && onAddPromptCell !== undefined;
+  const addCellFromControl = useCallback<InsertCellHandler>(
     (type, afterCellId) => {
-      const added = onAddCell(type, afterCellId);
-      if (added && type === "markdown") {
+      const added =
+        type === "prompt" ? (onAddPromptCell?.(afterCellId) ?? null) : onAddCell(type, afterCellId);
+      if (added && type !== "code") {
         focusInteractionTarget({ kind: "editor", cellId: added.id });
       }
       return added;
     },
-    [focusInteractionTarget, onAddCell],
+    [focusInteractionTarget, onAddCell, onAddPromptCell],
   );
 
   const enterEditMode = useCallback((): boolean => {
@@ -774,21 +832,42 @@ function NotebookViewContent({
     cancelTailScrollFrame();
   }, [cancelTailScrollFrame]);
 
-  const handleDeleteCell = useCallback(
-    (cellId: string) => {
+  // Deleting a prompt that has answers first asks whether the answers go too;
+  // the dialog then calls back with `answersDecided`. Only the prompt id and
+  // the count shown are kept: the answers are read from the cells on confirm,
+  // since they can change while the dialog is open. `open` is cleared on close
+  // so the text stays put during the close animation.
+  const [promptDelete, setPromptDelete] = useState<{
+    promptId: string;
+    answerCount: number;
+    open: boolean;
+  } | null>(null);
+  const closePromptDelete = useCallback(
+    () => setPromptDelete((state) => (state ? { ...state, open: false } : null)),
+    [],
+  );
+  // Delete cells in one step: one focus target (a survivor, never a deleted
+  // cell) and one scroll anchor, taken against the last cell in `cellIdsToDelete`.
+  const deleteCells = useCallback(
+    (cellIdsToDelete: readonly string[]) => {
       tailPinnedRef.current = false;
       cancelTailScrollFrame();
       const sourceCellIds = cellIdsRef.current;
-      const focusAfterDelete = getFocusAfterCellDeletion(sourceCellIds, cellId);
-      const snapshot = captureCellDeletionScrollAnchor(containerRef.current, sourceCellIds, cellId);
+      const anchorCellId = cellIdsToDelete[cellIdsToDelete.length - 1];
+      const focusAfterDelete = getFocusAfterCellsDeletion(sourceCellIds, cellIdsToDelete);
+      const snapshot = captureCellDeletionScrollAnchor(
+        containerRef.current,
+        sourceCellIds,
+        anchorCellId,
+      );
       pendingScrollAnchorRef.current = snapshot
         ? {
-            deletedCellId: cellId,
+            deletedCellId: anchorCellId,
             sourceCellIds,
             snapshot,
           }
         : null;
-      onDeleteCell(cellId);
+      for (const id of cellIdsToDelete) onDeleteCell(id);
       if (focusAfterDelete) {
         // Keep command-mode focus on a surviving neighbor. Prefer the cell
         // that moved into the deleted cell's position; when deleting the
@@ -797,6 +876,23 @@ function NotebookViewContent({
       }
     },
     [cancelTailScrollFrame, focusInteractionTarget, onDeleteCell],
+  );
+  const handleDeleteCell = useCallback(
+    (cellId: string, answersDecided = false) => {
+      if (promptCellsEnabled && !answersDecided) {
+        const cell = getCellById(cellId);
+        const answerCount =
+          cell && isPromptCell(cell)
+            ? promptAnswerIds(getNotebookCellsSnapshot(), cellId).length
+            : 0;
+        if (answerCount > 0) {
+          setPromptDelete({ promptId: cellId, answerCount, open: true });
+          return;
+        }
+      }
+      deleteCells([cellId]);
+    },
+    [deleteCells, promptCellsEnabled],
   );
 
   const runCommandModeAction = useCallback(
@@ -980,7 +1076,7 @@ function NotebookViewContent({
     }
   }, [autoFocusFirstCell, isLoading, cellIds, focusedCellId, focusInteractionTarget]);
 
-  const renderCell = useCallback(
+  const renderBaseCell = useCallback(
     (
       cell: NotebookCell,
       index: number,
@@ -1079,15 +1175,7 @@ function NotebookViewContent({
       // Build right gutter content — delete button for all cells,
       // plus input toggle for code cells
       const deleteButton = canMutateCells ? (
-        <button
-          type="button"
-          tabIndex={-1}
-          onClick={() => handleDeleteCell(cell.id)}
-          className="flex items-center justify-center rounded p-1 text-muted-foreground/40 transition-colors hover:text-destructive"
-          title="Delete cell"
-        >
-          <Trash2 className="size-3.5" />
-        </button>
+        <DeleteCellButton onDelete={() => handleDeleteCell(cell.id)} />
       ) : null;
 
       let rightGutterContent: React.ReactNode;
@@ -1303,11 +1391,23 @@ function NotebookViewContent({
         );
       }
 
-      // Raw cells
+      // Raw cells (a prompt cell is a raw cell with `nteract.prompt`; plain raw while the flag is off)
+      const promptCell = promptCellsEnabled && isPromptCell(cell);
       return (
         <RawCell
           key={cell.id}
           cell={cell}
+          prompt={
+            promptCell
+              ? {
+                  onRun: canExecuteCells ? () => onExecuteCell(cell.id) : undefined,
+                  onStop:
+                    canExecuteCells && onInterruptPrompt
+                      ? () => onInterruptPrompt(cell.id)
+                      : undefined,
+                }
+              : undefined
+          }
           onFocus={() => {
             focusInteractionTarget({ kind: "editor", cellId: cell.id });
           }}
@@ -1339,6 +1439,8 @@ function NotebookViewContent({
       suppressTailFollowForInPlaceExecution,
       onExecuteCell,
       onInterruptKernel,
+      onInterruptPrompt,
+      promptCellsEnabled,
       handleDeleteCell,
       onUpdateCellSource,
       onAddCell,
@@ -1365,6 +1467,77 @@ function NotebookViewContent({
     ],
   );
 
+  const jumpToPromptCell = useCallback(
+    (promptCellId: string) => {
+      focusInteractionTarget({ kind: "cell", cellId: promptCellId });
+      scrollToDocumentAnchor(containerRef.current, notebookCellAnchorId(promptCellId), {
+        block: "center",
+        behavior: "smooth",
+      });
+    },
+    [focusInteractionTarget],
+  );
+
+  // Answer cells (any cell with `nteract.prompt_response`) get an "answer to"
+  // label; the streaming placeholder shows the live execution output instead
+  // of its (empty) source. Everything else renders through renderBaseCell.
+  const renderCell = useCallback(
+    (
+      cell: NotebookCell,
+      index: number,
+      dragHandleProps?: Record<string, unknown>,
+      isDragging?: boolean,
+    ) => {
+      const answer = promptCellsEnabled ? promptResponse(cell) : null;
+      if (!answer || cell.cell_type === "raw") {
+        return renderBaseCell(cell, index, dragHandleProps, isDragging);
+      }
+      const promptCellId = answer.promptCellId;
+      const onJumpToPrompt = promptCellId ? () => jumpToPromptCell(promptCellId) : undefined;
+      // Answer cells are drawn in the prompt's output style (still ordinary, editable cells).
+      const labelledCell = (
+        <PromptAnswerFrame
+          key={cell.id}
+          promptCellId={promptCellId}
+          stopped={answer.stopped}
+          onJumpToPrompt={onJumpToPrompt}
+        >
+          {renderBaseCell(cell, index, dragHandleProps, isDragging)}
+        </PromptAnswerFrame>
+      );
+      if (answer.streaming && cell.cell_type === "markdown") {
+        return (
+          <PromptAnswerStreamCell
+            key={cell.id}
+            cellId={cell.id}
+            promptCellId={promptCellId}
+            executionId={answer.executionId}
+            hasSource={cell.source.trim() !== ""}
+            fallback={labelledCell}
+            onFocus={() => focusInteractionTarget({ kind: "cell", cellId: cell.id })}
+            onJumpToPrompt={onJumpToPrompt}
+            dragHandleProps={dragHandleProps}
+            isDragging={isDragging}
+            rightGutterContent={
+              canMutateCells ? (
+                <DeleteCellButton onDelete={() => handleDeleteCell(cell.id)} />
+              ) : undefined
+            }
+          />
+        );
+      }
+      return labelledCell;
+    },
+    [
+      promptCellsEnabled,
+      renderBaseCell,
+      jumpToPromptCell,
+      focusInteractionTarget,
+      canMutateCells,
+      handleDeleteCell,
+    ],
+  );
+
   return (
     <div
       ref={containerRef}
@@ -1380,6 +1553,21 @@ function NotebookViewContent({
       data-session-ready={sessionRuntimeState === "ready"}
       data-cell-count={cellIds.length}
     >
+      <PromptDeleteDialog
+        open={promptDelete?.open ?? false}
+        answerCount={promptDelete?.answerCount ?? 0}
+        onDeleteAll={() => {
+          if (!promptDelete) return;
+          const { promptId } = promptDelete;
+          deleteCells([...promptAnswerIds(getNotebookCellsSnapshot(), promptId), promptId]);
+          closePromptDelete();
+        }}
+        onKeepAnswers={() => {
+          if (promptDelete) deleteCells([promptDelete.promptId]);
+          closePromptDelete();
+        }}
+        onCancel={closePromptDelete}
+      />
       {loadError ? (
         <div className="mb-4 flex flex-wrap items-center gap-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
           <span className="min-w-0 flex-1">Notebook failed to finish loading: {loadError}</span>
@@ -1478,6 +1666,7 @@ function NotebookViewContent({
                     index={index}
                     renderCell={renderCell}
                     onAddCell={addCellFromControl}
+                    includePrompt={includePrompt}
                     onDeleteCell={handleDeleteCell}
                     isLastCell={index === cellIds.length - 1}
                     isHiddenInGroup={group != null && !group.isFirst}
