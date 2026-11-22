@@ -1488,10 +1488,14 @@ lease renewals, and fail-closed lease expiry. `PageActivity` stores its `{ epoch
 revision }` in the Page DO key `host/activity-epoch` so hibernated tabs keep
 receiving agent updates across DO eviction. Project access changes and
 cross-Project moves push `/internal/project-access-changed` (`Space` -> `Catalog`
--> `Page`) so revoked or downgraded sockets close immediately with `4409
-access_changed`, backed by a 60-second fail-closed Project lease
-([project-lease.mjs](worker/project-lease.mjs)) that closes with `4503
-project_lease_expired` if the Project stays unavailable. API-key sockets renew
+-> `Page`) so revoked or downgraded sockets usually close at once with `4409
+access_changed`. The push is best-effort: it runs after the change has
+answered, and a Catalog fans it out eight Pages at a time under `waitUntil`, each with a 5 s
+timeout, so a large Project can miss some Pages. The 60-second fail-closed Project lease
+([project-lease.mjs](worker/project-lease.mjs)) bounds every miss, and
+closes with `4503 project_lease_expired` if the Project stays unavailable. A
+Page alarm that fails arms its next try itself, from 2 s doubling to 60 s,
+while sockets stay open. API-key sockets renew
 bounded leases through provider verification; caching means provider revocation is
 not instantaneous. A pending or late check cannot revive an expired, disconnected,
 or changed grant. Page ACL enforcement is independent of sign-in renewal.
@@ -4372,8 +4376,9 @@ The Page host resolves inherited access on each request from anyone but the
 owner: the Page's placement from the owner's Catalog, the Project's ACL, then
 the placement again. The answer is a snapshot that grants for 60 seconds
 ([project-access.mjs](worker/project-access.mjs)); Project access changes and
-cross-Project moves also push `/internal/project-access-changed` so open
-sockets re-evaluate immediately. A Page outside any Project,
+cross-Project moves also push `/internal/project-access-changed`, best-effort,
+so open sockets usually re-evaluate at once; the 60-second grant bounds a
+missed push. A Page outside any Project,
 or in a Project that is gone, settles with no snapshot, and inherited access
 ends for every caller. A read that doesn't finish, or a placement that moves
 between the two reads, settles nothing. That caller gets nothing inherited

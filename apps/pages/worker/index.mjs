@@ -5255,6 +5255,12 @@ function catalogAnswer(metadata, identity, { title, observed, contentUpdatedAt }
   };
 }
 
+/** How long a Page waits before trying a failed alarm again: 2 s, doubling
+ * each consecutive failure, at most 60 s, so a socket's lease and session are
+ * still re-checked within a minute. */
+export const alarmRetryDelay = (failures) =>
+  Math.min(60_000, 2_000 * 2 ** Math.max(0, failures - 1));
+
 export class Page {
   constructor(ctx, env) {
     // Every storage user this host builds reaches storage through this one
@@ -6167,6 +6173,30 @@ export class Page {
     this.scheduledAlarmAt = undefined;
     await this.ready;
     if (!this.hasOpenSyncSockets()) return;
+    try {
+      await this.alarmPass();
+      this.alarmFailures = 0;
+    } catch (error) {
+      logFailure(error, "page-alarm");
+      // Only this alarm checks the open sockets' leases and sessions, and the
+      // runtime stops retrying a failing one after a few tries. Arm the next
+      // try here, backing off, for as long as sockets stay open. If arming
+      // fails too, throw, so the runtime's own retries are left.
+      this.alarmFailures = (this.alarmFailures ?? 0) + 1;
+      const retryAt = Date.now() + alarmRetryDelay(this.alarmFailures);
+      this.scheduledAlarmAt = retryAt;
+      try {
+        await this.ctx.storage.setAlarm(retryAt);
+      } catch {
+        this.scheduledAlarmAt = undefined;
+        throw error;
+      }
+    }
+  }
+
+  /** One alarm's work, in order: dwell ticks, Project lease renewal, session
+   * and organization re-checks, expiry, then the next wake. */
+  async alarmPass() {
     await this.documentReady();
     await this.ensureRehydrated();
     const now = Date.now();

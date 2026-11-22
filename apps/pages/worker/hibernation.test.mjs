@@ -27,7 +27,7 @@ import {
   nextAlarmAt,
   parseSocketAttachment,
 } from "./hibernation.mjs";
-import { Page } from "./index.mjs";
+import { Page, alarmRetryDelay } from "./index.mjs";
 import {
   recordOrganizationMemberships,
   resetMembershipCache,
@@ -955,5 +955,55 @@ test("Space -> Catalog -> Page push delivers /internal/project-access-changed on
   assert.ok(
     pushes.includes(movePageId),
     "Catalog notifies moved Page immediately when leaving a Project",
+  );
+});
+
+test("a failed alarm arms the next try, backing off, while sockets stay open", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const now = Date.UTC(2026, 10, 22, 0, 0, 0);
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const storage = new HibernatingStorage();
+  let failing = true;
+  let open = true;
+  const page = {
+    ready: Promise.resolve(),
+    ctx: { storage },
+    hasOpenSyncSockets: () => open,
+    alarmPass: async () => {
+      if (failing) throw new Error("storage unavailable");
+    },
+  };
+  const alarm = () => Page.prototype.alarm.call(page);
+
+  await alarm();
+  assert.equal(storage.alarmAt, now + 2_000);
+  await alarm();
+  assert.equal(storage.alarmAt, now + 4_000);
+  for (let i = 0; i < 10; i++) await alarm();
+  assert.equal(storage.alarmAt, now + 60_000, "the wait stops growing at a minute");
+
+  failing = false;
+  storage.alarmAt = null;
+  await alarm();
+  assert.equal(page.alarmFailures, 0, "a pass that succeeds resets the wait");
+  assert.equal(storage.alarmAt, null, "a pass that succeeds arms no retry");
+
+  // With arming broken too, the alarm throws so the runtime retries it.
+  failing = true;
+  storage.setAlarm = async () => {
+    throw new Error("alarm write refused");
+  };
+  await assert.rejects(alarm(), /storage unavailable/);
+
+  // With no socket open, nothing runs and nothing is armed.
+  open = false;
+  page.alarmPass = async () => assert.fail("no pass without sockets");
+  await alarm();
+});
+
+test("alarmRetryDelay doubles from 2 s and stops at 60 s", () => {
+  assert.deepEqual(
+    [1, 2, 3, 4, 5, 6, 7, 20].map(alarmRetryDelay),
+    [2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000, 60_000],
   );
 });
