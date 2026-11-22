@@ -17,6 +17,8 @@
 //!   disable_nteract_launcher: false
 //!   enable_comments: false
 //!   disable_auto_format: false
+//!   prompt_cells: false
+//!   prompt_agent_command: "claude"
 //!   editor/                        ← nested Map
 //!     code_font_family: ""         ← Empty string means use the theme default
 //!     markdown_font_family: ""     ← Empty string means use the theme default
@@ -337,6 +339,17 @@ pub struct SyncedSettings {
     #[serde(default)]
     pub disable_auto_format: bool,
 
+    /// Feature flag: prompt cells (raw cells whose run asks an agent CLI and
+    /// writes the reply as answer cells). Off by default; when off, running a
+    /// prompt cell is rejected and nothing else changes.
+    #[serde(default)]
+    pub prompt_cells: bool,
+
+    /// Command the prompt agent runs for prompt cells (Claude CLI on the
+    /// user's own login). Looked up on `PATH` unless absolute.
+    #[serde(default = "default_prompt_agent_command")]
+    pub prompt_agent_command: String,
+
     /// Redact eligible environment variable values from text outputs for newly
     /// launched or restarted kernels.
     ///
@@ -415,6 +428,8 @@ impl Default for SyncedSettings {
             disable_nteract_launcher: false,
             enable_comments: false,
             disable_auto_format: false,
+            prompt_cells: false,
+            prompt_agent_command: default_prompt_agent_command(),
             redact_env_values_in_outputs: true,
             import_shell_environment: true,
             install_id: String::new(),
@@ -437,6 +452,10 @@ fn default_redact_env_values_in_outputs() -> bool {
 
 fn default_import_shell_environment() -> bool {
     true
+}
+
+fn default_prompt_agent_command() -> String {
+    "claude".to_string()
 }
 
 fn default_keep_alive_secs() -> u64 {
@@ -600,6 +619,12 @@ impl SettingsDoc {
             automerge::ROOT,
             "disable_auto_format",
             defaults.disable_auto_format,
+        );
+        let _ = doc.put(automerge::ROOT, "prompt_cells", defaults.prompt_cells);
+        let _ = doc.put(
+            automerge::ROOT,
+            "prompt_agent_command",
+            defaults.prompt_agent_command.as_str(),
         );
         let _ = doc.put(
             automerge::ROOT,
@@ -799,6 +824,16 @@ impl SettingsDoc {
         // disable_auto_format: boolean
         if let Some(disabled) = json.get("disable_auto_format").and_then(|v| v.as_bool()) {
             settings.put_bool("disable_auto_format", disabled);
+        }
+        // prompt_cells: boolean
+        if let Some(enabled) = json.get("prompt_cells").and_then(|v| v.as_bool()) {
+            settings.put_bool("prompt_cells", enabled);
+        }
+        // prompt_agent_command: string (empty means the default)
+        if let Some(command) = json.get("prompt_agent_command").and_then(|v| v.as_str()) {
+            if !command.is_empty() {
+                settings.put("prompt_agent_command", command);
+            }
         }
         if let Some(enabled) = json
             .get("redact_env_values_in_outputs")
@@ -1301,6 +1336,13 @@ impl SettingsDoc {
             disable_auto_format: self
                 .get_bool("disable_auto_format")
                 .unwrap_or(defaults.disable_auto_format),
+            prompt_cells: self
+                .get_bool("prompt_cells")
+                .unwrap_or(defaults.prompt_cells),
+            prompt_agent_command: self
+                .get("prompt_agent_command")
+                .filter(|command| !command.is_empty())
+                .unwrap_or(defaults.prompt_agent_command),
             redact_env_values_in_outputs: self
                 .get_bool("redact_env_values_in_outputs")
                 .unwrap_or(defaults.redact_env_values_in_outputs),
@@ -1564,6 +1606,32 @@ impl SettingsDoc {
                 changed = true;
             }
         }
+        // prompt_cells: boolean
+        if let Some(enabled) = json.get("prompt_cells").and_then(|v| v.as_bool()) {
+            let current = self.get_bool("prompt_cells");
+            if current != Some(enabled) {
+                info!(
+                    "[settings] apply_json_changes: prompt_cells changed {:?} -> {}",
+                    current, enabled
+                );
+                self.put_bool("prompt_cells", enabled);
+                changed = true;
+            }
+        }
+        // prompt_agent_command: string (empty means the default)
+        if let Some(command) = json.get("prompt_agent_command").and_then(|v| v.as_str()) {
+            if !command.is_empty() {
+                let current = self.get("prompt_agent_command");
+                if current.as_deref() != Some(command) {
+                    info!(
+                        "[settings] apply_json_changes: prompt_agent_command changed {:?} -> {}",
+                        current, command
+                    );
+                    self.put("prompt_agent_command", command);
+                    changed = true;
+                }
+            }
+        }
         if let Some(enabled) = json
             .get("redact_env_values_in_outputs")
             .and_then(|v| v.as_bool())
@@ -1797,6 +1865,8 @@ mod tests {
         assert!(!settings.disable_nteract_launcher);
         assert!(!settings.enable_comments);
         assert!(!settings.disable_auto_format);
+        assert!(!settings.prompt_cells);
+        assert_eq!(settings.prompt_agent_command, "claude");
         assert_eq!(settings.editor, EditorSettings::default());
         assert!(settings.feature_flags().bootstrap_dx);
         assert!(settings.redact_env_values_in_outputs);
@@ -1887,6 +1957,45 @@ mod tests {
         let settings = doc.get_all();
         assert_eq!(doc.get_bool("enable_comments"), Some(true));
         assert!(settings.enable_comments);
+    }
+
+    #[test]
+    fn test_prompt_settings_default_and_round_trip_through_json() {
+        let mut doc = SettingsDoc::new();
+        let defaults = doc.get_all();
+        assert!(!defaults.prompt_cells);
+        assert_eq!(defaults.prompt_agent_command, "claude");
+        // The seed writes both keys so clients can read them.
+        assert_eq!(doc.get_bool("prompt_cells"), Some(false));
+        assert_eq!(doc.get("prompt_agent_command").as_deref(), Some("claude"));
+
+        assert!(doc.apply_json_changes(&serde_json::json!({
+            "prompt_cells": true,
+            "prompt_agent_command": "/opt/bin/my-claude"
+        })));
+        let settings = doc.get_all();
+        assert!(settings.prompt_cells);
+        assert_eq!(settings.prompt_agent_command, "/opt/bin/my-claude");
+
+        // Unchanged values report no change.
+        assert!(!doc.apply_json_changes(&serde_json::json!({
+            "prompt_cells": true,
+            "prompt_agent_command": "/opt/bin/my-claude"
+        })));
+
+        // An empty command never overwrites the stored one.
+        assert!(!doc.apply_json_changes(&serde_json::json!({
+            "prompt_agent_command": ""
+        })));
+        assert_eq!(doc.get_all().prompt_agent_command, "/opt/bin/my-claude");
+
+        let rebuilt = SettingsDoc::from_json_value(&serde_json::json!({
+            "prompt_cells": true,
+            "prompt_agent_command": "other"
+        }))
+        .get_all();
+        assert!(rebuilt.prompt_cells);
+        assert_eq!(rebuilt.prompt_agent_command, "other");
     }
 
     #[test]
@@ -2432,6 +2541,8 @@ mod tests {
         assert!(schema_str.contains("disable_nteract_launcher"));
         assert!(schema_str.contains("enable_comments"));
         assert!(schema_str.contains("disable_auto_format"));
+        assert!(schema_str.contains("prompt_cells"));
+        assert!(schema_str.contains("prompt_agent_command"));
         assert!(schema_str.contains("code_font_family"));
         assert!(schema_str.contains("markdown_font_family"));
         assert!(schema_str.contains("line_numbers"));

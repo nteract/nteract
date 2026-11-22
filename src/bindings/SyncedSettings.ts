@@ -95,6 +95,17 @@ export type SyncedSettings = {
    */
   disable_auto_format: boolean;
   /**
+   * Feature flag: prompt cells (raw cells whose run asks an agent CLI and
+   * writes the reply as answer cells). Off by default; when off, running a
+   * prompt cell is rejected and nothing else changes.
+   */
+  prompt_cells: boolean;
+  /**
+   * Command the prompt agent runs for prompt cells (Claude CLI on the
+   * user's own login). Looked up on `PATH` unless absolute.
+   */
+  prompt_agent_command: string;
+  /**
    * Redact eligible environment variable values from text outputs for newly
    * launched or restarted kernels.
    *
