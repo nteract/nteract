@@ -27,11 +27,15 @@ import { frameRuntimeText } from "../scripts/build-output.mjs";
 
 const NONCE = "mount-nonce";
 const tick = () => new Promise((resolve) => setImmediate(resolve));
-async function until(check, message) {
-  for (let i = 0; i < 200; i++) {
+// Waits on wall time, not a count of turns: jsdom compiles and reports a
+// frame's scripts across a varying number of turns on a loaded runner.
+async function until(check, message, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
     if (check()) return;
     await tick();
   }
+  if (check()) return;
   assert.fail(message);
 }
 
