@@ -1,17 +1,17 @@
 # nteract
 
-AI-collaborative Jupyter notebooks. The MCP server ships with the [nteract desktop app](https://nteract.io) — this PyPI package is a thin wrapper that finds and launches `runt mcp` from your app install.
+AI-collaborative Jupyter notebooks. The MCP server ships with the [nteract desktop app](https://nteract.io). This PyPI package is a thin wrapper that finds and launches `runt mcp` from your app install.
 
 ## Install the plugin (recommended)
 
 In Claude Code:
 
 ```
-/plugin marketplace add nteract/claude-plugin
+/plugin marketplace add nteract/agent-plugins
 /plugin install nteract@nteract
 ```
 
-The plugin ships the right binary for your platform — no app install required for the plugin itself. Pair it with the [nteract desktop app](https://nteract.io) to see the notebook update live while an agent works.
+The plugin ships the right binary for your platform, so no app install is required for the plugin itself. Pair it with the [nteract desktop app](https://nteract.io) to see the notebook update live while an agent works.
 
 ## Install via uvx (alternative)
 
@@ -21,9 +21,9 @@ If you'd rather go through `uvx`, use the pre-release channel:
 claude mcp add nteract -- uvx --prerelease allow nteract
 ```
 
-That will run this PyPI package, which locates `runt mcp` from your nteract desktop install and exec's it.
+That runs this PyPI package, which locates `runt mcp` from your nteract desktop install and execs it.
 
-Only pre-release wheels are being published while the library surface settles — the stable channel is frozen. See [#2217](https://github.com/nteract/nteract/issues/2217).
+This PyPI wrapper is frozen at the last published pre-release; no new pre-release or stable wheels are published. See [#2217](https://github.com/nteract/nteract/issues/2217).
 
 ## What you get
 
@@ -37,8 +37,8 @@ With nteract connected to Claude, you can:
 
 ## Related
 
-- [nteract/nteract](https://github.com/nteract/nteract) — desktop app, daemon, and plugin source
-- [runtimed on PyPI](https://pypi.org/project/runtimed/) — low-level Python bindings for the daemon
+- [nteract/nteract](https://github.com/nteract/nteract): desktop app, daemon, and plugin source
+- [runtimed on PyPI](https://pypi.org/project/runtimed/): low-level Python bindings for the daemon
 
 ## License
 

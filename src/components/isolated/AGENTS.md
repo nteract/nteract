@@ -1,16 +1,10 @@
-# Isolated output frame — security model and renderers
+# Isolated output frame: security model and renderers
 
 Outputs that require isolation render inside a sandboxed iframe. Tauri loads the iframe from the `nteract-frame` custom URI scheme so the iframe receives its own CSP. Omitting `allow-same-origin` prevents direct same-origin DOM and storage access to the parent and other frames. Host adapters must keep privileged native bridges out of output frames. The plain browser dev host uses `srcDoc` with the same sandbox-induced opaque origin behavior. See [output frame security](../../../docs/adr/output-frame-security.md) for the current implementation and its limits.
 
 Scope: `src/components/isolated/**`, `src/isolated-renderer/**`.
 
-Structured Markdown projections can render in the host when
-`canRenderMarkdownProjectionInHost` admits them; raw HTML still requires the
-sandbox. This includes Mermaid diagrams in cells, outputs, and comments. Their
-generated SVG must pass through `mermaid-renderer.ts`'s DOMPurify and CSS admission
-policy before insertion, with links and images disabled. Do not substitute raw
-SVG insertion or treat the source as trusted. Browser coverage for this host
-boundary lives alongside the sandboxed renderer tests in `apps/renderer-test`.
+Structured Markdown projections can render in the host when `canRenderMarkdownProjectionInHost` admits them; raw HTML still requires the sandbox. This includes Mermaid diagrams in cells, outputs, and comments. Their generated SVG must pass through `mermaid-renderer.ts`'s DOMPurify and CSS admission policy before insertion, with links and images disabled. Do not substitute raw SVG insertion or treat the source as trusted. Browser coverage for this host boundary lives alongside the sandboxed renderer tests in `apps/renderer-test`.
 
 ## Security model
 
@@ -22,7 +16,7 @@ Keep the sandbox to exactly these flags:
 allow-scripts allow-downloads allow-forms allow-pointer-lock
 ```
 
-Fullscreen (sift maximize, maps, 3D) comes from the iframe `allow="fullscreen *"` Permissions Policy attribute, not a sandbox token. `allow-same-origin` stays off: adding it restores the document URL's origin, or the inherited parent origin for `srcDoc`, rather than always giving the frame the parent's origin. A CI test in `src/components/isolated/__tests__/isolated-frame.test.ts` asserts the sandbox list. Leave `allow-popups` and `allow-modals` out.
+Fullscreen (sift maximize, maps, 3D) comes from the iframe `allow="fullscreen *"` Permissions Policy attribute, not a sandbox token. `allow-same-origin` stays off. Adding it restores the document URL's origin (or the inherited parent origin for `srcDoc`), rather than always giving the frame the parent's origin. A CI test in `src/components/isolated/__tests__/isolated-frame.test.ts` asserts `allow-scripts` and the excluded tokens. Leave `allow-popups` and `allow-modals` out.
 
 ### Custom URI scheme + sandbox-induced opaque origin
 
@@ -50,7 +44,7 @@ child-src   'none';
 
 `http://127.0.0.1:*` in `script-src`/`style-src` permits anywidget ESM (`_esm`) and CSS (`_css`) from the daemon's blob HTTP server on a dynamic port. `https:` permits CDN-hosted widget assets. These entries allow asset loading; they do not establish confidentiality of the unauthenticated blob service. `connect-src *` and broad resource policies permit network activity subject to browser and destination policy. The sandbox allows forms and downloads; an opaque origin does not ensure credential-free requests in every browser.
 
-Canonical file: `src/components/isolated/frame.html`. Rust embeds that file with `include_str!()` for the Tauri scheme response; TypeScript imports the same file as raw text for `generateFrameHtml()` / browser `srcDoc`.
+Canonical file: `src/components/isolated/frame.html`. Rust embeds that file with `include_str!()` for the Tauri scheme response. TypeScript imports the same file as raw text for `generateFrameHtml()` / browser `srcDoc`.
 
 The scheme handler is registered in both packaged and Tauri dev shells. Plain browser-only `pnpm dev` still uses `srcDoc`, but `cargo xtask notebook` / Tauri dev can load `nteract-frame://localhost/`.
 
@@ -135,7 +129,7 @@ export function install(ctx: {
 }
 ```
 
-2. Extend `apps/notebook/vite-plugin-isolated-renderer.ts`: add the entry path, code/css variables, `invalidateCache()` entry, the `buildRendererPlugin()` call, and a `load()` case for the virtual module.
+2. Extend `apps/notebook/vite-plugin-isolated-renderer.ts` with the entry path, code/css variables, `invalidateCache()` entry, `buildRendererPlugin()` call, and a `load()` case for the virtual module.
 3. Declare the virtual module in `apps/notebook/src/vite-env.d.ts` (e.g., `declare module "virtual:renderer-plugin/bokeh" { ... }`).
 4. In `src/components/isolated/renderer-plugin-info.ts`, add the MIME → plugin mapping. The plugin loader registration lives in `iframe-libraries.ts` with imports from the virtual modules.
 5. Remove the component from `src/isolated-renderer/index.tsx` so it no longer ships in the core bundle.
@@ -144,8 +138,8 @@ export function install(ctx: {
 
 Two layers coexist:
 
-1. **Frame bootstrap/render** in `frame-bridge.ts` — `eval`, `render`, `theme`, `clear`, `resize`, `link_click`, search flow.
-2. **Widget sync** — JSON-RPC 2.0 over `postMessage`, wired by `jsonrpc-transport.ts` and `rpc-methods.ts`.
+1. **Frame bootstrap/render** (`frame-bridge.ts`): `eval`, `render`, `theme`, `clear`, `resize`, `link_click`, search flow.
+2. **Widget sync**: JSON-RPC 2.0 over `postMessage`, wired by `jsonrpc-transport.ts` and `rpc-methods.ts`.
 
 JSON-RPC widget methods:
 
@@ -154,7 +148,12 @@ JSON-RPC widget methods:
 
 ### Output-session extension methods
 
-Outputs backed by a live session (Bokeh document sessions) use extension methods declared by an output-session plugin (`src/components/outputs/output-session-plugins.ts`), not entries in `rpc-methods.ts` or `TYPE_TO_METHOD`. The plugin's `hostMethods` list is the whitelist of iframe→host requests: `OutputArea` passes the registered plugins' methods to `IsolatedFrame` as `extensionMethods`, the runtime registers a request handler only for those, and any other request gets JSON-RPC "method not found". Host→iframe updates go through `IsolatedFrameHandle.notifyExtension`. Method constants and payload types live with the plugin (e.g. `bokeh-session-rpc.ts`); the app installs the plugin and provides its runtime through `OutputSessionRuntimeContext`.
+Outputs backed by a live session (Bokeh document sessions) use extension methods declared by an output-session plugin (`src/components/outputs/output-session-plugins.ts`). They do not use entries in `rpc-methods.ts` or `TYPE_TO_METHOD`.
+
+- **Iframe→host whitelist**: A plugin's `hostMethods` list defines allowed iframe→host requests. `OutputArea` passes registered plugins' methods to `IsolatedFrame` as `extensionMethods`.
+- **Runtime enforcement**: The runtime registers a request handler only for those methods. Any other request gets JSON-RPC "method not found".
+- **Host→iframe updates** go through `IsolatedFrameHandle.notifyExtension`.
+- **Ownership**: Method constants and payload types live with the plugin (e.g. `bokeh-session-rpc.ts`). The app installs the plugin and provides its runtime through `OutputSessionRuntimeContext`.
 
 ### Widget sync flow
 
@@ -174,18 +173,18 @@ Outputs backed by a live session (Bokeh document sessions) use extension methods
 
 Review these carefully on every change:
 
-1. **Sandbox configuration** — `isolated-frame.tsx` / `SANDBOX_ATTRS`.
-2. **Source validation** — `frame.html` / `event.source !== window.parent`.
-3. **Custom message forwarding** — `comm-bridge-manager.ts` / `subscribeToModelCustomMessages` (required for anywidgets like quak).
-4. **Type-guard whitelist** — `frame-bridge.ts` / `isIframeMessage` for legacy frame-bridge types; JSON-RPC methods live in `rpc-methods.ts`. Output-session requests are whitelisted by each plugin's `hostMethods` in `src/components/outputs/output-session-plugins.ts`, and `isolated-frame-runtime.ts` / `registerTransportHandlers` registers a request handler only for those methods (`getExtensionMethods`).
+1. **Sandbox configuration**: `frame-config.ts` / `ISOLATED_FRAME_SANDBOX_ATTRS` and `ISOLATED_FRAME_ALLOW_ATTR` (applied in `isolated-frame.tsx` and `output-embed.ts`).
+2. **Source validation**: `frame.html` / `event.source !== window.parent`.
+3. **Custom message forwarding**: `comm-bridge-manager.ts` / `subscribeToModelCustomMessages` (required for anywidgets like quak).
+4. **Type-guard whitelist**: `frame-bridge.ts` / `isIframeMessage` covers legacy frame-bridge types, and JSON-RPC methods live in `rpc-methods.ts`. Output-session requests are whitelisted by each plugin's `hostMethods` in `src/components/outputs/output-session-plugins.ts`. `isolated-frame-runtime.ts` / `registerTransportHandlers` registers a request handler only for those methods (`getExtensionMethods`).
 
 ## Review checklist
 
 - Sandbox still excludes `allow-same-origin`.
 - Iframe CSP keeps `frame-src 'none'` and `child-src 'none'`.
-- CSP `script-src` / `style-src` stay scoped to `127.0.0.1:*` and `https:` — no new origins.
+- CSP `script-src` / `style-src` stay scoped to `127.0.0.1:*` and `https:` (no new origins).
 - Source validation is intact (`event.source !== window.parent`).
-- Any new message types are added to the whitelist (`frame-bridge.ts`) and the JSON-RPC method list; new output-session requests are listed in their plugin's `hostMethods`.
+- Add any new message types to the whitelist (`frame-bridge.ts`) and the JSON-RPC method list. List new output-session requests in their plugin's `hostMethods`.
 - Unit tests updated; `pnpm test:run` green.
 
 ## Testing
@@ -198,7 +197,7 @@ pnpm test:run
 
 The suite verifies the sandbox excludes `allow-same-origin`, the message type guards validate correctly, and the HTML includes the source-validation check.
 
-Manual smoke test: open `crates/notebook/fixtures/audit-test/1-vanilla.ipynb`, add a JS output, confirm `window.__TAURI__` is `undefined`, parent DOM access throws cross-origin, and `localStorage` throws cross-origin. In debug builds `Cmd+Shift+I` opens the isolation test panel.
+Manual smoke test: open `crates/notebook/fixtures/audit-test/1-vanilla.ipynb` and add a JS output. Confirm `window.__TAURI__` is `undefined`, parent DOM access throws cross-origin, and `localStorage` throws cross-origin. In debug builds, `Cmd+Shift+I` opens the isolation test panel.
 
 ## Troubleshooting
 

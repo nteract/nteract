@@ -2,24 +2,29 @@
 
 Python bindings for the [nteract](https://nteract.io) runtime daemon. Execute code, manage kernels, and interact with notebooks programmatically.
 
-**[Download the nteract desktop app](https://nteract.io)** — it ships the runtimed daemon and gives you a visual interface for your notebooks.
+**[Download the nteract desktop app](https://nteract.io).** It ships the runtimed daemon and gives you a visual interface for your notebooks.
 
-> **Using runtimed with agents?** The [`nteract` MCP server](https://pypi.org/project/nteract/) is built on runtimed and provides a ready-made agentic interface for AI assistants. It's also a great example of how to use runtimed in practice.
+> **Using runtimed with agents?** The [`nteract` package on PyPI](https://pypi.org/project/nteract/) is a thin CLI launcher for the Rust-native `runt mcp` server, providing a ready-made agentic interface for AI assistants.
 
 ## Installation
 
 ```bash
+# Stable desktop app
+pip install runtimed
+# or: uv pip install runtimed
+
+# Nightly desktop app
 pip install --pre runtimed
 # or: uv pip install --prerelease allow runtimed
 ```
 
-Only pre-release wheels are being published while the library surface settles. The stable channel is frozen at the last-shipped release; the `--pre` channel tracks the nightly desktop app and discovers the nightly daemon socket automatically. See [#2217](https://github.com/nteract/nteract/issues/2217) for context.
+Stable releases track the stable desktop app and its daemon socket. Pre-release (`--pre`) wheels track the Nightly desktop app and discover the nightly daemon socket automatically. See [#2217](https://github.com/nteract/nteract/issues/2217) for context.
 
 `Client()` and the high-level Python API use `default_socket_path()` by default. That helper respects `RUNTIMED_SOCKET_PATH`, so exported test or MCP sockets take precedence over the package's default channel.
 
 ## Quick Start
 
-> All examples use `await` — run them inside `asyncio.run(main())`, a Jupyter notebook, or a Python REPL with top-level await (e.g. `python -m asyncio`).
+> All examples use `await`. Run them inside `asyncio.run(main())`, a Jupyter notebook, or a Python REPL with top-level await (e.g. `python -m asyncio`).
 
 ```python
 import asyncio
@@ -38,7 +43,7 @@ async def main():
     recovered = await client.get_execution_result(execution.execution_id)
     print(recovered.stdout)
 
-    # Read cell properties (sync — local CRDT replica)
+    # Read cell properties (sync, local CRDT replica)
     print(cell.source)      # "print('hello')"
     print(cell.cell_type)   # "code"
 
@@ -56,7 +61,7 @@ asyncio.run(main())
 ## Features
 
 - **Document-first model** with Automerge CRDT sync
-- **Sync reads, async writes** — reads from local replica, writes sync to peers
+- **Sync reads, async writes**: reads from local replica, writes sync to peers
 - **Multi-client support** for shared notebooks
 - **Rich output capture** (stdout, stderr, display_data, errors)
 

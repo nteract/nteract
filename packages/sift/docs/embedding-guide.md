@@ -172,22 +172,33 @@ hosts with memory to spare. Rows become resident as their row group loads and
 stay resident, so sort, filter, and summaries cover every loaded row.
 
 What `maxDecodedBytes` bounds is retained Arrow memory, checked after each
-decoded batch. Two guards keep transient memory near it: a footer longer than
-the limit is rejected before it is read, and a row group whose compressed or
-footer-declared size exceeds the remaining budget is rejected before it is
-fetched. One row group's compressed bytes still pass through JS and WASM
-memory while it decodes. Files with column chunks past 4 GiB are rejected at
-open; the WASM reader cannot address them.
+decoded batch. Two guards keep transient memory near that limit:
 
-If a row group fails after the table has mounted (a read error, the decoded
-limit), the rows already loaded stay on screen and usable. Sift does not show
-its blocking error box. Instead its footer reads "Stopped loading: <message> ·
-Showing loaded rows" and the status indicator turns to a warning mark whose
-tooltip names the failure. `onLoadError` still fires, so the host can log it.
-A failure before mount shows the error box as usual. To tell the two apart,
-check whether the `engine-mounted` milestone arrived for this load. The next
-source to load clears the notice. A Parquet `url` streams through the same
+- Footers longer than the limit are rejected before they are read.
+- Row groups whose compressed or footer-declared size exceeds the remaining
+  budget are rejected before they are fetched.
+
+One row group's compressed bytes still pass through JS and WASM memory while it
+decodes. Files with column chunks past 4 GiB are rejected at open; the WASM
+reader cannot address them.
+
+If a row group fails after the table mounts (a read error or the decoded
+limit), loaded rows stay on screen and usable. Sift skips its blocking error
+box and shows "Stopped loading: <message> · Showing loaded rows" in the footer.
+The status indicator turns into a warning mark whose tooltip names the failure,
+and `onLoadError` still fires for host logging.
+
+A failure before mount shows the error box as usual. Check whether the
+`engine-mounted` milestone arrived for this load to tell the two apart. Loading
+the next source clears the notice. A Parquet `url` streams through the same
 loader and behaves the same way.
+
+Only Parquet can be read this way. A `ByteSource` with `format: 'arrow-ipc'` is
+read whole and goes through the bytes path with its `maxBytes` check.
+
+`onLoadError` fires for `loader`, `url`, `byte-source`, and manifest sources
+when a load fails, with the same `Error` Sift shows. For streaming Parquet it
+may arrive after rows mounted; see above.
 
 ### Bounded previews
 
@@ -244,9 +255,8 @@ batch is measured. Load untrusted files in a Worker you can terminate.
 ### Load more on demand
 
 A truncating load can also stop early on purpose. `autoLoad` sets a soft budget
-below `limits`: Sift loads row groups until the committed rows or decoded bytes
-reach it, then pauses with the rows loaded so far and lets the user ask for
-more.
+below `limits`. Sift loads row groups until committed rows or decoded bytes
+reach that budget, then pauses so the user can ask for more.
 
 ```tsx
 <SiftTable
@@ -265,32 +275,25 @@ more.
   `worker: true`, where the worker pauses and waits) and to Parquet behind a
   `url` source. `rows` and `decodedBytes` are each optional; the pause
   comes at whichever is reached first.
-- At a pause the table is at rest: the status indicator settles, casts are
-  allowed again, and the footer reads "Showing first N of M rows" with a
+- At a pause, the table is at rest: the status indicator settles and casts are
+  allowed again. The footer reads "Showing first N of M rows" with a
   `Load more` button (`.sift-load-more`). Each press extends the soft budget by
-  the same `rows` and `decodedBytes` and loads until it is reached again, the
-  hard budget is spent, or the file ends. While a resume is in flight the button
-  reads "Loading…" and is disabled. With `trigger: 'scroll'`, scrolling within
-  the overscan of the last loaded row also resumes; the button stays.
+  `rows` and `decodedBytes`. Loading continues until the soft budget is
+  reached, the hard budget runs out, or the file ends. While a resume is in
+  flight, the button reads "Loading…" and is disabled. With `trigger: 'scroll'`,
+  scrolling within the overscan of the last loaded row also resumes; the button
+  stays.
 - Milestones: a pause emits `streaming-complete` with `truncated: true` and
-  `resumable: true`, so hosts that clear their loading state on
-  `streaming-complete` keep doing so. A resume emits `streaming-resumed` with
-  `rowCount`, then the usual `chunk-appended` milestones, then
-  `streaming-complete` again: `resumable: true` for another pause, or
-  `resumable: false` once the file finished or the hard budget cut it, with
-  `truncated` meaning what it means for any truncating load.
+  `resumable: true`. Hosts that clear loading state on `streaming-complete`
+  keep working. A resume emits `streaming-resumed` with `rowCount`, the usual
+  `chunk-appended` milestones, and another `streaming-complete`. That event
+  carries `resumable: true` for another pause, or `resumable: false` when the
+  file ends or hits the hard budget. `truncated` keeps its usual meaning.
 - `TableData.coverage` reports `truncated: true` and `resumable: true` while
   paused, and `resumable: false` once the load finished. Summaries, sort, and
   filters cover the loaded rows throughout.
 - Unmounting or changing the source while paused closes the footer and aborts a
   resume in flight, as for any streaming load.
-
-Only Parquet can be read this way. A `ByteSource` with `format: 'arrow-ipc'` is
-read whole and goes through the bytes path with its `maxBytes` check.
-
-`onLoadError` fires for `loader`, `url`, `byte-source`, and manifest sources
-when a load fails, with the same `Error` Sift shows. For streaming Parquet it
-may arrive after rows mounted; see above.
 
 ### What the numbers cover
 
@@ -302,11 +305,12 @@ A table loaded from a file carries three pieces of provenance:
   caller of `loadTableFile(source, { overflow: 'truncate' })` reads
   `data.coverage.truncated` to learn the result was cut. Absent means every row
   is resident.
-- `TableData.datasetStats` holds one `ColumnFileStats` per column, read from
-  the Parquet footer at open and never changed: a whole-file null count when
-  every row group recorded one, min/max when every row group had usable bounds,
-  and flags for inexact (truncated string) bounds and infinite values. Columns
-  without usable footer statistics are `null`.
+- `TableData.datasetStats` holds one `ColumnFileStats` per column, read once
+  from the Parquet footer at open and never changed. Each entry carries a
+  whole-file null count (when every row group recorded one) and min/max bounds
+  (when every row group had usable bounds). It also flags inexact (truncated
+  string) bounds and infinite values. Columns without usable footer statistics
+  are `null`.
 - Each non-null `ColumnSummary` has `scope`, which labels every metric
   separately. `scope.distribution` covers the histogram bins, category bars,
   and true/false counts; it is always computed over loaded rows and says
@@ -316,26 +320,31 @@ A table loaded from a file carries three pieces of provenance:
   `scope.distinctCount` is always over loaded rows. A cast column ignores its
   footer entry, since that entry describes the stored type.
 
-The header renders these as text. The histogram and its brush domain stay over
-loaded rows. When the file has more rows than are loaded, a numeric or timestamp
-header adds a line with the whole-file bounds ("0 – 100 · whole file", with "≈"
-when the bounds are inexact), the null percentage names its scope ("20% null ·
-whole file" or "20% null · loaded rows"), the category popover keeps its "Search
-N values…" and "All" controls and adds a note "Values from loaded rows · N of M"
-that both controls reference through `aria-describedby`, and a boolean column keeps its loaded-rows bar
-and shows whole-file nulls on a separate line. Captions carry `data-scope` and
-`data-precision` attributes. `TableEngineState.loadedCount` reports resident
-rows alongside `totalCount`, which keeps its current meaning.
+The header renders these scopes as text, while the histogram and its brush
+domain stay over loaded rows. When the file has more rows than are loaded:
+
+- **Numeric and timestamp headers** add a line with whole-file bounds ("0 – 100 ·
+  whole file", with "≈" when bounds are inexact).
+- **Null percentages** name their scope ("20% null · whole file" or "20% null ·
+  loaded rows").
+- **Category popovers** keep their "Search N values…" and "All" controls and
+  add "Values from loaded rows · N of M", referenced by both controls via
+  `aria-describedby`.
+- **Boolean columns** keep their loaded-rows bar and show whole-file nulls on a
+  separate line.
+
+Captions carry `data-scope` and `data-precision` attributes.
+`TableEngineState.loadedCount` reports resident rows alongside `totalCount`,
+which keeps its current meaning.
 
 ## Query sessions
 
-When the data lives behind a database, a scan service, or anything that can
-answer a filter without shipping the whole table, the host implements
-`TableQuerySession` and hands it to a `query-session` source. Sift sends a
-`TableQuery` and receives one bounded Arrow IPC stream; it loads that stream
-through the same resident path as a file and records that the rows already
-satisfy the query. It does not filter them again, and the footer and pills
-describe the committed query rather than a local one.
+Use a `query-session` source when a database or scan service can filter data
+without shipping the whole table. The host implements `TableQuerySession`. Sift
+sends a `TableQuery` and receives one bounded Arrow IPC stream. It loads that
+stream through the resident file path and marks the rows as already matching
+the query. Sift does not filter them again; the footer and pills describe the
+committed query rather than a local one.
 
 ```tsx
 import type { TableQuerySession } from '@nteract/sift'
@@ -373,36 +382,38 @@ The contract (`src/query.ts`):
   reason when something is missing. A provider still validates the whole query
   and refuses what it cannot run; it never narrows a result silently.
 - `query` takes a `window` of `{ mode: 'head', limit }` and returns a
-  `QueryPage`: the IPC stream (schema-only when empty), `returnedRows`,
-  `matchedCount` (a `Count`: exact, estimate, lower bound, or unknown, always for
-  the query, never the base relation), and a `continuation` that says whether
-  more rows matched. `RequestContext` carries a `requestId`, an `AbortSignal`,
-  and a byte budget. Sift aborts a request when a newer query supersedes it or
-  the source unmounts; a late answer is dropped and its store freed.
+  `QueryPage`. The page includes the IPC stream (schema-only when empty),
+  `returnedRows`, `matchedCount`, and a `continuation` indicating whether more
+  rows matched. `matchedCount` is a `Count` (exact, estimate, lower bound, or
+  unknown) for the query, never the base relation. `RequestContext` carries a
+  `requestId`, an `AbortSignal`, and a byte budget. Sift aborts requests when a
+  newer query supersedes them or the source unmounts, dropping late answers and
+  freeing their stores.
 - `count` is separate so first paint never waits on `COUNT(*)`. Sift asks for a
   `'cheap'` count when the page's `matchedCount` is `unknown` and the provider
   lists a count kind.
 
 What the user sees:
 
-- The footer's primary line is the whole-dataset count with the shown rows:
-  "N whole-dataset matches · K rows shown", "≈N whole-dataset matches ·
-  Estimated · K rows shown", "≥N …", or "Counting whole-dataset matches… · K
-  rows shown" while the count is pending. A query with no filters says "rows in
-  whole dataset" instead of "matches".
+- The footer's primary line shows the whole-dataset count alongside shown rows:
+  - Exact: "N whole-dataset matches · K rows shown"
+  - Estimated or lower bound: "≈N whole-dataset matches · Estimated · K rows
+    shown" or "≥N …"
+  - Pending: "Counting whole-dataset matches… · K rows shown"
+  - Unfiltered: "N rows in whole dataset · K rows shown"
 - Committed filters render as pills with `.sift-filter-pill--committed` and the
   title "Applied to the whole dataset". Clearing one does not touch the resident
   rows; it runs the reduced query against the source. Removing a filter must
   query the source, not the already-filtered result, or the rows it hid could
   never come back.
-- Brushes and category clicks stay local, over the shown rows, exactly as for a
-  truncated file: the footer adds "J of K shown rows · Filters use shown rows"
-  and the summaries recompute over the resident rows. When local filters exist,
-  the footer offers "Apply filters to whole dataset" (`.sift-apply-query`). It
-  commits the committed filters plus the local ones as one `TableQuery` against
-  the source and replaces the resident rows with the new head; it does not layer
-  on the previous result or union rows. While the query runs the button reads
-  "Querying…" and the old rows stay visible. If the merged query is outside
+- Brushes and category clicks stay local over shown rows, just like a truncated
+  file. The footer adds "J of K shown rows · Filters use shown rows", and
+  summaries recompute over resident rows.
+- When local filters exist, the footer offers "Apply filters to whole dataset"
+  (`.sift-apply-query`). Clicking it runs the committed and local filters
+  together as one `TableQuery`. The new head replaces resident rows rather than
+  layering on or unioning previous results. While running, the button reads
+  "Querying…" and old rows stay visible. If the merged query exceeds
   `capabilities`, the button is disabled with the reason as its title.
 - `onQueryStateChange` reports each generation (`pending`, `committedQuery`,
   `resultCount`); `onChange` keeps reporting the local state, and
@@ -410,51 +421,64 @@ What the user sees:
   `engineStateToExplorerState` carries them as `committedQuery` and `counts`;
   its existing fields keep meaning resident rows.
 
-What stays local in this version: sort (the head is sorted in the browser, so
-it orders the shown rows, not the whole result), casts (they apply to the
-resident rows and are not part of `committedQuery`), and summaries (computed
-over the shown rows; the interface has no summary request yet). `limits` bounds
-decoded memory and columns per result; `headRows` is the row limit, 10,000 by
-default. Only the head window exists: there is no paging or windowing past it.
+Three operations stay local in this version:
 
-For the imperative API the same ownership is available directly:
-`engine.replaceData(data, { committedQuery })` swaps in rows that satisfy a
-query without re-applying local filters or sort, `engine.setResultCount(count)`
-sets the footer count, and `onCommittedQueryChange` in `createTable` options
-receives the reduced query when a committed pill is cleared.
+- **Sort:** runs in the browser over the shown head, not the whole result.
+- **Casts:** apply to resident rows and stay outside `committedQuery`.
+- **Summaries:** compute over shown rows; the interface has no summary request
+  yet.
+
+`limits` bounds decoded memory and columns per result; `headRows` sets the row
+limit (10,000 by default). Only the head window exists, with no paging or
+windowing past it.
+
+The imperative API exposes the same ownership directly:
+
+- `engine.replaceData(data, { committedQuery })` swaps in rows that satisfy a
+  query without re-applying local filters or sort.
+- `engine.setResultCount(count)` sets the footer count.
+- `onCommittedQueryChange` in `createTable` options receives the reduced query
+  when a committed pill is cleared.
 
 ## Windowed data (experimental)
 
-`createTable` also accepts a `WindowedTableData`: a source whose cells,
-permutation, filtered summaries, and image bytes arrive asynchronously. The
-data side owns the filter-and-sort permutation and answers `setQuery` with the
-filtered count and summaries, `requestWindow(viewStart, viewEnd, generation)`
-with the data rows and cells for a span of view positions, and `requestImage`
-with one cell's bytes; it pushes `rows-appended` and `streaming-done` through
-`subscribe`. The engine shows skeleton placeholders (`.sift-cell-skeleton`,
-rows carry `.sift-row-placeholder`, the grid `aria-busy="true"`) for view rows
-whose cells have not landed, drops any answer tagged with a stale generation,
-and reports `pending: true` in `TableEngineState` while a query is in flight.
-Geometry stays dense: `rowCount` is a resident row count. `head` holds cells
-for data rows `[0, headRows)` in identity order, whatever the current query; the
-engine paints from it only when no sort or filter is active, and ignores a head
-whose `dataRows` are not `0, 1, 2, …`. A data side that rewrites cell strings
-(cast, undo) refreshes `head` the same way.
+`createTable` also accepts a `WindowedTableData`, where cells, permutation,
+filtered summaries, and image bytes arrive asynchronously. The data side owns
+the filter-and-sort permutation and implements four interactions:
 
-What is painted stays painted. A `rows-appended` push under the identity
-permutation extends the map in place and calls `onChange` with the new
-`totalCount` and `filteredCount`; under a sort or filter it re-queries, and
-the answer is held until the window covering the visible span arrives, then
-both commit in one frame under the scroll anchor (`onChange` fires when the
-answer arrives). The scroll anchor is the row under the header's bottom edge:
-landing windows, appends, and commits keep that row at the same screen
-position; `scrollTop` changes only by row height measured above it. A user's
-own sort or filter shows placeholders at once (the viewport returns to the
-top), and a refused query puts the delivered cells back. A
-`{ type: "error", fatal: true }` event
-sets `TableEngineState.dataFailed`: the rows on screen stay, and sort, filter,
-and cast controls are disabled with the title "Data source stopped; table tools
-are unavailable".
+- `setQuery`: returns the filtered count and summaries.
+- `requestWindow(viewStart, viewEnd, generation)`: returns data rows and cells
+  for a span of view positions.
+- `requestImage`: returns one cell's bytes.
+- `subscribe`: pushes `rows-appended` and `streaming-done` events.
+
+While cells are in flight, the engine shows skeleton placeholders
+(`.sift-cell-skeleton` on cells, `.sift-row-placeholder` on rows,
+`aria-busy="true"` on the grid). It drops any answer with a stale generation and
+sets `pending: true` in `TableEngineState` while a query runs. Geometry stays
+dense: `rowCount` is a resident row count.
+
+`head` holds cells for data rows `[0, headRows)` in identity order, regardless
+of the current query. The engine paints from `head` only when no sort or filter
+is active, ignoring any head whose `dataRows` are not `0, 1, 2, …`. A data side
+that rewrites cell strings (cast, undo) refreshes `head` the same way.
+
+What is painted stays painted:
+
+- **Append under identity order:** `rows-appended` extends the map in place and
+  calls `onChange` with the new `totalCount` and `filteredCount`.
+- **Append under sort or filter:** the engine re-queries and fires `onChange`
+  when the answer arrives. It holds that answer until the visible window lands,
+  then commits both in one frame under the scroll anchor.
+- **Scroll anchor:** the row under the header's bottom edge stays at the same
+  screen position across landing windows, appends, and commits. `scrollTop`
+  adjusts only for row height measured above it.
+- **User sort or filter:** shows placeholders immediately and resets the
+  viewport to the top. A refused query restores the previously delivered cells.
+- **Fatal error:** a `{ type: "error", fatal: true }` event sets
+  `TableEngineState.dataFailed`. Loaded rows remain on screen, and sort, filter,
+  and cast controls are disabled with the title "Data source stopped; table
+  tools are unavailable".
 
 `createResidentWindowedData(tableData)` adapts a loaded `TableData` to this
 shape on the main thread. It exists to exercise the mode and is the contract a
@@ -487,31 +511,35 @@ setWorkerFactory(
 <SiftTable source={{ kind: 'byte-source', source, overflow: 'truncate', worker: true }} />
 ```
 
-With no factory the source fails at validation with a visible error. Sift does
-not fall back to the main thread: a file that needs the worker's containment
-must not run without it. A factory that throws (a CSP or sandbox
-`SecurityError`, for example) takes the same path as any other load error:
-Sift's error state shows "Worker factory threw: …" and `onLoadError` fires; it
-does not reach your error boundary. The notebook output frame has an opaque origin and
-cannot load a same-origin module worker; a blob-URL worker build for it is a
-follow-up and that host is not covered yet.
+Without a factory, the source fails at validation with a visible error. Sift
+never falls back to the main thread, because a file needing worker containment
+must not run without it. If a factory throws (such as a CSP or sandbox
+`SecurityError`), Sift treats it like any other load error. Sift shows "Worker
+factory threw: …" and fires `onLoadError`. The error does not reach your error
+boundary.
+
+The notebook output frame has an opaque origin and cannot load a same-origin
+module worker. A blob-URL worker build for that host is a follow-up, so it is
+not covered yet.
 
 Reads are relayed: the worker asks for a byte range, the main thread calls
 `source.read` and transfers the copy. `setWasmUrl` state is forwarded in the
 `open` message, so configure it before mounting as today.
 
-What the worker contains: WASM traps, decoder hangs, and retained memory. A trap
-(including the allocation cap below) ends that worker: Sift terminates it,
-keeps the rows already loaded, shows "Stopped loading: row group N exceeded the
-worker memory limit … · Showing loaded rows" in the footer, and fires
-`onLoadError`. Rows not yet shown stay as placeholders; a respawn with
-row-group quarantine is a follow-up. What it does not contain: the renderer
-process's memory (a dedicated worker lives in it) and the host's own I/O. The
-allocation cap is what bounds memory: the worker calls `set_allocation_cap`
-with `allocationCap` (default `2.5 × maxDecodedBytes`) before loading, so a
-decompression bomb traps in Rust before the process pays for it. Between row
-groups the host also compares live heap bytes against the cap and stops a load
-that has already exceeded it.
+The worker contains WASM traps, decoder hangs, and retained memory. It does not
+contain renderer process memory (a dedicated worker lives inside it) or the
+host's own I/O.
+
+A trap (including the allocation cap) ends the worker. Sift terminates it,
+keeps already-loaded rows, and fires `onLoadError`. The footer reads "Stopped
+loading: row group N exceeded the worker memory limit … · Showing loaded rows".
+Unshown rows remain placeholders; respawn with row-group quarantine is a
+follow-up.
+
+Before loading, the worker calls `set_allocation_cap` with `allocationCap`
+(default `2.5 × maxDecodedBytes`). This forces a decompression bomb to trap in
+Rust before the process pays for it. Between row groups, the host also checks
+live heap bytes against the cap and stops any load already over it.
 
 After a trap the table keeps its rows, but sort, filter, and cast are disabled
 (`getState().dataFailed` is `true`). A host calling `createWorkerWindowedData`
@@ -524,21 +552,21 @@ group, stops loading without ending the worker. The footer shows "Stopped
 loading: <message> · Showing loaded rows", `onLoadError` fires, and the rows
 already loaded keep their sort, filter, and cast tools.
 
-With `overflow: 'truncate'`, a load the budget stops early shows the same
-"Showing first N of M rows · Table tools use shown rows" notice as the
-main-thread loader, and the `streaming-complete` milestone carries `rowCount`,
-`totalRowCount`, and `truncated`.
+With `overflow: 'truncate'`, a budget-stopped load shows the same "Showing
+first N of M rows · Table tools use shown rows" notice as the main-thread
+loader. The `streaming-complete` milestone carries `rowCount`, `totalRowCount`,
+and `truncated`.
 
 `autoLoad` works the same as on the main thread: the worker pauses at the soft
 budget and waits, the footer offers `Load more`, and `trigger: 'scroll'`
 resumes near the end. The milestones match (`streaming-complete` with
 `resumable: true`, then `streaming-resumed`).
 
-A worker that never starts (its script is refused, as with a `blob:` URL under
-a CSP without `worker-src blob:`) fails the open with "Sift worker failed to
-start; the host's Content-Security-Policy may block this worker URL (…)"
-(`WorkerDataError` code `open`). A worker that dies after answering reports
-"Sift worker terminated: …".
+If the worker never starts (for example, a `blob:` URL blocked by a CSP without
+`worker-src blob:`), open fails with `WorkerDataError` code `open`. The message
+reads "Sift worker failed to start; the host's Content-Security-Policy may
+block this worker URL (…)". A worker that dies after answering reports "Sift
+worker terminated: …".
 
 Not in this version: `url` and manifest sources, a request-latency watchdog,
 and respawn.
@@ -561,16 +589,17 @@ on parse errors or mode changes. Save, Save As/export, reveal-in-folder, file
 watching, dirty-file conflict handling, and loading/error messages remain host
 responsibilities. Parquet can use a view-only mode.
 
-For already hosted data, `<SiftTable url="/data.arrow" />` and
-`<SiftTable url="/data.parquet" />` remain available. The URL/manifest paths have
-their own loading behavior. A Parquet URL is downloaded whole, then streams row
-groups through the same loader as `byte-source`, with the same budget and
-preview footer. Its defaults are `URL_PARQUET_LIMITS` (1,000,000 rows, 512 MiB
-of decoded memory, 256 columns) and `overflow: 'truncate'`, so a file past the
-budget shows its leading rows and the footer reads "Showing first N of M rows".
-The `streaming-complete` milestone carries `rowCount`, `totalRowCount`, and
-`truncated`, and the mounted data carries `coverage`, as for `byte-source`.
-Override either on the source:
+For hosted data, `<SiftTable url="/data.arrow" />` and
+`<SiftTable url="/data.parquet" />` remain available. The URL and manifest paths
+have their own loading behavior. A Parquet URL downloads whole, then streams row
+groups through the same loader, budget, and preview footer as `byte-source`.
+
+Parquet URLs default to `URL_PARQUET_LIMITS` (1,000,000 rows, 512 MiB of
+decoded memory, 256 columns) and `overflow: 'truncate'`. Files past the budget
+show leading rows, and the footer reads "Showing first N of M rows". Just like
+`byte-source`, `streaming-complete` carries `rowCount`, `totalRowCount`, and
+`truncated`, and mounted data carries `coverage`. Override either option on the
+source:
 
 ```tsx
 <SiftTable
@@ -604,10 +633,10 @@ ARIA grid semantics.
 ## Styling
 
 `style.css` is compiled and self-contained. It writes nothing to `:root`,
-`html`, or `body` and ships no document-wide CSS reset, so it can load into a host document
-next to the host's own stylesheet. Every rule is keyed on `.sift-root`, which
-Sift puts on the table container and on each element it appends to `<body>`
-(popovers, the column menu, the row detail sheet, the image viewer).
+`html`, or `body` and ships no document-wide CSS reset, so it can load into a
+host document next to the host's own stylesheet. Every rule is keyed on
+`.sift-root`. Sift applies it to the table container and every `<body>` overlay
+(popovers, column menu, row detail sheet, image viewer).
 
 Dark mode follows the host: put `.dark` or `data-theme="dark"` on `<html>` or
 `<body>`, so body-mounted overlays receive the same theme.
@@ -632,9 +661,9 @@ that are portaled to `<body>`:
 
 Row heights are computed from text measured in the cell's font, read from the
 DOM when the table mounts. Set `--sift-font-family` before creating the table.
-Lead with a named family such as `Inter` or `"Helvetica Neue"`: on macOS,
-`system-ui` measures a little differently in canvas than it paints, so an
-occasional row can come out a line short or tall.
+Lead with a named family such as `Inter` or `"Helvetica Neue"`. On macOS,
+`system-ui` measures slightly differently in canvas than it paints, which can
+leave a row a line short or tall.
 
 Every other color (row stripes, scrollbars, badges, skeletons) is derived from
 these with `color-mix()`, so they follow light and dark automatically.
@@ -656,11 +685,11 @@ the nteract repository.
 
 ## Verified in an Electron harness
 
-The worker path (see "Running the data side in a worker") has been run in
-Electron 45 under Kilo Desktop's renderer policy: a custom standard scheme
-registered `secure` with fetch and CORS privileges, `script-src 'self'
-'wasm-unsafe-eval'` with no `worker-src`, and Parquet read over a ranged IPC
-`ByteSource`. What an embedder in that setup needs to know:
+The worker path (see "Running the data side in a worker") has been verified in
+Electron 45 under Kilo Desktop's renderer policy. That setup registers a custom
+standard scheme as `secure` with fetch and CORS privileges. Its CSP is
+`script-src 'self' 'wasm-unsafe-eval'` with no `worker-src`. Parquet is read
+over a ranged IPC `ByteSource`. Key details for embedders:
 
 - `new Worker(new URL('@nteract/sift/worker', import.meta.url), { type: 'module' })`
   resolves under Vite and runs with no `worker-src` and no CSP warnings. Set
@@ -669,13 +698,14 @@ registered `secure` with fetch and CORS privileges, `script-src 'self'
   CSP, and it instantiates the WASM itself.
 - Serve `.wasm` as `application/wasm` and `.js` as `text/javascript`.
 - A `blob:` worker blocked by CSP does not throw from `new Worker`; Chromium
-  fires `error` instead, and Sift reports "Sift worker failed to start; the
+  fires `error` instead. Sift then reports "Sift worker failed to start; the
   host's Content-Security-Policy may block this worker URL (…)" rather than
   "Worker factory threw: …".
 - `autoLoad` pauses and resumes the worker. On both loaders, resumed appends
   keep the row under the header in place; `scrollTop` may move to do it.
 - `allocationCap` defaults to 2.5 × `maxDecodedBytes`. Decoding a row group
-  briefly needs about twice the retained heap, so a 2× cap can trap on the last
-  row group that fits a truncating budget instead of ending in a clean preview.
+  briefly needs roughly twice the retained heap. A 2× cap can therefore trap on
+  the last row group within a truncating budget instead of finishing a clean
+  preview.
 
 The harness is `apps/sift-electron-harness` in the nteract repository.

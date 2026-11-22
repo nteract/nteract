@@ -6,8 +6,8 @@ Scope: `crates/kernel-env/**`, `crates/kernel-launch/**`, `crates/runt-trust/**`
 
 When a notebook opens, Runt determines the kernel via two stages:
 
-1. **Runtime detection** — Python or Deno?
-2. **Environment resolution** — For Python, which environment?
+1. **Runtime detection:** Python or Deno?
+2. **Environment resolution:** For Python, which environment?
 
 ### Stage 1: Runtime detection
 
@@ -33,7 +33,7 @@ The notebook's kernelspec takes priority over project files. A Deno notebook in 
 | 4 | PEP 723 script block | `notebook_doc::pep723` + default/scoped package manager | Cached env or `pixi exec` |
 | 5 | User preference | Prewarmed env from pool | Shared pool env |
 
-Project files win over inline deps because inline deps are promoted into the project file at sync/launch time; the project file is the source of truth once present. Walk-up checks `pyproject.toml`, `pixi.toml`, `environment.yml`/`.yaml` at each directory level. Closest wins. Same-directory tiebreaker: pyproject > pixi > environment.yml. A `pyproject.toml` with `[tool.pixi]` is treated as a Pixi project. Stops at `.git` boundaries and user's home directory.
+Project files win over inline deps because inline deps are promoted into the project file at sync/launch time. Once present, the project file is the source of truth. Walk-up checks `pyproject.toml`, `pixi.toml`, `environment.yml`/`.yaml` at each directory level. Closest wins. Same-directory tiebreaker: pyproject > pixi > environment.yml. A `pyproject.toml` with `[tool.pixi]` is treated as a Pixi project. The walk-up stops at `.git` boundaries and the user's home directory.
 
 | Project file | Backend | Environment |
 |-------------|---------|-------------|
@@ -82,26 +82,20 @@ Environments live at `{cache}/{hash}/`. Hash rule:
 hash = sha256(sorted_deps + resolver_fields + env_id)[..16]
 ```
 
-Every notebook's env is isolated per notebook via `env_id` — no cross-notebook sharing at disk level. Hot-sync on notebook A would silently mutate a shared env under notebook B.
+Every notebook's env is isolated per notebook via `env_id`, with no cross-notebook sharing at disk level. Hot-sync on notebook A would silently mutate a shared env under notebook B.
 
 | Runtime | Hash function | Cache dir |
 |---------|---------------|-----------|
 | UV | `kernel_env::uv::compute_unified_env_hash` | `~/.cache/nteract/envs/{hash}/` |
 | Conda | `kernel_env::conda::compute_unified_env_hash` | `~/.cache/nteract/conda-envs/{hash}/` |
 
-Managed cache paths use `runt_workspace::managed_cache_dir`: stable → `nteract/`,
-nightly → `nteract-nightly/`. Dev worktrees retain the legacy channel's
-`runt[-nightly]/worktrees/{hash}/` layout so cache and state cleanup stay together.
-An existing cache directory under `runt/` or `runt-nightly/` is reused in place,
-even if the new path also exists. Each process keeps its first selection for
-each cache; filesystem changes do not redirect live environments. Do not move
-environments: they can contain absolute paths. This compatibility fallback does
-not copy, merge or delete
-caches. Daemon state, socket/lock and shared file-claim paths are unchanged;
-those roots contain persistent data and coordination, not disposable caches.
-Rattler's shared package download cache is unchanged. Downgrading to a release
-without the new paths can create a legacy cache; upgraded clients then reuse
-that legacy location. No automatic consolidation of both trees is performed.
+Managed cache paths use `runt_workspace::managed_cache_dir` (stable → `nteract/`, nightly → `nteract-nightly/`):
+
+- **Dev worktrees:** retain the legacy channel's `runt[-nightly]/worktrees/{hash}/` layout so cache and state cleanup stay together.
+- **Existing cache reuse:** an existing cache directory under `runt/` or `runt-nightly/` is reused in place, even if the new path also exists. This compatibility fallback does not copy, merge, or delete caches.
+- **Process stability:** each process keeps its first selection for each cache, and filesystem changes do not redirect live environments. Do not move environments: they can contain absolute paths.
+- **Unchanged roots:** daemon state, socket/lock, and shared file-claim paths stay unchanged (persistent data and coordination, not disposable caches). Rattler's shared package download cache is also unchanged.
+- **Downgrades:** downgrading to a release without the new paths can create a legacy cache, which upgraded clients then reuse. No automatic consolidation of both trees is performed.
 
 Cache hit check: verify `{hash}/bin/python` (Unix) or `{hash}/Scripts/python.exe` (Windows).
 
@@ -111,18 +105,15 @@ Pool warmer and capture step strip a base set so captured metadata records only 
 
 | Constant | Value |
 |----------|-------|
-| `kernel_env::uv::UV_BASE_PACKAGES` | `[ipykernel, ipywidgets, anywidget, nbformat, pyarrow>=14, uv]` |
+| `kernel_env::uv::UV_BASE_PACKAGES` | `[ipykernel, ipywidgets, anywidget, nbformat, pyarrow>=14, uv>=0.13.5]` |
 | `kernel_env::conda::CONDA_BASE_PACKAGES` | `[ipykernel, ipywidgets, anywidget, pip, nbformat, pyarrow>=14]` |
 
-`conda::sync_dependencies` takes an `EnvOwnership`. Daemon-owned prefixes get
-the full base set, and the solve is the env's complete desired state. A
-user-managed `environment.yml` prefix (`prefix:` or an existing named env) gets
-only `ipykernel` and `pyarrow>=14`, each skipped when pip already owns it. Every installed Conda package stays in the solve, so the
-installer removes nothing. A requested package that pip installed is left to
-pip: its dist-info directory appears in no Conda record's file list. A named
-env the daemon created counts as user-managed from its next launch. Hot-sync
-applies the user rules to every `conda:env_yml` kernel, since its launched
-config does not record ownership.
+`conda::sync_dependencies` takes an `EnvOwnership`:
+
+- **Daemon-owned prefixes** get the full base set, and the solve is the env's complete desired state.
+- **User-managed `environment.yml` prefixes** (`prefix:` or an existing named env) get only `ipykernel` and `pyarrow>=14`, each skipped when pip already owns it. Every installed Conda package stays in the solve, so the installer removes nothing.
+- **Pip-owned packages:** a requested package installed by pip is left to pip (its dist-info directory appears in no Conda record's file list).
+- **Ownership transitions:** a named env created by the daemon counts as user-managed from its next launch. Hot-sync applies the user rules to every `conda:env_yml` kernel, because its launched config does not record ownership.
 
 Conda and Pixi solves go through `repodata::solve_with_repodata`. It solves on
 cached repodata first. If that solve fails, it refetches once and solves again:
@@ -133,7 +124,7 @@ On Windows ARM64, UV install/strip/prewarm/inline lists drop `pyarrow>=14` (`uv_
 
 ### Windows ARM64 Conda/Pixi emulation
 
-Managed Conda/Pixi solves cannot use native `win-arm64` yet: conda-forge does not publish `win-arm64` `ipykernel` / `pyzmq` (and the rest of the Jupyter kernel stack). Without those packages a native ARM64 Conda or Pixi env cannot launch a kernel, so `conda_solve_platform()` maps `WinArm64` → `Win64` and rattler virtual packages override `__archspec` to `x86_64`. Those envs run as x64 under Windows ARM emulation.
+Managed Conda/Pixi solves cannot use native `win-arm64` yet: conda-forge does not publish `win-arm64` `ipykernel` / `pyzmq` (and the rest of the Jupyter kernel stack). Without those packages, a native ARM64 Conda or Pixi env cannot launch a kernel. `conda_solve_platform()` therefore maps `WinArm64` → `Win64`, and rattler virtual packages override `__archspec` to `x86_64`. Those envs run as x64 under Windows ARM emulation.
 
 To drop the emulation:
 
@@ -154,11 +145,11 @@ The daemon maintains pre-created environments (base set + user's `default_packag
 
 Warm-env failures must surface in pool status with a real `error_kind` so
 onboarding does not spin forever waiting for `available > 0`. A failed warm
-deletes its partial directory. After five consecutive non-network failures a
+deletes its partial directory. After five consecutive non-network failures, a
 pool parks (`WarmRetry` in `crates/runtimed/src/daemon.rs`, reported as
-`parked` in pool status): it retries once when a launch waits on it, when its
-target or package list changes, and every 30 minutes. Network failures keep
-the short backoff and never park a pool.
+`parked` in pool status). A parked pool retries once when a launch waits on it,
+when its target or package list changes, and every 30 minutes. Network failures
+keep the short backoff and never park a pool.
 Pool warmups import kernel modules; they never `compileall` site-packages.
 
 With a UV or Conda pool target of 0, a launch that needs a prewarmed env
@@ -235,16 +226,12 @@ identity is present in the local trusted-package store.
 - **Store:** `TrustedPackageStore` in `crates/runtimed/src/trusted_packages.rs`,
   keyed by `(ecosystem, normalized_name)` and populated by user approval
   via the trust dialog or by daemon-initiated approval flows.
-- **Identity:** only plain registry specs (name, extras, version constraints,
-  markers) share a normalized-name identity. A spec that selects its own
-  source — a PEP 508 direct reference, VCS/path/URL spec, bare archive filename,
-  installer option, conda URL, or bracketed conda channel — is keyed by its
-  exact text in a separate `pypi-exact` / `conda-exact` ecosystem so legacy
-  name keys cannot approve sources. A `channel::name` conda spec needs both
-  the name and the channel approved. Conda specs with comments or a
-  `defaults::` qualifier require exact approval because installer parsing
-  differs from ordinary channel-list identity.
-  Unrecognized specs fail closed; never drop them from the check.
+- **Identity:**
+  - Only plain registry specs (name, extras, version constraints, markers) share a normalized-name identity.
+  - Any spec that selects its own source is keyed by exact text in a separate `pypi-exact` / `conda-exact` ecosystem so legacy name keys cannot approve sources. Source-selecting specs include PEP 508 direct references, VCS/path/URL specs, bare archive filenames, installer options, conda URLs, and bracketed conda channels.
+  - A `channel::name` conda spec needs both the name and the channel approved.
+  - Conda specs with comments or a `defaults::` qualifier require exact approval because installer parsing differs from ordinary channel-list identity.
+  - Unrecognized specs fail closed; never drop them from the check.
 - **Extraction:** `runt_trust::extract_trust_info()` pulls dep names out
   of `metadata.runt.uv` / `metadata.runt.conda` / `metadata.runt.pixi`
   (with fallback to legacy `metadata.uv` / `metadata.conda`).

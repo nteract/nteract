@@ -4,8 +4,8 @@ Issue: https://github.com/nteract/nteract/issues/1816
 
 This plan updates the post-#2629/#2630/#2632 architecture direction. The short
 version: Arrow IPC stream should become the canonical rich table output for
-notebooks. Parquet should remain a supported input/rendering format and a
-backward-compatibility path for already-saved notebooks, but new pandas, polars,
+notebooks. Parquet remains a supported input/rendering format and
+backward-compatibility path for already-saved notebooks. New pandas, polars,
 pyarrow, narwhals, and Hugging Face table outputs should converge on Arrow IPC.
 The phases below are intended as targeted commits in this PR, not separate PRs.
 
@@ -168,8 +168,8 @@ fallback or row-limiting glue, not the default serialization model.
 Treat the imported `RecordBatchReader` as a potentially single-use source. For
 the current one-shot path, it is fine to drain the reader into one complete IPC
 stream. For the progressive path, the chunk writer should drain the same reader
-incrementally and publish chunks as batches arrive; it should not first build a
-complete IPC stream and then split the serialized bytes.
+incrementally and publish chunks as batches arrive. Do not build a complete IPC
+stream first and split its serialized bytes afterward.
 
 For older pandas versions that do not expose `__arrow_c_stream__`, convert
 through PyArrow and write Arrow IPC stream bytes:
@@ -275,9 +275,9 @@ inside the manifest.
 The precompute boundary is the Python launcher. Do not expand runtime Python or
 Node consumer APIs just to recover this text. Automatic dataframe/table
 formatters and the explicit progressive Arrow display helper publish bounded
-summary text as sibling `text/llm+plain`, so MCP, runtimed-py, runtimed-node,
-and frontend renderers can read the producer-authored text instead of
-calculating it independently.
+summary text as sibling `text/llm+plain`. MCP, runtimed-py, runtimed-node, and
+frontend renderers then read that producer-authored text instead of recomputing
+it.
 
 ## Chunked Arrow Over CAS
 
@@ -314,7 +314,7 @@ Shape:
       "size": 98304,
       "row_count": 4096,
       "record_batch_count": 4,
-      "encoding": "arrow-ipc-stream-fragment"
+      "encoding": "arrow-ipc-stream"
     }
   ],
   "complete": true,
@@ -580,11 +580,6 @@ Frontend responsibilities:
 - mark the table complete only when `complete: true`
 - keep `text/plain` fallback available when the plugin fails
 
-## Phased Implementation
-
-Each phase below should land as an individual commit in this PR so the work can
-be reviewed and tested incrementally.
-
 ## Implementation Progress
 
 Keep this section current as the PR evolves. It is the durable working memory
@@ -714,6 +709,11 @@ for the staged implementation.
   - richer structured `TABLE_REPR v1` hints remain a follow-on PR; this pass
     only makes the current compact text available early and consistently.
 
+## Phased Implementation
+
+Each phase below should land as an individual commit in this PR so the work can
+be reviewed and tested incrementally.
+
 ### Phase 1: Canonical Arrow For DataFrames
 
 Goal: all new dataframe display outputs use Arrow IPC stream by default.
@@ -808,8 +808,8 @@ Changes:
 Acceptance:
 
 - A large Arrow table displays first rows before the whole table is serialized.
-- For a table where full serialization takes more than 1 second, the first rows
-  render within 200 ms after the dataframe/source object is available when a
+- For tables taking over 1 second to serialize, the first rows render within
+  200 ms once the dataframe/source object is available. This applies whenever a
   bounded head can be produced without forcing full conversion.
 - Final manifest is complete and durable.
 - Vanilla notebook fallback remains simple and stable.
@@ -887,19 +887,23 @@ Acceptance:
 
 ## Backward Compatibility
 
-Desktop client and runtime daemon ship together. There is no supported
-configuration where a release-N client talks to a release-M daemon, so the
-manifest MIME, blob-ref shape, attached-buffer protocol, and output store
-schema can change in a single release without compatibility shims. The only
-durable compatibility surface is saved `.ipynb` files on disk and the old
-parquet/Arrow IPC blob payloads users may still have in CAS.
+Desktop client and runtime daemon compatibility is gated by `PROTOCOL_VERSION`
+and `DAEMON_API_VERSION` range admission (see
+`docs/adr/daemon-service-repair-and-semantic-compatibility.md`), not strict
+same-release equality. Wire-breaking changes bump `PROTOCOL_VERSION`, and
+required semantic changes to the manifest MIME, blob-ref shape, attached-buffer
+protocol, or output store schema bump `DAEMON_API_VERSION` when an older daemon
+within the admitted range would behave unsafely or incorrectly. The durable
+on-disk compatibility surface is saved `.ipynb` files and the old parquet/Arrow
+IPC blob payloads users may still have in CAS.
 
 - Existing `.ipynb` files with parquet blob refs continue to load and render.
 - Existing `.ipynb` files with direct Arrow IPC blob refs continue to load and
   render.
 - New manifest outputs save as ordinary JSON plus nteract blob refs (chunks
-  and schema, plus coalesced artifacts when present), with `text/plain` /
-  `text/html` fallbacks for non-nteract frontends.
+  and coalesced artifacts when present; `schema.hash` remains a plain
+  fingerprint), with `text/plain` / `text/html` fallbacks for non-nteract
+  frontends.
 - The old parquet MIME stays in Sift and MIME priority for old fixtures, but
   new launcher producers do not choose it.
 - `update_display_data` without a matching display id keeps current behavior:
