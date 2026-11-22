@@ -458,3 +458,59 @@ test("ProjectLease re-arms if the runtime fires its timer 1 ms early", async () 
   close();
   await done;
 });
+
+test("ProjectLease fails over an interrupted runner refresh even with zero remaining runners, and ignores runner close during an alarm tick", async () => {
+  const clock = fakeClock(T0);
+  const resolvers = [];
+  const runner = new ProjectLease({
+    now: clock.now,
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+    resolve: () =>
+      new Promise((resolve) => {
+        resolvers.push(resolve);
+      }),
+  });
+
+  // Case 1: single resident driver starts a refresh and closes before it settles
+  // (e.g. celld drops its promise while a hibernated peer remains). State must
+  // return to armed (retry) instead of staying stuck in refreshing forever.
+  let closeDriver;
+  const doneDriver = runner.serve(
+    new Promise((resolve) => {
+      closeDriver = resolve;
+    }),
+  );
+  runner.leaseBound(T0 + 60_000);
+  await clock.advance(50_000);
+  assert.equal(runner.state.name, "refreshing");
+  closeDriver();
+  await doneDriver;
+  assert.equal(
+    runner.state.name,
+    "armed",
+    "closing the last resident driver during its own refresh arms a retry for hibernated peers",
+  );
+  assert.equal(runner.state.at, clock.now() + RETRY);
+
+  // Case 2: alarm tick() owns the refresh; a closing resident driver must NOT abort it.
+  let closeOther;
+  const doneOther = runner.serve(
+    new Promise((resolve) => {
+      closeOther = resolve;
+    }),
+  );
+  const tickNow = runner.state.at;
+  const tickPromise = runner.tick(tickNow);
+  assert.equal(runner.state.name, "refreshing");
+  const activeToken = runner.state.token;
+  closeOther();
+  await doneOther;
+  assert.equal(runner.state.name, "refreshing");
+  assert.equal(runner.state.token, activeToken);
+  resolvers.at(-1)(tickNow + 60_000);
+  await tickPromise;
+  assert.equal(runner.state.name, "armed");
+  assert.equal(runner.state.validUntil, tickNow + 60_000);
+  runner.stop();
+});

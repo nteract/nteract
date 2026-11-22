@@ -81,7 +81,13 @@ async function placement(env, metadata) {
   );
   if (response.status === 404) return { complete: true, space_id: null };
   if (!response.ok) throw projectPolicyUnavailable();
-  return response.json();
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    throw projectPolicyUnavailable();
+  }
+  return payload;
 }
 
 /** One internal fetch; a thrown fetch is an unfinished read. */

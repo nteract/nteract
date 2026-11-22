@@ -83,7 +83,7 @@ export class PlainByteStore {
   }
 }
 
-const transportReason = (reason) =>
+export const transportReason = (reason) =>
   reason === "frame_too_large" ? "native_frame_too_large" : "native_frame_unsupported";
 
 /** The parts of pageAccess a live connection depends on. */
@@ -503,8 +503,48 @@ export class PlainSync {
     this.blocked.clear();
   }
 
+  /** Re-evaluate a hibernated connection against refreshed identity leases
+   * (e.g. updated organization memberships on alarm). Closes with
+   * `access_changed` if the effective role/grant changed; otherwise updates
+   * `conn.identity` and `conn.expiresAt`. */
+  refreshIdentity(conn, nextIdentity) {
+    if (conn.trusted || conn.closed) return false;
+    const now = this.now();
+    let access;
+    try {
+      access = accessShape(this.policy.account(nextIdentity));
+    } catch {
+      access = null;
+    }
+    if (!access || Object.keys(access).some((key) => access[key] !== conn.access[key])) {
+      const denied = refusalFrom(
+        new PermissionDenied("Page access changed during connection", "native_access_changed"),
+      );
+      conn.transport.close(denied.close.code, denied.close.reason);
+      return false;
+    }
+    let nextDeadline;
+    try {
+      nextDeadline = this.policy.leaseExpiresAt(nextIdentity);
+    } catch {
+      const denied = refusalFrom(
+        new PermissionDenied("Page access changed during connection", "native_access_changed"),
+      );
+      conn.transport.close(denied.close.code, denied.close.reason);
+      return false;
+    }
+    if (nextDeadline <= now) {
+      const denied = refusalFrom(leaseExpiryError(nextIdentity, nextDeadline));
+      conn.transport.close(denied.close.code, denied.close.reason);
+      return false;
+    }
+    conn.identity = nextIdentity;
+    conn.expiresAt = nextDeadline;
+    return true;
+  }
+
   /** Close every browser connection. Host handles keep running. */
-  disconnectAll(code = 1001, reason = "Going away") {
+  disconnectAll(code = 1000, reason = "Disconnected") {
     for (const conn of this.host.connections())
       if (!conn.trusted) conn.transport.close(code, reason);
   }

@@ -192,8 +192,10 @@ import {
   PlainSync,
   clearPrefixes,
   plainSessionReplaced,
+  transportReason,
   treeOf,
 } from "./plain-sync.mjs";
+import { organizationLeases } from "./organization-memberships.mjs";
 import { logSyncRefused, logSyncRounds } from "./plain-sync-log.mjs";
 import { BLOCKING as BLOCKING_COMMENT_CODES } from "../sync/comments.mjs";
 import { DocumentPolicy, PermissionDenied, leaseExpiryError } from "./policy.mjs";
@@ -806,6 +808,9 @@ const INDEX_REPORT_PENDING = "host/index/report-pending";
  * the Catalogs and the index, when it first observed it, and whether writers
  * holding that title keep their own time (`title-projection.mjs`). */
 const TITLE_PROJECTION_KEY = "host/title-projection";
+/** Normative in the Page Durable Object: `{ epoch, revision }` for `PageActivity`
+ * so hibernated tabs keep one activity epoch and strictly advancing revisions
+ * across DO eviction. Deleted in `forgetContent()`. */
 const ACTIVITY_EPOCH_KEY = "host/activity-epoch";
 /** `true` while a projection of the title to the owner's and members'
  * Catalogs hasn't been seen to land everywhere. Written before the title it
@@ -2448,8 +2453,7 @@ export class Catalog {
           throw new HttpError(403, "Host only");
         const value = await readJson(request);
         requireSpaceIdArgument(value.space_id);
-        await this.locationShape();
-        const { entries } = await locationScan(this.storage);
+        const { entries } = (await this.scans.read(this.storage)).scan;
         const pageIds = [];
         for (const [pageId, entry] of entries) {
           if (entry.state === "pending" || entry.state === "trashed") continue;
@@ -5822,7 +5826,13 @@ export class Page {
       usageState: entry.usageSession.state,
       pageId: this.metadata?.pageId,
     });
-    if (!attachment) return;
+    if (!attachment) {
+      // Attachment outgrew the 2 KiB cap (e.g. many joined docs): close with a
+      // retryable code so the client reconnects cleanly instead of drifting
+      // with stale deadlines or missing subscriptions after eviction.
+      void entry.wire.disconnect(4503, "temporarily_unavailable");
+      return;
+    }
     try {
       entry.ws.serializeAttachment(attachment);
     } catch {
@@ -5831,7 +5841,7 @@ export class Page {
   }
 
   persistHibernatedAttachments() {
-    for (const entry of this.hibernated.values()) this.persistSocketAttachment(entry);
+    for (const entry of Array.from(this.hibernated.values())) this.persistSocketAttachment(entry);
   }
 
   recordSocketJoined(conn, doc) {
@@ -5841,7 +5851,7 @@ export class Page {
     this.persistSocketAttachment(entry);
   }
 
-  async scheduleNextAlarm() {
+  async scheduleNextAlarm({ throwOnError = false } = {}) {
     if (!this.supportsHibernation() || this.storageRefusal()) return;
     const sockets = [];
     for (const entry of this.hibernated.values()) {
@@ -5857,7 +5867,6 @@ export class Page {
     const target = nextAlarmAt({
       sockets,
       projectLeaseState: this.projectLease?.state ?? null,
-      contentActivityState: this.contentActivity?.state ?? null,
       now: Date.now(),
     });
     if (target === null) {
@@ -5865,8 +5874,9 @@ export class Page {
         this.scheduledAlarmAt = null;
         try {
           await this.ctx.storage.deleteAlarm?.();
-        } catch {
+        } catch (error) {
           this.scheduledAlarmAt = undefined;
+          if (throwOnError) throw error;
         }
       }
       return;
@@ -5875,8 +5885,9 @@ export class Page {
       this.scheduledAlarmAt = target;
       try {
         await this.ctx.storage.setAlarm(target);
-      } catch {
+      } catch (error) {
         this.scheduledAlarmAt = undefined;
+        if (throwOnError) throw error;
       }
     }
   }
@@ -5919,7 +5930,7 @@ export class Page {
         const att = parseSocketAttachment(raw);
         if (!att) {
           try {
-            ws.close(1001, "Going away");
+            ws.close(4503, "temporarily_unavailable");
           } catch {
             /* Already closed. */
           }
@@ -5943,6 +5954,7 @@ export class Page {
           projectFailed = true;
         }
       }
+      let restored = 0;
       for (const { ws, att } of parsed) {
         if (projectFailed && att.projectBound) {
           try {
@@ -5953,15 +5965,19 @@ export class Page {
           continue;
         }
         this.attachHibernatedSocket({ ws, att, rehydrated: true });
+        restored++;
       }
       if (this.plain && this.hibernated.size > 0) {
-        const { extended, closed } = this.plain.extendLeases();
+        const { extended, closed } = this.runExtendLeases();
         if (extended > 0) this.persistHibernatedAttachments();
         if (closed > 0) {
           this.activity?.prune();
           this.broadcastProfiles();
         }
       }
+      // Broadcast the fresh activity snapshot (preserved epoch, higher
+      // revision) so open tabs clear any expired pre-eviction progress.
+      if (restored > 0 && this.hibernated.size > 0) this.broadcastActivity();
       const deadline = this.nextProjectLeaseDeadline();
       if (deadline !== null) this.ensureProjectLease().leaseBound(deadline);
       this.rehydrated = true;
@@ -5983,7 +5999,7 @@ export class Page {
         logAdmissionDenied(
           withAdmissionReason(
             Object.assign(new Error("Unsupported sync frame"), { status: 400 }),
-            reason === "frame_too_large" ? "sync_frame_too_large" : "sync_frame_invalid",
+            transportReason(reason),
           ),
           { stage: "native", identity: att.identity },
         ),
@@ -6047,6 +6063,7 @@ export class Page {
       this.wires.delete(wire);
       this.wirePrincipals.delete(wire);
       if (
+        !this.extendingLeases &&
         this.projectLease &&
         this.projectLease.state.name !== "idle" &&
         this.nextProjectLeaseDeadline() === null
@@ -6084,7 +6101,7 @@ export class Page {
     const entry = this.hibernated.get(ws);
     if (!entry) {
       try {
-        ws.close(1001, "Going away");
+        ws.close(4503, "temporarily_unavailable");
       } catch {
         /* Already closed. */
       }
@@ -6155,17 +6172,12 @@ export class Page {
   }
 
   /** Unified Durable Object alarm driving dwell ticks (`page.read`/`page.visit`),
-   * Project safety-net lease renewal, periodic 60 s OIDC re-checks, coalesced
-   * content-activity flushes, and fail-closed expiry without resident timers. */
+   * Project safety-net lease renewal, periodic 60 s OIDC and organization
+   * membership re-checks, and fail-closed expiry without resident timers. */
   async alarm() {
     this.scheduledAlarmAt = undefined;
     await this.ready;
-    if (
-      !this.hasOpenSyncSockets() &&
-      this.contentActivity?.state.name !== "waiting" &&
-      this.contentActivity?.state.name !== "flushQueued"
-    )
-      return;
+    if (!this.hasOpenSyncSockets()) return;
     await this.documentReady();
     await this.ensureRehydrated();
     const now = Date.now();
@@ -6182,12 +6194,9 @@ export class Page {
         this.persistSocketAttachment(entry);
       }
     }
-
-    // 2. Coalesced content-activity flush (e.g. after browser edits on hibernated sockets).
-    this.contentActivity?.pump();
     flushUsage(this.env, this.ctx);
 
-    // 3. Project safety-net lease renewal (one shared lookup for all sockets).
+    // 2. Project safety-net lease renewal (one shared lookup for all sockets).
     if (
       this.projectLease &&
       this.projectLease.state.name === "armed" &&
@@ -6197,11 +6206,14 @@ export class Page {
       this.persistHibernatedAttachments();
     }
 
-    // 4. Periodic 60 s OIDC session re-checks (deduplicated per session ID + origin).
+    // 3. Periodic 60 s OIDC session and organization membership re-checks
+    // (deduplicated per session lookup + origin and per principal).
     const oidcChecks = new Map();
+    const orgChecks = new Map();
     for (const entry of Array.from(this.hibernated.values())) {
       if (entry.conn.closed || !Number.isFinite(entry.reauthAt) || entry.reauthAt > now) continue;
-      const key = `${entry.sessionCheck.ids[0]}:${entry.sessionCheck.origin}`;
+      const first = entry.sessionCheck.entries[0];
+      const key = `${first.kid}:${first.id}:${entry.sessionCheck.origin}`;
       if (!oidcChecks.has(key))
         oidcChecks.set(
           key,
@@ -6225,11 +6237,33 @@ export class Page {
         void entry.wire.disconnect(admissionCloseCode(denied), admissionCode(denied));
         continue;
       }
+      // Refresh organization leases from D1 so directory removals close
+      // hibernated sockets within the same 60 s alarm window.
+      const orgKey = `${entry.conn.identity.principal}:${checked.expiresAt}`;
+      if (!orgChecks.has(orgKey)) {
+        const baseIdentity = { ...entry.conn.identity, expiresAt: checked.expiresAt };
+        orgChecks.set(orgKey, organizationLeases(this.env, baseIdentity, now));
+      }
+      let nextOrgs;
+      try {
+        nextOrgs = await orgChecks.get(orgKey);
+      } catch (error) {
+        if (!entry.conn.closed)
+          void entry.wire.disconnect(admissionCloseCode(error), admissionCode(error));
+        continue;
+      }
+      if (entry.conn.closed) continue;
+      const nextIdentity = Object.freeze({
+        ...entry.conn.identity,
+        expiresAt: checked.expiresAt,
+        organizations: nextOrgs.length ? Object.freeze(nextOrgs) : undefined,
+      });
+      if (!this.plain.refreshIdentity(entry.conn, nextIdentity)) continue;
       entry.reauthAt = now + OIDC_REAUTH_MS;
       this.persistSocketAttachment(entry);
     }
 
-    // 5. Fail-closed expiry enforcement for every open hibernated socket.
+    // 4. Fail-closed expiry enforcement for every open hibernated socket.
     const checkAt = Date.now();
     for (const entry of Array.from(this.hibernated.values())) {
       if (entry.conn.closed) continue;
@@ -6239,8 +6273,9 @@ export class Page {
       }
     }
 
-    // 6. Schedule the next earliest alarm (or delete it if nothing remains).
-    await this.scheduleNextAlarm();
+    // 5. Schedule the next earliest alarm; propagate write failures so the
+    // runtime retries the alarm instead of silently stopping maintenance.
+    await this.scheduleNextAlarm({ throwOnError: true });
   }
 
   /** Resolve the Project access for `identity` on `metadata` and record it
@@ -7469,7 +7504,8 @@ export class Page {
         await this.documentReady();
         await this.ensureRehydrated();
         try {
-          await this.renewProjectLease();
+          const deadline = await this.renewProjectLease();
+          if (deadline !== null) this.ensureProjectLease().leaseBound(deadline);
         } catch (error) {
           if (error?.code !== "project_policy_unavailable") throw error;
         }
@@ -9639,8 +9675,10 @@ export class Page {
       return new Response(null, { status: 101, webSocket: client });
     }
 
-    // Resident fallback when the runtime lacks WebSocket hibernation or the
-    // socket's serialized attachment exceeds Cloudflare's 2 KiB cap.
+    // Resident fallback when the credential is not an OIDC session with a
+    // derived lookup, the runtime lacks WebSocket hibernation, the serialized
+    // attachment exceeds Cloudflare's 2 KiB cap, or the slimmed attachment
+    // identity does not satisfy policy.
     socket.accept();
     const conn = this.plain.accept(socket, identity, {
       features,
@@ -9719,6 +9757,7 @@ export class Page {
         this.nextProjectLeaseDeadline() === null
       )
         this.projectLease.socketsGone();
+      if (this.hibernated.size > 0) void this.scheduleNextAlarm();
       this.activity?.prune();
       this.broadcastProfiles();
       const closeCode =
@@ -9765,22 +9804,29 @@ export class Page {
   }
 }
 
-/** Fan out best-effort Project access change notices to child Page DOs with
- * bounded concurrency so revocations act promptly without spiking DO traffic. */
+/** Fan out best-effort Project access change notices to child Page DOs with a
+ * rolling concurrency limit and per-call timeout so one slow Page cannot delay
+ * revocations for the rest of the Project. */
 async function notifyPagesAccessChanged(env, pageIds) {
   if (!env.PAGES || !pageIds?.length) return;
-  const BATCH = 8;
-  for (let i = 0; i < pageIds.length; i += BATCH) {
-    await Promise.allSettled(
-      pageIds.slice(i, i + BATCH).map((pageId) =>
-        env.PAGES.getByName(pageId).fetch(
+  const CONCURRENCY = 8;
+  let next = 0;
+  const worker = async () => {
+    while (next < pageIds.length) {
+      const pageId = pageIds[next++];
+      try {
+        await env.PAGES.getByName(pageId).fetch(
           new Request("https://pages.internal/internal/project-access-changed", {
             method: "POST",
+            signal: AbortSignal.timeout(5_000),
           }),
-        ),
-      ),
-    );
-  }
+        );
+      } catch {
+        /* Best-effort push; the 60 s Project lease is the fail-closed backstop. */
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pageIds.length) }, () => worker()));
 }
 
 const HOST_CLOSE_REASONS = Object.freeze({

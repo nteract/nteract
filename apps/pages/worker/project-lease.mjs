@@ -6,10 +6,10 @@ import { defineMachine, reject } from "../shared/machine.mjs";
  *
  * One runner per Page host renews the shared Project snapshot ahead of
  * `valid_until`, so healthy Project readers stay connected across lease
- * boundaries without closing and reconnecting every 15 seconds. One Project
- * lookup serves every open socket on the Page. When the Project is
- * unavailable, existing socket deadlines remain untouched and each socket's
- * own expiry timer still closes fail-closed at `valid_until`.
+ * boundaries without closing and reconnecting. One Project lookup serves every
+ * open socket on the Page. When the Project is unavailable, existing socket
+ * deadlines remain untouched and each socket still closes fail-closed at
+ * `valid_until`.
  *
  * States, each carrying a monotonic `token` fencing late refresh outcomes:
  * - idle: no open socket is bound to the Page's Project lease.
@@ -185,6 +185,7 @@ export class ProjectLease {
   #driver = null;
   #runners = new Map();
   #pendingResolve = null;
+  #refreshOwner = null;
 
   constructor({
     resolve,
@@ -224,10 +225,12 @@ export class ProjectLease {
     if (result.rejected) return;
     const resolveEffect = result.effects.find((effect) => effect.type === "resolve");
     if (!resolveEffect) return;
+    this.#refreshOwner = "alarm";
     let validUntil;
     try {
       validUntil = await this.resolve();
     } catch (error) {
+      if (this.#refreshOwner === "alarm") this.#refreshOwner = null;
       this.onError(error);
       this.#step(
         { type: "unavailable", token: resolveEffect.token, now: this.now() },
@@ -235,6 +238,7 @@ export class ProjectLease {
       );
       return;
     }
+    if (this.#refreshOwner === "alarm") this.#refreshOwner = null;
     this.#step(
       { type: "resolved", token: resolveEffect.token, validUntil, now: this.now() },
       { runEffects: false },
@@ -242,8 +246,8 @@ export class ProjectLease {
   }
 
   /** Keep renewal timers and fetches inside a live resident socket's request.
-   * One socket drives at a time; when it closes, another live socket takes
-   * over and re-arms the timer (or retries an interrupted refresh). */
+   * One socket drives at a time; when it closes, another live socket (or the
+   * Page DO alarm for hibernated peers) takes over and re-arms the renewal. */
   async serve(until) {
     let open = true;
     const runner = { wake: null };
@@ -256,12 +260,14 @@ export class ProjectLease {
         this.#clearTimer();
         this.#pendingResolve = null;
         this.#driver = null;
-        if (this.#state.name === "refreshing" && this.#runners.size > 0)
+        if (this.#state.name === "refreshing" && this.#refreshOwner === "runner") {
+          this.#refreshOwner = null;
           this.#step({
             type: "unavailable",
             token: this.#state.token,
             now: this.now(),
           });
+        }
         this.#wakeOne();
       }
       runner.wake?.();
@@ -356,15 +362,18 @@ export class ProjectLease {
   }
 
   #runResolve(activeToken) {
+    this.#refreshOwner = "runner";
     void (async () => {
       let validUntil;
       try {
         validUntil = await this.resolve();
       } catch (error) {
+        if (this.#refreshOwner === "runner") this.#refreshOwner = null;
         this.onError(error);
         this.#step({ type: "unavailable", token: activeToken, now: this.now() });
         return;
       }
+      if (this.#refreshOwner === "runner") this.#refreshOwner = null;
       this.#step({ type: "resolved", token: activeToken, validUntil, now: this.now() });
     })();
   }

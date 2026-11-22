@@ -186,7 +186,15 @@ test("encodeSocketAttachment strips proofs, keeps domain/org namespaces, enforce
       verifiedEmail: "alice@example.com",
       clientProvenance: { agent: "hidden" },
     },
-    sessionCheck: { ids: ["hmac-id-1"], origin: "https://pages.invalid" },
+    sessionCheck: {
+      entries: [
+        { kid: "k1", id: "hmac-id-1" },
+        { kid: "k2", id: "hmac-id-2" },
+        { kid: "k3", id: "hmac-id-3" },
+        { kid: "k4", id: "hmac-id-4" },
+      ],
+      origin: "https://pages.invalid",
+    },
     usageState: { name: "open", nextAt: 31_000 },
     pageId: "page-1",
   });
@@ -202,12 +210,21 @@ test("encodeSocketAttachment strips proofs, keeps domain/org namespaces, enforce
   const parsed = parseSocketAttachment(encoded);
   assert.equal(parsed.senderId, "b-1");
   assert.equal(parsed.projectBound, true);
-  assert.deepEqual(parsed.sessionCheck, {
-    ids: ["hmac-id-1"],
-    origin: "https://pages.invalid",
-  });
+  assert.equal(parsed.sessionCheck.entries.length, 4);
+  assert.equal(parsed.sessionCheck.origin, "https://pages.invalid");
   assert.equal(parsed.identity.domainAccess.namespace, "user:kilo");
   assert.equal(parsed.identity.organizations[0].namespace, "user:kilo");
+  // More than SESSION_KEYRING_MAX_KEYS (4) entries is rejected.
+  assert.equal(
+    parseSocketAttachment({
+      ...encoded,
+      sessionCheck: {
+        entries: Array.from({ length: 5 }, (_, i) => ({ kid: `k${i + 1}`, id: `id-${i + 1}` })),
+        origin: "https://pages.invalid",
+      },
+    }),
+    null,
+  );
 
   // Missing sessionCheck (e.g. API key) returns null so the host keeps it on the resident path.
   assert.equal(
@@ -253,14 +270,14 @@ test("encodeSocketAttachment strips proofs, keeps domain/org namespaces, enforce
         expiresAt: 900_000,
       })),
     },
-    sessionCheck: { ids: ["hmac-id-1"], origin: "https://pages.invalid" },
+    sessionCheck: { entries: [{ kid: "k1", id: "hmac-id-1" }], origin: "https://pages.invalid" },
   });
   assert.equal(huge, null);
   assert.equal(parseSocketAttachment({ v: 999 }), null);
   assert.equal(parseSocketAttachment(null), null);
 });
 
-test("nextAlarmAt picks the earliest wake across dwell, reauth, expiry, Project renewal, and content activity", () => {
+test("nextAlarmAt picks the earliest wake across dwell, reauth, expiry, and Project renewal", () => {
   assert.equal(nextAlarmAt({ sockets: [], projectLeaseState: null, now: 1000 }), null);
   assert.equal(
     nextAlarmAt({
@@ -290,18 +307,9 @@ test("nextAlarmAt picks the earliest wake across dwell, reauth, expiry, Project 
         },
       ],
       projectLeaseState: { name: "armed", at: 50_000 },
-      contentActivityState: { name: "waiting", dueAt: 42_000 },
       now: 1_000,
     }),
-    42_000,
-  );
-  assert.equal(
-    nextAlarmAt({
-      sockets: [],
-      contentActivityState: { name: "flushQueued" },
-      now: 5_000,
-    }),
-    5_000,
+    50_000,
   );
   // Past deadlines clamp to `now`.
   assert.equal(
@@ -809,16 +817,143 @@ test("domain-grant and organization-grant readers hibernate and survive cold DO 
   assert.equal(domainClient.closed, null, "domain reader survives cold eviction and 60 s alarm");
   assert.equal(orgClient.closed, null, "org reader survives cold eviction and 60 s alarm");
 
-  // Changing NOTEBOOK_CLOUD_OIDC_CLIENT_ID in env invalidates hibernated OIDC sockets on the next alarm.
+  // Removing the org reader from the organization directory closes their hibernated
+  // socket with 4409 access_changed on the next 60 s alarm.
+  await recordOrganizationMemberships(env, orgPrincipal, [], Date.now());
+  resetMembershipCache();
+  t.mock.timers.tick(OIDC_REAUTH_MS);
+  await new Page(orgHost.makeCtx(), env).alarm();
+  assert.deepEqual(
+    orgClient.closed,
+    { code: 4409, reason: "access_changed" },
+    "directory removal closes hibernated organization socket on alarm",
+  );
+
+  // Malformed frame on a hibernated socket closes cleanly with 4400 request_rejected.
+  const [domainServerSocket] = [...domainHost.acceptedSockets];
+  const domainPageBeforeClose = new Page(domainHost.makeCtx(), domainEnv);
+  await domainPageBeforeClose.webSocketMessage(domainServerSocket, "not-binary");
+  assert.deepEqual(domainClient.closed, { code: 4400, reason: "request_rejected" });
+
+  // Open a fresh domain socket, then verify cold webSocketClose fast-path + env rotation.
+  const domainClient2 = await openCookieSync(
+    domainHost,
+    domainPageId,
+    domainCookie,
+    "33333333-3333-4333-8333-333333333333",
+  );
+  const [domainServer2] = [...domainHost.acceptedSockets];
+  // Simulate peer closing while DO is cold (no surviving sockets left).
+  domainHost.acceptedSockets.delete(domainServer2);
+  const coldClosePage = new Page(domainHost.makeCtx(), domainEnv);
+  await coldClosePage.webSocketClose(domainServer2, 1000, "tab-closed");
+  assert.equal(coldClosePage.plain, undefined, "cold fast-path close skips Automerge boot");
+
+  // Reopen and verify changing NOTEBOOK_CLOUD_OIDC_CLIENT_ID invalidates on the next alarm.
+  const domainClient3 = await openCookieSync(
+    domainHost,
+    domainPageId,
+    domainCookie,
+    "44444444-4444-4444-8444-444444444444",
+  );
+  void domainClient2;
   t.mock.timers.tick(OIDC_REAUTH_MS);
   await new Page(domainHost.makeCtx(), {
     ...domainEnv,
     NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "pages-rotated",
   }).alarm();
-  await new Page(orgHost.makeCtx(), {
-    ...env,
-    NOTEBOOK_CLOUD_OIDC_CLIENT_ID: "pages-rotated",
-  }).alarm();
-  assert.deepEqual(domainClient.closed, { code: 4401, reason: "sign_in_required" });
-  assert.deepEqual(orgClient.closed, { code: 4401, reason: "sign_in_required" });
+  assert.deepEqual(domainClient3.closed, { code: 4401, reason: "sign_in_required" });
+});
+
+test("Space -> Catalog -> Page push delivers /internal/project-access-changed on revocation and cross-Project move", async (t) => {
+  const { world } = await import("./projects-fixture.mjs");
+  const w = await world(t);
+  const createdProject = await w.call("owner", "create_project", {
+    title: "Push Project",
+    nonce: "push-proj-1",
+  });
+  assert.equal(createdProject.status, 200);
+  const projectId = createdProject.body.project_id;
+  const createdPage = await w.createPage({
+    title: "Child Page",
+    markdown: "In project",
+    project_id: projectId,
+  });
+  assert.equal(createdPage.status, 200);
+  const pageId = createdPage.body.page_id;
+  await w.settle();
+
+  // Spy on `/internal/project-access-changed` hitting the child Page DO.
+  const pushes = [];
+  const origGetByName = w.env.PAGES.getByName;
+  w.env.PAGES.getByName = (name) => {
+    const stub = origGetByName(name);
+    return {
+      fetch: async (request) => {
+        if (new URL(request.url).pathname === "/internal/project-access-changed") pushes.push(name);
+        return stub.fetch(request);
+      },
+    };
+  };
+
+  // Add member directly via set_role, then revoke via manage_project_access -> Space pushes via Catalog to child Page!
+  const memberPrincipal = "user:anaconda-fixture:member-user";
+  const access1 = await w.call("owner", "get_project_access", { project_id: projectId });
+  const added = await w.call("owner", "manage_project_access", {
+    project_id: projectId,
+    action: "set_role",
+    principal: memberPrincipal,
+    role: "editor",
+    expected_revision: access1.body.revision,
+    nonce: "push-add-1",
+  });
+  assert.equal(added.status, 200);
+  await w.settle();
+  const access2 = await w.call("owner", "get_project_access", { project_id: projectId });
+  pushes.length = 0;
+  const revoked = await w.call("owner", "manage_project_access", {
+    project_id: projectId,
+    action: "set_role",
+    principal: memberPrincipal,
+    role: null,
+    expected_revision: access2.body.revision,
+    nonce: "push-revoke-1",
+  });
+  assert.equal(revoked.status, 200);
+  await w.settle();
+  assert.ok(
+    pushes.includes(pageId),
+    "Space -> Catalog -> Page push notifies child Page immediately on set_role",
+  );
+  assert.ok(
+    pushes.includes(createdProject.body.document_id),
+    "Space also notifies the Project content document directly",
+  );
+
+  // Moving a Page out of a Project to Your items notifies the Page directly from Catalog.
+  const moveProj = await w.call("owner", "create_project", {
+    title: "Move Push Project",
+    nonce: "push-proj-move-1",
+  });
+  assert.equal(moveProj.status, 200);
+  const movePageRes = await w.createPage({
+    title: "Moved Page",
+    markdown: "Will leave project",
+    project_id: moveProj.body.project_id,
+  });
+  assert.equal(movePageRes.status, 200);
+  const movePageId = movePageRes.body.page_id;
+  await w.settle();
+  pushes.length = 0;
+  const moved = await w.call("owner", "move_page", {
+    page_id: movePageId,
+    project_id: null,
+    nonce: "push-move-1",
+  });
+  assert.equal(moved.status, 200);
+  await w.settle();
+  assert.ok(
+    pushes.includes(movePageId),
+    "Catalog notifies moved Page immediately when leaving a Project",
+  );
 });

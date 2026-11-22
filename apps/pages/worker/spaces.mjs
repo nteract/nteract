@@ -747,10 +747,11 @@ export class Space {
  * backstop if a push is dropped. */
 async function notifyProjectAccessChanged(env, record) {
   const notifications = [];
+  const init = { method: "POST", signal: AbortSignal.timeout(5_000) };
   if (env.PAGES && record.document_id) {
     notifications.push(
       env.PAGES.getByName(record.document_id).fetch(
-        new Request("https://pages.internal/internal/project-access-changed", { method: "POST" }),
+        new Request("https://pages.internal/internal/project-access-changed", init),
       ),
     );
   }
@@ -758,7 +759,7 @@ async function notifyProjectAccessChanged(env, record) {
     notifications.push(
       env.CATALOGS.getByName(record.owner).fetch(
         new Request("https://pages.internal/internal/space/access-changed", {
-          method: "POST",
+          ...init,
           body: JSON.stringify({ space_id: record.space_id }),
         }),
       ),

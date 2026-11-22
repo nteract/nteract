@@ -1,3 +1,5 @@
+import { SESSION_KEYRING_MAX_KEYS } from "@nteract/session";
+
 /**
  * Durable Object WebSocket hibernation attachment codec and unified alarm
  * scheduler for a Page host.
@@ -6,8 +8,8 @@
  * persist attachments in DO storage, so attachments carry ONLY non-secret
  * policy and bookkeeping state (never raw session cookies, bearer tokens, or
  * email proofs) and stay strictly under `ATTACHMENT_MAX_BYTES`. Only browser
- * OIDC sessions with derived lookup IDs hibernate; non-OIDC sockets and
- * oversized attachments stay on the resident fallback path.
+ * OIDC sessions with derived `{ kid, id }` lookup entries hibernate; non-OIDC
+ * sockets and oversized attachments stay on the resident fallback path.
  */
 
 export const ATTACHMENT_VERSION = 1;
@@ -17,8 +19,9 @@ export const OIDC_REAUTH_MS = 60_000;
 const encoder = new TextEncoder();
 
 /** Strip proof/cookie/provenance fields from an admitted identity, keeping only
- * the fields `DocumentPolicy`, `principalOf`, and usage logging need after
- * hibernation wake (including `namespace` on domain and organization leases). */
+ * the fields `DocumentPolicy`, `principalOf`, `organizationLeases`, and usage
+ * logging need after hibernation wake (including `namespace` on domain and
+ * organization leases). */
 export function compactIdentity(identity) {
   if (!identity || typeof identity !== "object") return null;
   const domainAccess =
@@ -103,13 +106,23 @@ export function parseSocketAttachment(raw) {
   if (!Array.isArray(raw.joined) || !Array.isArray(raw.features)) return null;
   const sessionCheck =
     raw.sessionCheck &&
-    Array.isArray(raw.sessionCheck.ids) &&
-    raw.sessionCheck.ids.length >= 1 &&
-    raw.sessionCheck.ids.length <= 2 &&
-    raw.sessionCheck.ids.every((id) => typeof id === "string" && id.length > 0) &&
+    Array.isArray(raw.sessionCheck.entries) &&
+    raw.sessionCheck.entries.length >= 1 &&
+    raw.sessionCheck.entries.length <= SESSION_KEYRING_MAX_KEYS &&
+    raw.sessionCheck.entries.every(
+      (entry) =>
+        entry &&
+        typeof entry.kid === "string" &&
+        entry.kid.length > 0 &&
+        typeof entry.id === "string" &&
+        entry.id.length > 0,
+    ) &&
     typeof raw.sessionCheck.origin === "string" &&
     raw.sessionCheck.origin.length > 0
-      ? { ids: [...raw.sessionCheck.ids], origin: raw.sessionCheck.origin }
+      ? {
+          entries: raw.sessionCheck.entries.map((entry) => ({ kid: entry.kid, id: entry.id })),
+          origin: raw.sessionCheck.origin,
+        }
       : null;
   if (!sessionCheck) return null;
   return {
@@ -148,18 +161,12 @@ export function parseSocketAttachment(raw) {
  * Pure earliest-wake calculation for a Page Durable Object's single alarm slot.
  * Considers:
  * - Browser dwell (`usageState.nextAt` for `page.read` / `page.visit`)
- * - Periodic OIDC session re-checks (`reauthAt`)
+ * - Periodic OIDC session and organization re-checks (`reauthAt`)
  * - Fail-closed lease/credential deadlines (`expiresAt`)
  * - Armed Project safety-net lease renewals (`projectLeaseState.at`)
- * - Pending coalesced content-activity flushes (`contentActivityState.dueAt`)
  * Returns `null` when nothing needs a future wake (the host deletes its alarm).
  */
-export function nextAlarmAt({
-  sockets = [],
-  projectLeaseState = null,
-  contentActivityState = null,
-  now,
-}) {
+export function nextAlarmAt({ sockets = [], projectLeaseState = null, now }) {
   let earliest = Infinity;
   const consider = (at) => {
     if (Number.isFinite(at) && at < earliest) earliest = at;
@@ -176,8 +183,6 @@ export function nextAlarmAt({
     consider(socket.expiresAt);
   }
   if (projectLeaseState?.name === "armed") consider(projectLeaseState.at);
-  if (contentActivityState?.name === "waiting") consider(contentActivityState.dueAt);
-  else if (contentActivityState?.name === "flushQueued") consider(now);
   if (!Number.isFinite(earliest)) return null;
   return Math.max(now, earliest);
 }

@@ -15,6 +15,7 @@ import {
   randomSecret,
   readServerAppSession,
   readServerAppSessionByIds,
+  readServerAppSessionByLookup,
   revokeServerSession,
   revokeServerSessionsFor,
   sealServerSecret,
@@ -23,6 +24,7 @@ import {
   serverSessionCookie,
   serverSessionId,
   serverSessionIds,
+  serverSessionLookup,
   touchServerSession,
   SERVER_SESSION_ABSOLUTE_SECONDS,
   SERVER_SESSION_COOKIE,
@@ -569,7 +571,7 @@ describe("readServerAppSessionByIds", () => {
     // Wrong context or malformed IDs are refused.
     assert.equal(await readServerAppSessionByIds(env, ids, "wrong-context", NOW), null);
     assert.equal(await readServerAppSessionByIds(env, [], context, NOW), null);
-    assert.equal(await readServerAppSessionByIds(env, [id, id, id], context, NOW), null);
+    assert.equal(await readServerAppSessionByIds(env, [id, id, id, id, id], context, NOW), null);
     assert.equal(await readServerAppSessionByIds(env, [""], context, NOW), null);
 
     // Boundary seconds refuse expired access, idle, or absolute windows.
@@ -591,5 +593,32 @@ describe("readServerAppSessionByIds", () => {
     db.set(id, "absolute_expires_at = ?", NOW + 9_999);
     await revokeServerSession(env, request(token));
     assert.equal(await readServerAppSessionByIds(env, ids, context, NOW), null);
+  });
+
+  it("supports 3-key and 4-key keyrings and rejects sessions whose key was retired", async () => {
+    const { db, keys, env: envK1 } = setup();
+    const k1 = keys.k1;
+    const k2 = freshKey();
+    const k3 = freshKey();
+    const k4 = freshKey();
+
+    // Sign in under k1, then rotate through k2 -> k3 (3 keys) and k4 (4 keys).
+    const { token } = await insertSession(envK1, NOW, { accessExpiresAt: NOW + 600 });
+    const env3 = environment(db, { active: "k3", keys: { k1, k2, k3 } });
+    const lookup3 = await serverSessionLookup(env3, request(token));
+    assert.equal(lookup3?.entries.length, 3);
+    assert.equal((await readServerAppSession(env3, request(token), NOW))?.principal, "user-1");
+    assert.equal((await readServerAppSessionByLookup(env3, lookup3!, NOW))?.principal, "user-1");
+
+    // 4-key keyring (SESSION_KEYRING_MAX_KEYS): still resolves k1 session.
+    const env4 = environment(db, { active: "k4", keys: { k1, k2, k3, k4 } });
+    const lookup4 = await serverSessionLookup(env4, request(token));
+    assert.equal(lookup4?.entries.length, 4);
+    assert.equal((await readServerAppSession(env4, request(token), NOW))?.principal, "user-1");
+    assert.equal((await readServerAppSessionByLookup(env4, lookup4!, NOW))?.principal, "user-1");
+
+    // Retire k1: the old stored lookup must no longer match even though the row remains in D1.
+    const envRetired = environment(db, { active: "k4", keys: { k2, k3, k4 } });
+    assert.equal(await readServerAppSessionByLookup(envRetired, lookup4!, NOW), null);
   });
 });

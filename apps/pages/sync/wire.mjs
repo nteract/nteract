@@ -214,13 +214,17 @@ export function hibernatingSocketTransport(
             : null;
       const frame = raw && raw.byteLength <= maxFrameBytes ? decodeFrame(raw) : null;
       if (!frame) {
-        onRejected(
-          !raw
-            ? "unsupported_frame"
-            : raw.byteLength > maxFrameBytes
-              ? "frame_too_large"
-              : "unsupported_frame",
-        );
+        try {
+          onRejected(
+            !raw
+              ? "unsupported_frame"
+              : raw.byteLength > maxFrameBytes
+                ? "frame_too_large"
+                : "unsupported_frame",
+          );
+        } catch {
+          /* Telemetry must never prevent rejecting a malformed frame. */
+        }
         return transport.close(4400, "request_rejected");
       }
       for (const h of messages) h(frame);

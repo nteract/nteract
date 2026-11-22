@@ -385,13 +385,28 @@ export class SyncHost {
   }
 
   /** Re-attach a rehydrated hibernated connection to documents it had joined
-   * before Durable Object eviction, with fresh Automerge sync state so both
-   * host fan-out and incoming browser frames converge immediately. */
+   * before Durable Object eviction, with fresh Automerge sync state. When a
+   * document is already loaded (e.g. after boot journal replay), kick off a
+   * sync round immediately so idle tabs do not miss recovered edits. */
   rejoin(conn, docIds) {
     for (const id of docIds) {
       const doc = this.#docs.get(id);
       if (!doc || !(conn.trusted || this.policy.canRead(conn, doc))) continue;
-      if (!doc.conns.has(conn)) doc.conns.set(conn, A.initSyncState());
+      if (doc.conns.has(conn)) continue;
+      const state = A.initSyncState();
+      doc.conns.set(conn, state);
+      if (doc.live && this.#deliverable(conn, doc)) {
+        const [next, m] = A.generateSyncMessage(doc.live, state);
+        doc.conns.set(conn, next);
+        if (m)
+          conn.transport.send({
+            t: "sync",
+            doc: doc.id,
+            m,
+            heads: A.getHeads(doc.live),
+            has: true,
+          });
+      }
     }
   }
 

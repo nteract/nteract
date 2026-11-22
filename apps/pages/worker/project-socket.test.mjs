@@ -232,9 +232,10 @@ test("Project sockets renew in place across lease periods with one Project read 
     assert.equal(first.closed, null, `first socket stays open at ${(step + 1) * 10}s`);
     assert.equal(second.closed, null, `second socket stays open at ${(step + 1) * 10}s`);
   }
-  assert.ok(
-    ctx.getProjectReads() >= 3 && ctx.getProjectReads() <= 4,
-    `one shared Project lookup per renewal serves both sockets (got ${ctx.getProjectReads()})`,
+  assert.equal(
+    ctx.getProjectReads(),
+    3,
+    "one shared Project lookup per 50 s renewal serves both sockets (50 s, 100 s, 150 s)",
   );
 
   // Owner revokes only the first member: the next in-place renewal closes first

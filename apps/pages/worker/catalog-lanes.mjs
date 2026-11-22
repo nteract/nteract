@@ -9,9 +9,10 @@
  *   A Catalog listing a shared parent asks the owner's Catalog from inside
  *   its own queue; two Catalogs doing that to each other must not wait on
  *   each other.
- * - `discovery`: `/internal/project-discovery`. A Project host sends it from
- *   inside its own read; it writes hints with storage operations only and
- *   never awaits another host (project-opened.mjs).
+ * - `discovery`: `/internal/project-discovery` (writes only its own hints and
+ *   never awaits another host; project-opened.mjs) and
+ *   `/internal/space/access-changed` (read-only scan via `scans.read` that
+ *   fans out best-effort Project access change notices to child Pages).
  * - `cards`: the access step of `page_cards` (page-cards.mjs), marked by the
  *   gateway with CARDS_LANE_HEADER. It reads `page/<id>` and `shared/<id>`
  *   and asks Page hosts; it writes nothing here. The Catalog still checks
