@@ -3641,7 +3641,8 @@ optional client label and `X-Pages-Agent` an optional session label. OAuth
 scopes and current Page permissions apply on every call. The public `/llms.txt`
 is the tool usage and authentication reference. Its media-authoring index links to
 `/llms/assets-and-sources.txt`, `/llms/views.txt`, `/llms/anywidget.txt`, and
-`/llms/vega-lite.txt`. These focused guides contain deployment-supported examples,
+`/llms/vega-lite.txt`, plus the standalone zero-dependency Node dry-runner at
+`/llms/check-view.mjs` (`agent-check-view.mjs`, served as `text/javascript`). These focused guides contain deployment-supported examples,
 not proposed schemas. They are served from `agent-media-guides.mjs` before session
 lookup, as public plain text with GET/HEAD support; unknown `/llms/` paths return
 404 instead of the editor shell. Links use the configured public origin, not
