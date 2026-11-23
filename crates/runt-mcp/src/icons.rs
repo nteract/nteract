@@ -51,7 +51,7 @@ pub(crate) fn tool_icon(name: &str) -> Option<IconKind> {
         "run_all_cells" => IconKind::RunAllCells,
         "get_results" | "wait_for_notebook_change" => IconKind::GetResults,
         "interrupt_kernel" => IconKind::InterruptKernel,
-        "restart_kernel" => IconKind::RestartKernel,
+        "restart_kernel" | "installed_kernelspec" => IconKind::RestartKernel,
         "manage_dependencies" => IconKind::ManageDependencies,
         "replace_match" | "replace_regex" => IconKind::ReplaceCell,
         "set_bokeh_property" => IconKind::EditCell,
