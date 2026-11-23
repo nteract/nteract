@@ -180,13 +180,17 @@ export function moveNodes(doc, op, { first, last, anchor }, context) {
     if (comments)
       for (const [id, target] of Object.entries(comments.threads))
         if (target?.kind === "block" && target.blockId === src) {
-          // From the run's first text, as a person's selection of it would
-          // start, not from the markers before it. A run of markers alone
-          // (a rule) keeps its last one.
+          // Past the first marker when text follows it at once (a
+          // paragraph, a heading), as a person's selection of the run would
+          // start. Any other opening marker stays inside: a rule, an image
+          // or a list item is a marker with no text of its own, and the
+          // comment named it too.
           const text = doc.blocks[dst].richText;
-          let from = placed.start;
-          while (from < placed.end - 1 && text.charCodeAt(from) === 0xfffc) from++;
-          const next = selection(doc, dst, from, placed.end);
+          const lead =
+            text.charCodeAt(placed.start) === 0xfffc &&
+            placed.start + 1 < placed.end &&
+            text.charCodeAt(placed.start + 1) !== 0xfffc;
+          const next = selection(doc, dst, placed.start + (lead ? 1 : 0), placed.end);
           comments.threads[id] = next;
           comments.rewrites.set(id, next);
         }

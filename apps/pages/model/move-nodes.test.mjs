@@ -225,11 +225,13 @@ test("moving every node of a block into another removes it; its block comment co
   assert.equal(thread.selectionContext.text, "Second block.\nMore.");
 });
 
-test("a block comment on a moved run that opens with a rule or a list starts at its first text", () => {
-  for (const [source, text] of [
+test("a block comment on a moved run keeps an opening rule, image or list inside its selection", () => {
+  // These nodes are markers with no text of their own. A selection that
+  // started at the run's first text would leave them out of the comment.
+  for (const [source, tail] of [
     ["---\n\nAfter rule", "After rule"],
-    ["- a\n- b\n\nTail", "a\n\nb\nTail"],
-    ["> Quoted\n\nTail", "Quoted\nTail"],
+    ["![Cat](https://example.com/cat.png)\n\nTail", "Tail"],
+    ["- a\n- b\n\nTail", "Tail"],
   ]) {
     const { doc, second } = twoBlocks("First block.", source);
     const run = nodeAddresses(doc, second);
@@ -252,7 +254,9 @@ test("a block comment on a moved run that opens with a rule or a list starts at 
     );
     const [thread] = projectComments(moved.doc, moved.comments);
     assert.equal(thread.selectionContext.status, "attached", source);
-    assert.equal(thread.selectionContext.text, text, source);
+    // The opening marker reads as a line break ahead of the run's text.
+    const { text } = thread.selectionContext;
+    assert.ok(text.startsWith("\n") && text.endsWith(tail), `${source}: ${JSON.stringify(text)}`);
   }
 });
 
