@@ -175,7 +175,7 @@ lists, images, views and dataframes in order. Blocks are a storage detail
      only if it wrote the thread
      ([model/comment-authority.mjs](model/comment-authority.mjs)). A join or
      a section move puts the anchor on the same text at its new place, so
-     the host writes it in the same intent as the content change, not on
+     the host writes it for the same request as the content change, not on
      any author's behalf. Moving an anchor to different text stays the
      author's alone.
    - **A section moves with a host move.** Automerge text has no move, so
@@ -187,8 +187,12 @@ lists, images, views and dataframes in order. Blocks are a storage detail
      kept every thread on the moved text. With today's tools they kept them
      in 18 of 50 runs, and telling them to keep comments doubled their calls
      and cost without closing the gap.
-     - The re-anchoring write and the Page change go in one journal entry,
-       so no restart leaves the threads detached.
+     - The host journals the planned rewrites with the Page change and
+       writes them to the comments document as a second write for the same
+       request. Every retry runs that write, so a restart between the two
+       leaves the threads detached only until the retry. One journal entry
+       for both documents would close that window. It changes the rule that
+       an entry covers one document, and is open.
      - Text someone types into a moved node while the move lands is kept at
        the end of the node before the run's old place, as for `delete_node`.
        The eval had one writer; a concurrent-writer task is still to run.
@@ -230,19 +234,18 @@ lists, images, views and dataframes in order. Blocks are a storage detail
    Page and comments documents as its first two modules. Started: a Page's
    named sources are a third module, `pages.sources`, a document only the
    host writes ([model/sources-doc.mjs](model/sources-doc.mjs)).
-7. **One flow per Page** (item 6 above). In-place insert after a node is
-   done. Then, each its own change:
-   1. "Continue writing" stops making a block.
-   2. The host reads each block once per batch, and the editor carries its
+7. **One flow per Page** (item 6 above). Done: in-place insert after a
+   node, and "Continue writing" makes no block. Then, each its own change:
+   1. The host reads each block once per batch, and the editor carries its
       tree through structural and formatting writes. Measure the 115 KB
       case again after, and restate the per-block limits for a Page.
-   3. Omitted and `null` `after_node_id` write into the last and first
+   2. Omitted and `null` `after_node_id` write into the last and first
       blocks. The guides teach inserts by node only.
-   4. The explicit join for multi-block Pages, with comment re-anchoring.
-   5. Block ids leave the agent contract, together with node-scoped writes
+   3. The explicit join for multi-block Pages, with comment re-anchoring.
+   4. Block ids leave the agent contract, together with node-scoped writes
       (item 4) and `move_nodes`.
    `scripts/project-transfer.mjs` still splits a block around a dataframe
-   on import; it moves to in-place insert with step 3.
+   on import; it moves to in-place insert with step 2.
 
 ### Delete
 
