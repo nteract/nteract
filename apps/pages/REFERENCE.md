@@ -4262,7 +4262,10 @@ top-level nodes ([model/move-nodes.mjs](model/move-nodes.mjs)):
   around the run refuses with `nodes_would_join`. A source block the move
   empties, when the run lands in another block, is removed
   (`removed_block: true`). A move needs the current revision, like every
-  structural edit; target conflict scope refuses it.
+  structural edit; target conflict scope refuses it. Before it reads
+  anything, a move counts the block it leaves and the block it lands in once
+  each against `MAX_BATCH_IN_PLACE_UNITS`, so twice for a move inside one
+  block; over it, the batch refuses with the reason `in_place_budget`.
 - **Comments:** a selection thread wholly inside the run is re-anchored on
   the same text at its new place, and a whole-block thread on a removed
   source block becomes a selection over the moved text. A thread that crosses
