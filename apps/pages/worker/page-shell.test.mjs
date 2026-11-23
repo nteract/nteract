@@ -251,6 +251,77 @@ test("the home page and every other app route carry the product's link-preview t
   assert.equal((await send("/", { method: "POST" })).body, SHELL);
 });
 
+test("every shell names the agent guide in a Link header, and only the library is indexable", async (t) => {
+  const { send } = harness(t);
+  const describedBy = '</llms.txt>; rel="describedby"; type="text/plain"';
+  for (const path of ["/", "/?q=plan"]) {
+    const home = await send(path);
+    assert.equal(home.status, 200, path);
+    assert.equal(home.headers.link, describedBy, path);
+    assert.equal(home.headers["x-robots-tag"], undefined, path);
+  }
+  // Each of these opens something a reader signs in for, published preview
+  // or not, and names an ID a search index has no use for.
+  for (const path of [
+    "/project/prj_abc",
+    "/s/sp_abc",
+    "/trash",
+    "/pages",
+    `/p/${known}`,
+    `/p/${known}/Plan`,
+    `/?page=${known}`,
+  ]) {
+    for (const method of ["GET", "HEAD"]) {
+      const answer = await send(path, { method });
+      assert.equal(answer.status, 200, `${method} ${path}`);
+      assert.equal(answer.headers.link, describedBy, `${method} ${path}`);
+      assert.equal(answer.headers["x-robots-tag"], "noindex", `${method} ${path}`);
+    }
+  }
+  // Only headers change: the body is the shell the route served before.
+  assert.equal((await send("/trash")).body, siteShell());
+  // Other methods get the asset's own answer, without them.
+  const post = await send("/trash", { method: "POST" });
+  assert.equal(post.headers.link, undefined);
+  assert.equal(post.headers["x-robots-tag"], undefined);
+});
+
+test("a path that reads as a file and found no asset is a 404, not the shell", async (t) => {
+  const { send } = harness(t);
+  for (const path of [
+    "/llms-full.txt",
+    "/sitemap.xml",
+    "/project/prj_abc.md",
+    `/p/${known}/Plan.json`,
+    "/feed.markdown",
+    "/openapi.yaml",
+  ]) {
+    const answer = await send(path);
+    assert.equal(answer.status, 404, path);
+    assert.equal(answer.headers["content-type"], "text/plain; charset=utf-8", path);
+    assert.equal(answer.headers["x-robots-tag"], "noindex", path);
+    assert.match(answer.body, /agent guide is at \/llms.txt/, path);
+    assert.doesNotMatch(answer.body, /<html/i, path);
+    const head = await send(path, { method: "HEAD" });
+    assert.equal(head.status, 404, path);
+  }
+  // A dot in a path that names no such file is still an app route.
+  assert.equal((await send(`/p/${known}/My.Dashboard`)).status, 200);
+});
+
+test("a built file with a file extension keeps its own answer", async (t) => {
+  const robots = "User-agent: *\nAllow: /\n";
+  const { send } = harness(t, {
+    ASSETS: {
+      fetch: async () => new Response(robots, { headers: { "content-type": "text/plain" } }),
+    },
+  });
+  const answer = await send("/robots.txt");
+  assert.equal(answer.status, 200);
+  assert.equal(answer.body, robots);
+  assert.equal(answer.headers.link, undefined);
+});
+
 test("a response that is not the HTML shell passes through unchanged", async () => {
   const redirect = new Response(null, {
     status: 308,

@@ -1941,6 +1941,12 @@ function App() {
               : "A place to write together."}
           </h1>
           <p>Shared documents that people and agents edit together. Agents connect over MCP.</p>
+          {/* Tools that run the script read this view, not the shell's
+              <noscript>, so the agent pointers are prose here too. */}
+          <p className="welcome-agents">
+            Connecting an agent? Read the <a href="/llms.txt">agent guide</a> or{" "}
+            <a href="/connect">set up a connection</a>.
+          </p>
           <div className="welcome-actions">
             <a
               className="primary"
