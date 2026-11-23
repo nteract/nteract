@@ -88,7 +88,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEREODExMjdBRTEwMTgxODEKUldTQmdRSGhlaEtCM2Mwek9ZcXZUVE5ISFdvbnVWa2wrbWFNb3dZNVVILzhTWGZwYUhHLzhEeEcK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU0MjA5RDREOUY0NDMxM0MKUldROE1VU2ZUWjBnNUoxWCtpR01hUjJHVFpnTE91RFVuVFNHSE5XNUIvd2t0T1FZdU93Ykg0UlAK",
       "endpoints": [
         "https://github.com/nteract/nteract/releases/download/stable-latest/latest.json"
       ]
