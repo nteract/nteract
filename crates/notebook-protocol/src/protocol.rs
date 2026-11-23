@@ -1205,7 +1205,7 @@ pub enum NotebookResponse {
 pub enum NotebookBroadcast {
     /// Local owner-only projection; must not be forwarded to document peers.
     EnvironmentSelectionChanged {
-        selection: EnvironmentSelectionSnapshot,
+        selection: Box<EnvironmentSelectionSnapshot>,
     },
     /// Comm message from kernel (ipywidgets protocol).
     /// Broadcast to all connected peers so all windows can display widgets.
