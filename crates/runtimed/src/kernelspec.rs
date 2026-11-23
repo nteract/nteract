@@ -199,13 +199,123 @@ impl Definition {
     }
 }
 
-pub fn command(spec: &KernelspecLaunch, connection: &Path) -> tokio::process::Command {
+pub async fn command(
+    spec: &KernelspecLaunch,
+    connection: &Path,
+) -> Result<tokio::process::Command> {
+    let Some(module) = python_module_launch(spec) else {
+        return Ok(build_command(spec, connection, None));
+    };
+    let entry = crate::launcher_cache::kernel_entry_script()
+        .await
+        .context("Prepare protected entry script for installed Python kernel")?;
+    Ok(build_command(spec, connection, Some((module, &entry))))
+}
+
+fn build_command(
+    spec: &KernelspecLaunch,
+    connection: &Path,
+    entry: Option<(PythonModuleLaunch<'_>, &Path)>,
+) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(&spec.executable);
-    cmd.args(spec.args.iter().map(|s| {
+    let substitute = |s: &str| {
         s.replace("{resource_dir}", &spec.resource_dir.to_string_lossy())
             .replace("{connection_file}", &connection.to_string_lossy())
-    }));
+    };
+    if let Some((module, entry)) = entry {
+        cmd.args(spec.args[..module.index].iter().map(|s| substitute(s)));
+        if !module.same_arg_flags.is_empty() {
+            cmd.arg(module.same_arg_flags);
+        }
+        cmd.arg(entry).arg(substitute(module.name));
+        cmd.args(
+            spec.args[module.index + module.consumed..]
+                .iter()
+                .map(|s| substitute(s)),
+        );
+    } else {
+        cmd.args(spec.args.iter().map(|s| substitute(s)));
+    }
     cmd
+}
+
+struct PythonModuleLaunch<'a> {
+    index: usize,
+    consumed: usize,
+    same_arg_flags: &'a str,
+    name: &'a str,
+}
+
+fn python_module_launch(spec: &KernelspecLaunch) -> Option<PythonModuleLaunch<'_>> {
+    let mut args = spec.args.iter().enumerate();
+    while let Some((index, arg)) = args.next() {
+        if arg == "--check-hash-based-pycs" {
+            args.next()?;
+            continue;
+        }
+        let flags = arg.strip_prefix('-')?;
+        if flags.is_empty() || flags.starts_with('-') {
+            return None;
+        }
+        // Parse short options as Python does: -X and -W take a value,
+        // -c starts a command, and -m starts a module (ending option parsing).
+        for (offset, flag) in flags.char_indices() {
+            let rest = &flags[offset + flag.len_utf8()..];
+            match flag {
+                'X' | 'W' => {
+                    if rest.is_empty() {
+                        args.next()?;
+                    }
+                    break;
+                }
+                'm' => {
+                    // Inspect both the executable's own name and its symlink target.
+                    // A kernelspec's display name and language do not identify its executable.
+                    if !is_python_executable(&spec.executable)
+                        && !spec
+                            .executable
+                            .canonicalize()
+                            .is_ok_and(|p| is_python_executable(&p))
+                    {
+                        return None;
+                    }
+                    let (name, consumed) = if rest.is_empty() {
+                        (args.next()?.1.as_str(), 2)
+                    } else {
+                        (rest, 1)
+                    };
+                    return Some(PythonModuleLaunch {
+                        index,
+                        consumed,
+                        same_arg_flags: if offset == 0 { "" } else { &arg[..offset + 1] },
+                        name,
+                    });
+                }
+                'b' | 'B' | 'd' | 'E' | 'i' | 'I' | 'O' | 'P' | 'q' | 's' | 'S' | 'u' | 'v'
+                | 'x' => {}
+                _ => return None,
+            }
+        }
+    }
+    None
+}
+
+fn is_python_executable(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let name = name.to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    ["python", "pypy"].iter().any(|prefix| {
+        name.strip_prefix(prefix).is_some_and(|suffix| {
+            let version = suffix.strip_suffix('t').unwrap_or(suffix);
+            suffix.is_empty()
+                || (!version.is_empty()
+                    && version
+                        .split('.')
+                        .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())))
+        })
+    })
 }
 
 fn executable(path: &Path) -> bool {
@@ -364,29 +474,30 @@ pub(crate) fn persist(
     } else {
         return Ok(());
     }
-    if let (Some(previous), Some(next)) = (previous, snap.kernelspec.as_mut()) {
-        if previous.name.eq_ignore_ascii_case(&next.name)
-            && previous
-                .language
-                .as_deref()
-                .zip(next.language.as_deref())
-                .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
-        {
-            next.extras = previous.extras;
-        }
-    }
     // A spec describes a language, not the version or MIME/lexer details of a running kernel.
-    if let Some(language) = snap.kernelspec.as_ref().and_then(|s| s.language.as_ref()) {
-        if target.is_some()
-            || !snap
-                .language_info
+    let previous_language = previous
+        .as_ref()
+        .and_then(|s| s.language.as_deref())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            snap.language_info
                 .as_ref()
-                .is_some_and(|info| info.name.eq_ignore_ascii_case(language))
+                .map(|info| info.name.as_str())
+                .filter(|s| !s.is_empty())
+        });
+    if let Some(language) = snap.kernelspec.as_ref().and_then(|s| s.language.as_ref()) {
+        if snap.language_info.is_none()
+            || previous_language.is_some_and(|old| !old.eq_ignore_ascii_case(language))
         {
             snap.language_info = Some(notebook_doc::metadata::LanguageInfoSnapshot {
                 name: language.clone(),
                 ..Default::default()
             });
+        }
+    }
+    if let (Some(previous), Some(next)) = (previous, snap.kernelspec.as_mut()) {
+        if previous.name.eq_ignore_ascii_case(&next.name) {
+            next.extras = previous.extras;
         }
     }
     let actor = doc.get_actor_id();
@@ -434,6 +545,147 @@ mod tests {
     use super::*;
 
     #[test]
+    fn installed_python_module_argv_keeps_flags_and_substitutes_connection_file() {
+        let entry = Path::new("/daemon/kernel-entry/kernel_entry.py");
+        let connection = Path::new("space dir/connection.json");
+        for (exe, flags, launch, expected) in [
+            ("python", vec![], vec!["-m", "ipykernel_launcher"], vec![]),
+            (
+                "Python3.13t.exe",
+                vec!["-Xfrozen_modules=off", "-W", "ignore", "-I"],
+                vec!["-m", "custom.launcher"],
+                vec!["-Xfrozen_modules=off", "-W", "ignore", "-I"],
+            ),
+            ("pypy3", vec![], vec!["-Bumipykernel_launcher"], vec!["-Bu"]),
+        ] {
+            let spec = KernelspecLaunch {
+                executable: PathBuf::from(exe),
+                args: flags
+                    .iter()
+                    .chain(&launch)
+                    .copied()
+                    .chain(["-f", "{connection_file}"])
+                    .map(String::from)
+                    .collect(),
+                resource_dir: PathBuf::from("kernels/installed"),
+                env: BTreeMap::new(),
+                interrupt_mode: InterruptMode::Signal,
+            };
+            let module = python_module_launch(&spec).unwrap();
+            let cmd = build_command(&spec, connection, Some((module, entry)));
+            assert_eq!(cmd.as_std().get_program(), exe);
+            let expected = expected
+                .into_iter()
+                .chain([
+                    entry.to_str().unwrap(),
+                    if exe == "Python3.13t.exe" {
+                        "custom.launcher"
+                    } else {
+                        "ipykernel_launcher"
+                    },
+                    "-f",
+                    connection.to_str().unwrap(),
+                ])
+                .collect::<Vec<_>>();
+            assert_eq!(cmd.as_std().get_args().collect::<Vec<_>>(), expected);
+        }
+    }
+
+    #[test]
+    fn non_python_module_invocations_are_not_rewritten() {
+        let connection = Path::new("connection.json");
+        for (exe, args) in [
+            ("julia", vec!["--project=@.", "kernel.jl"]),
+            ("ark", vec!["-m", "logging"]),
+            ("python", vec!["-c", "pass", "-m", "module"]),
+            ("python", vec!["-W", "-m", "script.py"]),
+            ("python", vec!["-B", "script.py", "-m", "module"]),
+        ] {
+            let spec = KernelspecLaunch {
+                executable: PathBuf::from(exe),
+                args: args
+                    .iter()
+                    .copied()
+                    .chain(["{connection_file}"])
+                    .map(String::from)
+                    .collect(),
+                resource_dir: PathBuf::from("kernels/installed"),
+                env: BTreeMap::new(),
+                interrupt_mode: InterruptMode::Signal,
+            };
+            assert!(python_module_launch(&spec).is_none());
+            let cmd = build_command(&spec, connection, None);
+            assert_eq!(cmd.as_std().get_program(), exe);
+            let expected = args
+                .into_iter()
+                .chain(["connection.json"])
+                .collect::<Vec<_>>();
+            assert_eq!(cmd.as_std().get_args().collect::<Vec<_>>(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn reapplied_kernelspec_metadata_round_trips_without_losing_details() {
+        use notebook_doc::metadata::{LanguageInfoSnapshot, NotebookMetadataSnapshot};
+
+        let temp = tempfile::tempdir().unwrap();
+        let room = crate::notebook_sync_server::NotebookRoom::new_fresh(
+            uuid::Uuid::new_v4(),
+            None,
+            temp.path(),
+            std::sync::Arc::new(crate::blob_store::BlobStore::new(temp.path().join("blobs"))),
+            true,
+        );
+        let mut doc = room.doc.write().await;
+        let target = InstalledKernelspec {
+            name: "lumen".into(),
+            display_name: "Current name".into(),
+            language: "python".into(),
+        };
+        for (name, previous_language, info_name, keep_extras, keep_info) in [
+            ("Lumen", None, "Python", true, true),
+            ("lumen", Some("PYTHON"), "python", true, true),
+            ("other-python", None, "python", false, true),
+            ("lumen", Some("julia"), "julia", true, false),
+            ("julia", None, "julia", false, false),
+        ] {
+            let mut raw = serde_json::json!({
+                "kernelspec": {"name": name, "display_name": "Original", "metadata": {"debugger": true}},
+                "language_info": {"name": info_name, "version": "3.12.4", "mimetype": "text/x-python"},
+                "custom": {"preserved": true}
+            });
+            if let Some(language) = previous_language {
+                raw["kernelspec"]["language"] = language.into();
+            }
+            let initial = NotebookMetadataSnapshot::from_metadata_value(&raw);
+            doc.set_metadata_snapshot(&initial).unwrap();
+            persist(&room, &mut doc, Some(&target), "python").unwrap();
+            let reopened = notebook_doc::NotebookDoc::load(&doc.save()).unwrap();
+            let snapshot = reopened.get_metadata_snapshot().unwrap();
+            let applied = snapshot.kernelspec.unwrap();
+            assert_eq!(applied.name, target.name);
+            assert_eq!(applied.display_name, target.display_name);
+            assert_eq!(applied.language.as_deref(), Some("python"));
+            if keep_extras {
+                assert_eq!(applied.extras, initial.kernelspec.unwrap().extras, "{name}");
+            } else {
+                assert!(applied.extras.is_empty(), "{name}");
+            }
+            let expected_info = if keep_info {
+                initial.language_info.unwrap()
+            } else {
+                LanguageInfoSnapshot {
+                    name: "python".into(),
+                    ..Default::default()
+                }
+            };
+            assert_eq!(snapshot.language_info.unwrap(), expected_info, "{name}");
+            assert_eq!(snapshot.extras, initial.extras);
+            assert_eq!(snapshot.runt.extra["installed_kernelspec"], "lumen");
+        }
+    }
+
+    #[test]
     fn precedence_errors_and_command_arguments() {
         let temp = tempfile::tempdir().unwrap();
         let roots = [temp.path().join("first"), temp.path().join("second")];
@@ -451,7 +703,7 @@ mod tests {
         assert_eq!(spec.env["MARK"], "a b");
         assert_eq!(spec.interrupt_mode, InterruptMode::Signal);
         let prepared = spec.prepare(&Default::default()).unwrap();
-        let cmd = command(&prepared, Path::new("space dir/connection.json"));
+        let cmd = build_command(&prepared, Path::new("space dir/connection.json"), None);
         let args: Vec<_> = cmd.as_std().get_args().collect();
         assert_eq!(args[0], "--project=@.");
         assert_eq!(args[1], roots[0].join("Julia-1.11/kernel file.jl"));
@@ -535,7 +787,7 @@ mod tests {
             serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
         assert_eq!(transferred.interrupt_mode, InterruptMode::Message);
         assert_eq!(transferred.env["MARK"], "one value $ ${UNKNOWN_KSPEC_VAR}");
-        let cmd = command(&transferred, Path::new("new connection"));
+        let cmd = build_command(&transferred, Path::new("new connection"), None);
         assert_eq!(cmd.as_std().get_program(), exe);
         assert_eq!(cmd.as_std().get_args().last().unwrap(), "new connection");
     }

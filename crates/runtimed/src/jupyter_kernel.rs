@@ -729,7 +729,7 @@ impl KernelConnection for JupyterKernel {
         // Build kernel command based on kernel type
         let mut cmd = match (&installed, kernel_type.as_str()) {
             (Some(spec), _) => {
-                let mut cmd = crate::kernelspec::command(spec, &connection_file_path);
+                let mut cmd = crate::kernelspec::command(spec, &connection_file_path).await?;
                 #[cfg(unix)]
                 {
                     let mut owned = tokio::process::Command::new(std::env::current_exe()?);
@@ -1549,6 +1549,7 @@ impl KernelConnection for JupyterKernel {
         // Spawn process watcher — detects process exit and signals via oneshot
         let process_cmd_tx = lifecycle_cmd_tx.clone();
         let panic_cmd_tx = lifecycle_cmd_tx.clone();
+        let process_stderr = stderr_buffer.clone();
         let (died_tx, mut died_rx) = tokio::sync::oneshot::channel::<String>();
         let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
         let (exit_tx, exit_rx) = oneshot::channel();
@@ -1596,7 +1597,7 @@ impl KernelConnection for JupyterKernel {
                 let msg = match status {
                     Ok(exit_status) => {
                         warn!("[jupyter-kernel] Kernel process exited: {}", exit_status);
-                        format!("Kernel process exited: {}", exit_status)
+                        kernel_process_exit_message(exit_status, &process_stderr)
                     }
                     Err(e) => {
                         error!("[jupyter-kernel] Error waiting for kernel process: {}", e);

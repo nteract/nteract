@@ -1511,7 +1511,14 @@ async fn installed_kernelspec_native_smoke() {
     let expected = std::env::var("KERNELSPEC_SMOKE_PYTHON").expect("disposable interpreter");
     let temp = TempDir::new().unwrap();
     let path = temp.path().join("named.ipynb");
-    let code=format!("import sys, pathlib\nassert sys.executable == {expected:?}, sys.executable\nlive_token = object()\npathlib.Path('executed').write_text(str(id(live_token)))");
+    let shadow_marker = temp.path().join("launcher-shadow-ran");
+    std::fs::write(
+        temp.path().join("ipykernel_launcher.py"),
+        "from pathlib import Path\nPath('launcher-shadow-ran').touch()\n",
+    )
+    .unwrap();
+    std::fs::write(temp.path().join("sibling_helper.py"), "VALUE = 42\n").unwrap();
+    let code=format!("import sys, pathlib, sibling_helper\nassert sys.executable == {expected:?}, sys.executable\nassert sibling_helper.VALUE == 42\nlive_token = object()\npathlib.Path('executed').write_text(str(id(live_token)))");
     let busy = r#"import subprocess, time
 child = subprocess.Popen([sys.executable, '-c', '''import signal, time, pathlib
 def interrupted(*_):
@@ -1531,6 +1538,15 @@ finally:
     let mut notebook: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     notebook["metadata"]["kernelspec"]["name"] = "lumen".into();
+    notebook["metadata"]["kernelspec"]
+        .as_object_mut()
+        .unwrap()
+        .remove("language");
+    let kernelspec_extra = serde_json::json!({"debugger": true});
+    let language_info =
+        serde_json::json!({"name": "python", "version": "3.12.4", "mimetype": "text/x-python"});
+    notebook["metadata"]["kernelspec"]["metadata"] = kernelspec_extra.clone();
+    notebook["metadata"]["language_info"] = language_info.clone();
     std::fs::write(&path, notebook.to_string()).unwrap();
     let config = test_config(&temp);
     let socket = config.socket_path.clone();
@@ -1550,6 +1566,10 @@ finally:
         })
         .await
         .unwrap();
+    assert!(
+        !shadow_marker.exists(),
+        "launched the cwd module, not ipykernel"
+    );
     assert!(
         matches!(&resp,NotebookResponse::KernelLaunched{launched_config,..}|NotebookResponse::KernelAlreadyRunning{launched_config,..} if launched_config.installed_kernelspec.as_ref().is_some_and(|s|s.name=="lumen")),
         "{resp:?}"
@@ -1738,6 +1758,8 @@ finally:
     );
     let disk: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(disk["metadata"]["kernelspec"]["name"], "lumen");
+    assert_eq!(disk["metadata"]["kernelspec"]["metadata"], kernelspec_extra);
+    assert_eq!(disk["metadata"]["language_info"], language_info);
     assert_eq!(disk["metadata"]["runt"]["installed_kernelspec"], "lumen");
     assert!(!disk["metadata"].to_string().contains(&expected));
     peer.handle
@@ -1751,6 +1773,15 @@ finally:
         .await
         .unwrap();
     assert_session_ready(&reopened.handle, "reopened").await;
+    let metadata = reopened.handle.get_notebook_metadata().unwrap();
+    assert_eq!(
+        metadata.kernelspec.unwrap().extras["metadata"],
+        kernelspec_extra
+    );
+    assert_eq!(
+        serde_json::to_value(metadata.language_info.unwrap()).unwrap(),
+        language_info
+    );
     let resp = reopened
         .handle
         .send_request(NotebookRequest::LaunchKernel {
@@ -1764,6 +1795,7 @@ finally:
         matches!(&resp,NotebookResponse::KernelLaunched{launched_config,..}|NotebookResponse::KernelAlreadyRunning{launched_config,..} if launched_config.installed_kernelspec.as_ref().is_some_and(|s|s.name=="lumen")),
         "{resp:?}"
     );
+    assert!(!shadow_marker.exists());
     reopened
         .handle
         .send_request(NotebookRequest::ShutdownKernel {})
