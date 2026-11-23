@@ -12,6 +12,9 @@ keyring, the server session store, and the app session a request carries.
   the session id, generation, and lease value still match.
 - `app-session.ts`: `CloudAppSession`, the signed app-session cookie, the
   server-session projection, and verified-email proof.
+- `provider-session.ts`: sessions for sign-in methods that aren't OIDC (Kilo,
+  Tailscale). `createServerSession` stores a `ServerSessionGrant` in the same
+  rows and cookie as an OIDC session; a `ServerSessionProvider` renews it.
 - `session-database.ts`: `SessionDatabase`, the part of a D1-style binding the
   store calls. A Workers `D1Database` satisfies it. `oidcDatabase` returns the
   caller's own binding type.
@@ -20,7 +23,8 @@ The package depends only on `@nteract/identity` and uses Web Crypto, so it runs
 in Workers, Node and celld. Table, column, cookie and variable names are live
 in deployed databases and browsers; changing one is a migration.
 
-The token exchange and refresh flow that drives the store lives in
+The token exchange and refresh flow that drives the store, including the
+renewal that calls a `ServerSessionProvider`, lives in
 `apps/notebook-cloud/src/server-oidc.ts`.
 
 Pages is not in the pnpm workspace. It resolves `@nteract/session` through the
