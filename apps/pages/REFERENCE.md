@@ -125,7 +125,9 @@ empty paragraph at the end of the last block, inside that block
 ([viewer/writing-continuation.mjs](viewer/writing-continuation.mjs)). It adds
 that paragraph through the last block's editor, the same edit ArrowDown makes,
 unless the block already ends in an empty paragraph or is blank; then it writes
-nothing. Existing nodes keep their IDs and comment anchors. The browser makes a
+nothing. Existing nodes keep their IDs and comment anchors. It merges as Enter
+does: text a peer types at the end of the last paragraph at the same moment is
+kept, and can land in the new paragraph. The browser makes a
 block in two cases only: a Page with no block gets its first one, and a last
 block nobody can write inside (a read-only editor, content this build draws
 lossily, or a block shown as a notice because drawing it threw) gets a new

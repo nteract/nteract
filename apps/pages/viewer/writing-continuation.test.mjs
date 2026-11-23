@@ -174,6 +174,21 @@ test("a read-only editor on the last block gets a new block after it instead", (
   assert.equal(markdownOf(current.doc, id), "Before");
 });
 
+test("an edit the last block's editor rolls back writes nothing and makes no block", () => {
+  const current = session("Before"),
+    id = orderedBlockIds(current.doc)[0],
+    heads = A.getHeads(current.doc);
+  // An editor that refuses every write: its state never changes.
+  const state = { readOnly: false, doc: { content: [], length: 0 }, selection: null };
+  let dispatched = 0;
+  const view = { state, dispatch: () => dispatched++ };
+  assert.equal(writingContinuation(current, { editorOf: () => view }), null);
+  assert.equal(dispatched, 1);
+  assert.equal(current.changes, 0);
+  assert.deepEqual(A.getHeads(current.doc), heads);
+  assert.deepEqual(orderedBlockIds(current.doc), [id]);
+});
+
 test("a last block the Page shows as a notice gets a new block after it instead", () => {
   const current = session("Before"),
     id = orderedBlockIds(current.doc)[0];

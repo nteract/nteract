@@ -446,6 +446,7 @@ function App() {
     setSidePanel(null);
     setSourceSelection(null);
     setFocusBlock(null);
+    continuation.current = null;
     setTitleFocusRequest(null);
     setLocalRecoveries([]);
   }
@@ -1190,9 +1191,11 @@ function App() {
         continuation.current = null;
         // Wordgard's focus() keeps the editor's selection, which
         // placeContinuationCaret puts at the block's end; the element's own
-        // focus() leaves the caret wherever the browser puts it.
+        // focus() leaves the caret wherever the browser puts it. An editor
+        // that already has focus keeps its caret: the title's hand-off
+        // focuses a new block at once, and keys typed since have moved it.
         if (view) {
-          editor.module.placeContinuationCaret(view);
+          if (document.activeElement !== element) editor.module.placeContinuationCaret(view);
           view.focus();
         } else element.focus();
         element.scrollIntoView({ block: "nearest" });

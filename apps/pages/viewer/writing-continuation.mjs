@@ -69,8 +69,9 @@ function continueInBlock(session, id, blank) {
  * `editorOf(id)` returns block `id`'s mounted Wordgard editor, if any. With
  * one that is editable, the edit is dispatched there (continueAtEnd, the same
  * edit ArrowDown and Mod-Enter make below a final node) and the editor's
- * selection is left in the paragraph. Without one, the same edit is committed
- * through a binding of the block.
+ * selection is left in the paragraph; an edit that editor rolls back returns
+ * null and writes nothing. Without one, the same edit is committed through a
+ * binding of the block.
  *
  * A last block nobody can write inside gets a new empty block after it, so a
  * person can still add to the Page: its editor is read-only, it holds content
@@ -87,10 +88,11 @@ export function writingContinuation(session, { editorOf, failed } = {}) {
   if (view && !view.state.readOnly) {
     const spec = continueAtEnd(view.state, { blank });
     if (spec) view.dispatch(spec);
-    // The editor reports and rolls back a write the Page refuses.
-    if (atContinuation(view.state)) return id;
+    // The editor rolls back a write the Page refuses and reports it itself.
+    // Nothing else is tried, so its report stays true: pressing again does.
+    return atContinuation(view.state) ? id : null;
   }
-  if (!view?.state.readOnly && continueInBlock(session, id, blank)) return id;
+  if (!view && continueInBlock(session, id, blank)) return id;
   return newBlock(session);
 }
 
