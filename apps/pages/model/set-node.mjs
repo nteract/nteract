@@ -18,6 +18,7 @@ import { unreadableMarker } from "./wordgard-doc.mjs";
 import { newerContent, readableMarker, refuseUnreadableText } from "./richtext-spans.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { locateRange } from "./replace-match.mjs";
+import { refused } from "./edit-refusals.mjs";
 import {
   ALIGNMENTS,
   markerName,
@@ -43,35 +44,38 @@ export { ALIGNMENTS };
 const MAX_LANGUAGE = 64;
 const RETYPES = retypeTargets("paragraph");
 
+const invalidAttr = (message) => refused("field_invalid", message, "attrs");
 /** A settable attribute value, normalized for storage, or a thrown refusal. */
 function attrValue(name, value) {
   const { spec } = SETTABLE_ATTRS[name];
   if (spec.type === "boolean") {
-    if (typeof value !== "boolean") throw Error(`${name} takes true or false`);
+    if (typeof value !== "boolean") throw invalidAttr(`${name} takes true or false`);
     return value;
   }
   if (spec.type === "integer") {
     if (!Number.isSafeInteger(value) || value < spec.min || value > spec.max)
-      throw Error(`${name} takes an integer from ${spec.min} to ${spec.max}`);
+      throw invalidAttr(`${name} takes an integer from ${spec.min} to ${spec.max}`);
     return value;
   }
   if (spec.type === "enum") {
     if (value === null && spec.nullable) return null;
     if (!spec.values.includes(value))
-      throw Error(`${name} takes ${spec.values.join(", ")}${spec.nullable ? " or null" : ""}`);
+      throw invalidAttr(
+        `${name} takes ${spec.values.join(", ")}${spec.nullable ? " or null" : ""}`,
+      );
     return value;
   }
   if (spec.type === "language") {
-    if (typeof value !== "string") throw Error(`${name} must be a string`);
+    if (typeof value !== "string") throw invalidAttr(`${name} must be a string`);
     const language = value.trim();
     const control = [...language].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
     if (language.length > MAX_LANGUAGE || control || language.includes("`"))
-      throw Error(
+      throw invalidAttr(
         `${name} must be at most ${MAX_LANGUAGE} characters, without backticks or line breaks`,
       );
     return language;
   }
-  throw Error(`set_node can't set ${name}`);
+  throw invalidAttr(`set_node can't set ${name}`);
 }
 
 /** Validate set_node's change. Returns `{ type?, attrs }`, with attr values
@@ -79,20 +83,24 @@ function attrValue(name, value) {
 export function nodeChange(input) {
   for (const [field, use] of Object.entries(REFUSED_FIELDS))
     if (input[field] !== undefined)
-      throw Error(`set_node takes type and attrs, not a top-level ${field}; use ${use}`);
+      throw refused(
+        "field_unexpected",
+        `set_node takes type and attrs, not a top-level ${field}; use ${use}`,
+        field,
+      );
   const type = input.type;
   const attrs = input.attrs ?? {};
   if (type !== undefined && (typeof type !== "string" || !RETYPES.includes(type)))
-    throw Error(`set_node's type takes ${RETYPES.join(" or ")}`);
+    throw refused("field_invalid", `set_node's type takes ${RETYPES.join(" or ")}`, "type");
   if (!attrs || typeof attrs !== "object" || Array.isArray(attrs))
-    throw Error("set_node's attrs must be an object");
+    throw invalidAttr("set_node's attrs must be an object");
   const names = Object.keys(attrs);
   if (type === undefined && !names.length)
-    throw Error(`set_node takes type, attrs (${NODE_ATTRS.join(", ")}), or both`);
+    throw invalidAttr(`set_node takes type, attrs (${NODE_ATTRS.join(", ")}), or both`);
   const values = {};
   for (const name of names) {
     if (!Object.hasOwn(SETTABLE_ATTRS, name))
-      throw Error(`set_node's attrs take ${NODE_ATTRS.join(", ")}; ${name} isn't one`);
+      throw invalidAttr(`set_node's attrs take ${NODE_ATTRS.join(", ")}; ${name} isn't one`);
     values[name] = attrValue(name, attrs[name]);
   }
   return { ...(type !== undefined && { type }), attrs: values };
@@ -189,8 +197,10 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
   const marker = spans[index];
   const current = spanType(marker);
   const refuse = (label, blocks) => {
-    throw Error(
+    throw refused(
+      "node_type_mismatch",
       `${label} applies to ${pluralLabel(blocks)}; match_text is in ${nodeLabel(current)}`,
+      label === "type" ? "type" : "attrs",
     );
   };
   const target = change.type ?? current;
@@ -207,8 +217,10 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
     const found = settableAttr(target, name);
     if (!found && target !== current)
       // A retype: name the type the node would become, not the one it is.
-      throw Error(
+      throw refused(
+        "node_type_mismatch",
         `type ${target} has no ${name}; ${name} applies to ${pluralLabel(SETTABLE_ATTRS[name].blocks)}`,
+        "attrs",
       );
     if (!found) refuse(name, SETTABLE_ATTRS[name].blocks);
     const value = change.attrs[name];
@@ -223,7 +235,7 @@ export function setNode(doc, id, input, trace, { anchor } = {}) {
   // node when it already has that type.
   for (const [stored, spec] of Object.entries(nodeType(target).attrs))
     if (spec.required && attrs[stored] === undefined)
-      throw Error(`${target} needs attrs.${spec.agent ?? stored}`);
+      throw invalidAttr(`${target} needs attrs.${spec.agent ?? stored}`);
   // Every marker this write touches must read as stored: a column
   // alignment reaches cells the match isn't in.
   const columnTargets = Object.keys(column).length ? columnCells(spans, index) : [];

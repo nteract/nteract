@@ -1,6 +1,8 @@
 import { asyncScheduler, timer } from "rxjs";
 import { isolateSetup } from "./isolate-setup.mjs";
 import { validPageId } from "./registration.mjs";
+import { migrateSchema } from "./d1-schema.mjs";
+import { EDIT_REFUSAL_REASONS } from "../model/edit-refusals.mjs";
 
 const DAY = 86_400_000;
 const isoDay = (now) => new Date(now).toISOString().slice(0, 10);
@@ -72,6 +74,26 @@ export const USAGE_SCHEMA = Object.freeze([
   `CREATE INDEX IF NOT EXISTS pages_usage_failures_day ON pages_usage_failures(day)`,
 ]);
 
+/** Columns added to the tables above, one version each, recorded in
+ * `pages_usage_schema` (d1-schema.mjs). An ALTER is not idempotent, so the
+ * version table is what lets the setup run again on a database that already
+ * has the column. A build older than a column names its INSERT columns, so it
+ * still writes, leaving the column null. */
+export const USAGE_MIGRATIONS = Object.freeze([
+  // Why an invalid_edit_selector refusal was refused: a listed reason
+  // (model/edit-refusals.mjs), null on every other row.
+  Object.freeze({
+    version: 1,
+    name: "failure_error_reason",
+    statements: Object.freeze(["ALTER TABLE pages_usage_failures ADD COLUMN error_reason TEXT"]),
+  }),
+]);
+
+/** Refusals that answer a request as designed, such as a read over its byte
+ * budget answering with an outline. They keep their usage event and write
+ * no failure row. */
+const GUARDRAIL_CODES = new Set(["read_budget_exceeded"]);
+
 const PHASES = /^[a-z][a-z0-9_]{0,39}=\d{1,7}(,[a-z][a-z0-9_]{0,39}=\d{1,7}){0,23}$/;
 
 /** A failed tool call's row for `pages_usage_failures`: what failed and how,
@@ -80,12 +102,14 @@ function storedFailure(record, row) {
   if (row.action !== "tool.call" || row.outcome === "ok") return null;
   const status = record.status;
   if (!Number.isSafeInteger(status) || status < 400 || status > 599) return null;
+  if (GUARDRAIL_CODES.has(record.error_code)) return null;
   const token = (value) =>
     typeof value === "string" && /^[a-z0-9_]{1,64}$/.test(value) ? value : null;
   return {
     operation: token(record.operation) ?? "unknown",
     status,
     error_code: token(record.error_code),
+    error_reason: EDIT_REFUSAL_REASONS.includes(record.error_reason) ? record.error_reason : null,
     latency_ms:
       Number.isSafeInteger(record.latency_ms) && record.latency_ms >= 0 ? record.latency_ms : null,
     phases: typeof record.phases === "string" && PHASES.test(record.phases) ? record.phases : null,
@@ -144,6 +168,7 @@ export function storedUsage(record) {
 
 export async function migrateUsageStore(db) {
   await db.batch(USAGE_SCHEMA.map((sql) => db.prepare(sql)));
+  await migrateSchema(db, { table: "pages_usage_schema", migrations: USAGE_MIGRATIONS });
 }
 
 /** UTC days of raw events kept. The insert fence and the purge floor use it. */
@@ -188,8 +213,8 @@ export async function writeUsageBatch(db, records, now = Date.now()) {
         ? [
             db
               .prepare(`INSERT INTO pages_usage_failures
-      (day, ts, driver, surface, operation, status, error_code, latency_ms, phases)
-      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? ${fence}`)
+      (day, ts, driver, surface, operation, status, error_code, error_reason, latency_ms, phases)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? ${fence}`)
               .bind(
                 row.day,
                 row.ts,
@@ -198,6 +223,7 @@ export async function writeUsageBatch(db, records, now = Date.now()) {
                 row.failure.operation,
                 row.failure.status,
                 row.failure.error_code,
+                row.failure.error_reason,
                 row.failure.latency_ms,
                 row.failure.phases,
                 row.day,

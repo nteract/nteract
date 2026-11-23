@@ -655,7 +655,11 @@ A failed tool call also writes a `pages_usage_failures` row. Its error code is
 the one a JSON caller is given (the body's `code`, else the code its status maps
 to), kept only when it is a lowercase token. Its phases are the request's phase
 metric names with whole milliseconds, recorded for HTTP tools, MCP and
-`list_pages`. Nothing else from the body is kept. A failure row holds no
+`list_pages`. Its `error_reason` is the body's `error_reason` when it is one of
+the listed refusal reasons (see [Refusal codes and tool hints](#refusal-codes-and-tool-hints)),
+else null; the `pages.usage.v1` line carries the same token. Nothing else from
+the body is kept. A `413 read_budget_exceeded` answers with an outline as
+designed: it keeps its usage event and writes no failure row. A failure row holds no
 principal or Page id, but it shares its timestamp with the event row that does.
 Anonymous/service events and principals containing emails after percent-decoding
 are dropped. Existing console telemetry is unchanged and has its separate 30-day
@@ -664,7 +668,7 @@ retention (DEPLOYMENT.md, Telemetry).
 | Table | Meaning | Retention |
 | --- | --- | --- |
 | `pages_usage_events` | Raw projected events | Delete days strictly before UTC today minus 14 days |
-| `pages_usage_failures` | One row per failed tool call (status 400 to 599): driver, surface, tool name, status, error code, latency and phase timings; no principal, Page or Project id | Delete days strictly before UTC today minus 14 days |
+| `pages_usage_failures` | One row per failed tool call (status 400 to 599) except `read_budget_exceeded`: driver, surface, tool name, status, error code, refusal reason (nullable `error_reason`, added by the `pages_usage_schema` version 1 migration), latency and phase timings; no principal, Page or Project id | Delete days strictly before UTC today minus 14 days |
 | `pages_usage_daily` | Day x principal x surface x driver x action; `count`, `distinct_pages` | Delete days strictly before UTC today minus 90 days |
 | `pages_usage_weekly` | Monday UTC week; active people, readers, writers, agent people/actions, collaborative Pages; no principals or Page ids | Indefinite |
 
@@ -4090,13 +4094,28 @@ the point of refusal:
 | --- | --- |
 | `409 stale_revision` | Exact-revision guard failed (MCP adds `retryable: true`, meaning build a new request from a fresh read) |
 | `400 invalid_revision` | Malformed revision handle |
-| `400 invalid_edit_selector` | Missing `revision`, or unapplicable edit batch (zero/multiple matches, unknown block/op/mark) |
+| `400 invalid_edit_selector` | Missing `revision`, or unapplicable edit batch (zero/multiple matches, unknown block/op/mark); carries `error_reason` (below) |
 | `400 replace_match_too_large` | `replace_match` change exceeds diff budget with no unique-word split point |
 | `400 invalid_comment_selector` | Comment action on missing thread, message, or block (`thread_ids` batch adds `not_found_thread_ids`) |
 | `409 page_quota_exceeded` / `409 trash_capacity` | Account or Trash at capacity; both carry `limit` and `count` (see [Page quotas](#page-quotas)) |
 | `503 page_busy` | Page hit celld's per-cell request limit or Cloudflare overload (`retryable: true`, `retry_after_ms`) |
 | `503 page_transient_failure` | Transient Cloudflare error between gateway and object (retryable when request is safe to repeat) |
 | `503 shared_page_unavailable` | Listing hit an unavailable shared Page (see [Request limits](#request-limits)) |
+
+An `invalid_edit_selector` refusal carries `error_reason`, one token from
+`EDIT_REFUSAL_REASONS` in [model/edit-refusals.mjs](model/edit-refusals.mjs):
+`match_zero`, `match_many`, `match_boundary`, `field_unexpected`,
+`field_invalid`, `set_node_needs_match`, `node_type_mismatch`,
+`target_scope_ops`, `revision_required`, `address_malformed`,
+`inline_markdown`, `in_place_budget`, `mark_budget`, `code_block`,
+`batch_invalid`, `batch_overlap`, `op_unknown`, or `other` for a refusal with
+no reason of its own. An `invalid_edit_selector`, `node_not_found`,
+`wrong_address_kind` or `nodes_would_join` refusal from one operation of an
+`edit_page` batch also names it: `edit_index` (zero-based in `operations`),
+`op`, and where known `field` and the operation's `node_id` (only an
+address-shaped id). A refusal of the batch as a whole names no operation.
+[worker/edit-refusal.mjs](worker/edit-refusal.mjs) adds these fields to the
+Page host's answer; MCP carries them in `structuredContent`.
 
 MCP vs. HTTP error mapping:
 

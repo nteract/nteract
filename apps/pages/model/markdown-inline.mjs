@@ -19,7 +19,12 @@ const inlineOnly = () =>
     Error(
       'replacement_markdown must be inline Markdown on one line: text, **bold**, *italic*, ~~strike~~, `code`, [links](url) and <mark data-color="…">highlights</mark>. Escape a leading #, >, -, *, +, 1. or ``` with a backslash.',
     ),
-    { status: 400, code: "invalid_edit_selector" },
+    {
+      status: 400,
+      code: "invalid_edit_selector",
+      editReason: "inline_markdown",
+      editField: "replacement_markdown",
+    },
   );
 const markTypes = new Map([
   ["strong", Strong.type],

@@ -27,6 +27,7 @@ import { MAX_NODE_ID, spanNodeIds } from "./node-ids.mjs";
 import { spanImageIds } from "./image-ids.mjs";
 import { blockAddresses } from "./node-addresses.mjs";
 import { nativeRead, readKind } from "./native-read.mjs";
+import { refused } from "./edit-refusals.mjs";
 
 export const ADDRESS_PATTERN = /^[0-9]+@[0-9a-f]+$/;
 export const MAX_ADDRESS = MAX_NODE_ID;
@@ -115,7 +116,8 @@ export function nodeAddresses(doc, key) {
   }
 }
 
-const notFound = (message) => Object.assign(Error(message), { code: "node_not_found" });
+const notFound = (message, field) =>
+  Object.assign(Error(message), { code: "node_not_found", editField: field });
 
 /** What kind of thing `address` names in `index`'s document, and the key
  * of its block: `{ kind, key }`, without a node's range or an image's
@@ -123,8 +125,10 @@ const notFound = (message) => Object.assign(Error(message), { code: "node_not_fo
  * argument that held the address. */
 export function addressKind(index, address, field = "node_id") {
   if (typeof address !== "string" || address.length > MAX_ADDRESS || !ADDRESS_PATTERN.test(address))
-    throw Error(
+    throw refused(
+      "address_malformed",
       `${field} must be an id from read_page: <counter>@<actor hex>, up to ${MAX_ADDRESS} characters`,
+      field,
     );
   const key = index.block(address);
   if (key !== undefined) return { kind: "block", key };
@@ -132,6 +136,7 @@ export function addressKind(index, address, field = "node_id") {
   if (!found)
     throw notFound(
       `${field} doesn't name a block, node or image in this Page: it was deleted, or it is not an id read_page gave. Read the Page again for current ids. A node read_page reports with node_id null is reached through its block's id.`,
+      field,
     );
   return { kind: found.entry.kind, key: found.key, found };
 }
@@ -190,6 +195,6 @@ export function resolveAddressFor(index, doc, address, { op, field, kinds }) {
         .map((kind) => WANTED[kind])
         .join(", or ")} as ${field}.`,
     ),
-    { status: 400, code: "wrong_address_kind" },
+    { status: 400, code: "wrong_address_kind", editField: field },
   );
 }

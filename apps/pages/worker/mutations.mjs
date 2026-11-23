@@ -192,6 +192,7 @@ export async function documentMutation({
       throw Object.assign(Error("conflict_scope must be page or target"), {
         status: 400,
         code: "invalid_edit_selector",
+        editReason: "field_invalid",
       });
     if (
       targetScope &&
@@ -206,6 +207,7 @@ export async function documentMutation({
         {
           status: 400,
           code: "invalid_edit_selector",
+          editReason: "target_scope_ops",
         },
       );
     const base = baseRevision(args);
