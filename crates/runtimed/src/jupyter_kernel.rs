@@ -198,8 +198,14 @@ impl KernelChild {
         #[allow(unused_mut)]
         let mut child = cmd.spawn()?;
         #[cfg(unix)]
-        let group =
-            installed.then(|| nix::unistd::Pid::from_raw(child.id().expect("just spawned") as i32));
+        let group = if installed {
+            let pid = child.id().ok_or_else(|| {
+                std::io::Error::other("installed kernel spawned without a process id")
+            })?;
+            Some(nix::unistd::Pid::from_raw(pid as i32))
+        } else {
+            None
+        };
         #[cfg(not(unix))]
         let _ = installed;
         Ok(Self {

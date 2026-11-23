@@ -127,14 +127,14 @@ impl RuntimeAgentHandle {
         let mut child = child;
 
         #[cfg(unix)]
-        let pgid = child.id().map(|pid| pid as i32);
+        let pgid = child
+            .id()
+            .ok_or_else(|| anyhow::anyhow!("runtime agent spawned without a process id"))?
+            as i32;
 
         #[cfg(unix)]
-        let manifest = RuntimeAgentManifest::unix(
-            runtime_agent_id.clone(),
-            notebook_id.clone(),
-            pgid.ok_or_else(|| anyhow::anyhow!("runtime agent spawned without a process id"))?,
-        );
+        let manifest =
+            RuntimeAgentManifest::unix(runtime_agent_id.clone(), notebook_id.clone(), pgid);
         #[cfg(unix)]
         let mut child = OwnedAgentGroup {
             child,
@@ -202,7 +202,7 @@ impl RuntimeAgentHandle {
                 #[cfg(unix)]
                 {
                     use nix::{sys::signal::Signal, unistd::Pid};
-                    let group = Pid::from_raw(pgid.expect("manifest requires a child PID"));
+                    let group = Pid::from_raw(pgid);
                     // Observe exit without reaping: even after natural exit, the leader
                     // pins this group's identity until its managed descendants are killed.
                     let exit = async {

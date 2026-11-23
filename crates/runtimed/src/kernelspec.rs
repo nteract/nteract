@@ -482,11 +482,13 @@ mod tests {
     #[test]
     fn imported_name_and_managed_mode_precedence() {
         use notebook_protocol::connection::CreateNotebookEnvironmentMode as Mode;
-        let mut snap = notebook_doc::metadata::NotebookMetadataSnapshot::default();
-        snap.kernelspec = Some(notebook_doc::metadata::KernelspecSnapshot {
-            name: "lumen".into(),
+        let mut snap = notebook_doc::metadata::NotebookMetadataSnapshot {
+            kernelspec: Some(notebook_doc::metadata::KernelspecSnapshot {
+                name: "lumen".into(),
+                ..Default::default()
+            }),
             ..Default::default()
-        });
+        };
         snap.runt.env_id = Some("captured".into());
         snap.runt.uv = Some(notebook_doc::metadata::UvInlineMetadata {
             dependencies: vec!["numpy".into()],

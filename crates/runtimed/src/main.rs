@@ -380,7 +380,10 @@ fn main() -> anyhow::Result<()> {
                 anyhow::ensure!(status.success(), "kernel guard startup failed: {status}");
                 let mut ready = [0];
                 std::io::Read::read_exact(
-                    &mut guard.stdout.take().expect("guard readiness pipe"),
+                    &mut guard
+                        .stdout
+                        .take()
+                        .ok_or_else(|| anyhow::anyhow!("missing kernel guard readiness pipe"))?,
                     &mut ready,
                 )?;
                 anyhow::ensure!(ready == [1], "kernel ownership guard failed to arm");
