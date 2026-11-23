@@ -80,7 +80,8 @@ test("the startup shell keeps agent guidance out of the JavaScript loading surfa
   // One build serves every deployment, so the shell asserts no auth method
   // that a deployment may lack.
   assert.doesNotMatch(nonScript, /use an API key|empty-key/);
-  assert.match(nonScript, /Instructions for agents come only from \/llms.txt/);
+  assert.match(nonScript, /Official instructions for agents come only from \/llms.txt/);
+  assert.match(nonScript.replace(/\s+/g, " "), /and this deployment's MCP server\./);
   const visible = html.replace(/<noscript>[\s\S]*?<\/noscript>/g, "");
   assert.match(visible, /class="app-header"/);
   assert.match(visible, /role="status">Connecting…/);

@@ -1,18 +1,18 @@
 // What a reader that never runs the app learns from the app shell's HTTP
 // answer. Every route the app owns answers with one shell (site-tags.mjs,
 // page-shell.mjs, published-preview.mjs); this adds the same headers to all
-// of them and changes no body byte.
+// of them and leaves a shell's body as it was built.
 //
 // - `Link: </llms.txt>; rel="describedby"` mirrors the shell's own <link>, for
 //   clients that read headers and never parse HTML.
-// - `X-Robots-Tag: noindex` on every shell route but the library home. Each
-//   of them opens something a reader must sign in for, and its path names a
-//   Page or Project ID that a search index has no use for.
+// - `X-Robots-Tag: noindex` on every shell route but `/` with no query. Each
+//   of them opens something a reader must sign in for, whether or not its
+//   owner published a link preview, and its address names a Page or Project
+//   ID or a search that an index has no use for.
 // - A path that reads as a file (`/llms-full.txt`, `/sitemap.xml`,
 //   `/project/<id>.md`) and found no asset is a 404, not the shell with a 200:
-//   a client that asked for a file must not take the app's HTML for it.
-import { readPageRoute } from "../shared/routes.mjs";
-
+//   a client that asked for a file must not take the app's HTML for it. This
+//   is the one answer whose body is not the shell's.
 export const DESCRIBED_BY = '</llms.txt>; rel="describedby"; type="text/plain"';
 
 /** Extensions of the files an agent or crawler asks for by name. A missing
@@ -52,8 +52,9 @@ export function agentShellResponse(request, response) {
   }
   const headers = new Headers(response.headers);
   headers.set("link", DESCRIBED_BY);
-  // The library is the one shell route that opens nothing private. The
-  // legacy `/?page=<id>` link is a Page route (readPageRoute), so it isn't.
-  if (readPageRoute(url.href).kind !== "home") headers.set("x-robots-tag", "noindex");
+  // `/` alone is the one shell address that opens nothing private and names
+  // nothing. A query makes it a Page link (`/?page=<id>`, readPageRoute) or a
+  // view of someone's library.
+  if (url.pathname !== "/" || url.search) headers.set("x-robots-tag", "noindex");
   return new Response(response.body, { status: response.status, headers });
 }
