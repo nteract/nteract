@@ -280,6 +280,7 @@ const editOperation = {
         "set_image",
         "insert_node",
         "delete_node",
+        "move_nodes",
         "replace_match",
         "format_match",
         "set_node",
@@ -293,7 +294,12 @@ const editOperation = {
     node_id: {
       ...address,
       description:
-        "Block ops: a block's id. delete_node: a node's. set_image: an image's. Match ops: a node's id matches in it, a block's in the whole block.",
+        "Block ops: a block's id. delete_node, move_nodes: a node's. set_image: an image's. Match ops: a node's id matches in it, a block's in the whole block.",
+    },
+    through_node_id: {
+      ...address,
+      description:
+        "move_nodes: the last node of the run, in node_id's block; omitted moves node_id alone.",
     },
     title: {
       type: ["string", "null"],
@@ -305,7 +311,7 @@ const editOperation = {
       ...address,
       type: ["string", "null"],
       description:
-        "Inserts: after a block's id in a new block, or after a top-level node's id inside its block. move_block: a block's id. null prepends, omitted appends.",
+        "Inserts: after a block's id in a new block, or after a top-level node's id inside its block. move_block: a block's id. move_nodes: required, a node's id or null for the start of the Page. null prepends, omitted appends.",
     },
     asset_id: {
       ...assetId,

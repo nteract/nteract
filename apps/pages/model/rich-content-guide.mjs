@@ -100,7 +100,7 @@ export function typedReadFields() {
 
 /** The targeted rich-text operations, in one paragraph. */
 export function richEditOperations() {
-  return "To change existing content without rewriting it, use edit_page: format_match adds or removes formatting on matched text (occurrence:n picks one match, all:true formats every match in the block); replace_match with replacement_markdown rewrites text with inline formatting; set_node takes {type, attrs} with the names read_page reports: it checks a task (attrs.checked), sets a code block's language (attrs.language), makes a paragraph a heading or changes its level (type heading, attrs.level) or aligns a table column (attrs.align). edit_page's delete_node removes one top-level node by its node_id, including a node with no text, such as a rule or a dataframe.";
+  return "To change existing content without rewriting it, use edit_page: format_match adds or removes formatting on matched text (occurrence:n picks one match, all:true formats every match in the block); replace_match with replacement_markdown rewrites text with inline formatting; set_node takes {type, attrs} with the names read_page reports: it checks a task (attrs.checked), sets a code block's language (attrs.language), makes a paragraph a heading or changes its level (type heading, attrs.level) or aligns a table column (attrs.align). edit_page's delete_node removes one top-level node by its node_id, including a node with no text, such as a rule or a dataframe, and move_nodes moves a run of top-level nodes (node_id through through_node_id) to after another node (after_node_id), keeping their comments attached.";
 }
 
 /** The rich-content paragraph for the MCP server instructions. */

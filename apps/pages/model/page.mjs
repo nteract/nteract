@@ -16,6 +16,7 @@ import {
   nodeSpans,
 } from "./richtext-page.mjs";
 import { insertInPlace, spendInPlaceRead } from "./insert-in-place.mjs";
+import { moveNodes } from "./move-nodes.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import { imageIds } from "./image-ids.mjs";
 import { addressIndex, blockAddress, nodeAddresses, resolveAddressFor } from "./addresses.mjs";
@@ -278,6 +279,7 @@ const EDIT_FIELDS = new Map([
   ["move_block", ["node_id", "after_node_id"]],
   ["delete_block", ["node_id"]],
   ["delete_node", ["node_id"]],
+  ["move_nodes", ["node_id", "through_node_id", "after_node_id"]],
   ["replace_match", [...LOCATOR, "replacement", "replacement_markdown"]],
   ["format_match", [...LOCATOR, "all", "add", "remove"]],
   ["set_node", [...LOCATOR, "type", "attrs", "checked", "language", "heading_level", "align"]],
@@ -332,10 +334,20 @@ const ADDRESSES = new Map([
   ["insert_image", [["after_node_id", PLACE]]],
   ["insert_node", [["after_node_id", PLACE]]],
   ["delete_node", [["node_id", ["node"]]]],
+  [
+    "move_nodes",
+    [
+      ["node_id", ["node"]],
+      ["through_node_id", ["node"]],
+      ["after_node_id", ["node"]],
+    ],
+  ],
   ["set_image", [["node_id", ["image"]]]],
   ...[...PASSAGE_OPS].map((name) => [name, [["node_id", ["block", "node"]]]]),
 ]);
-const anchorField = (field, value) => field === "after_node_id" && (value ?? null) === null;
+const anchorField = (field, value) =>
+  (field === "after_node_id" && (value ?? null) === null) ||
+  (field === "through_node_id" && value === undefined);
 /** The things `op` names, resolved in `index`'s document: `{ [field]:
  * resolved }` (resolveAddress), with an omitted or null after_node_id kept as
  * it is. Throws node_not_found or wrong_address_kind. */
@@ -614,6 +626,13 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
     return;
   }
   if (op.op === "delete_node") return deleteNode(doc, op, target, trace);
+  if (op.op === "move_nodes")
+    return moveNodes(
+      doc,
+      op,
+      { first: target, last: at.through_node_id ?? target, anchor: at.after_node_id ?? null },
+      { trace, touched, ...context },
+    );
   throw refused("op_unknown", "Unsupported edit operation");
 }
 /** Delete the top-level node `target` names: its marker through the next
@@ -676,7 +695,7 @@ const nodeBlockOf = (index, address) =>
     : undefined;
 const INSERTS = new Set(["insert_markdown", "insert_image", "insert_node"]);
 
-function applyOperation(doc, { operation, arguments: args = {}, trace }) {
+function applyOperation(doc, { operation, arguments: args = {}, trace, comments }) {
   // Comments are written to the comments document, never the Page.
   if (operation !== "edit_page") throw Error("Unsupported Page operation");
   if (!Array.isArray(args.operations) || args.operations.length > 100)
@@ -700,9 +719,22 @@ function applyOperation(doc, { operation, arguments: args = {}, trace }) {
         : INSERTS.has(op.op)
           ? nodeBlockOf(index, op.after_node_id)
           : blockOf(index, op.node_id);
-    if (key === undefined) continue;
-    repairBlockMarkers(doc, key);
-    index.forget(key);
+    // A move writes into its anchor's block as well as its own. A null
+    // anchor is the start of the Page, in its first block.
+    const keys =
+      op.op === "move_nodes"
+        ? [
+            key,
+            op.after_node_id === null
+              ? orderedBlockIds(doc)[0]
+              : nodeBlockOf(index, op.after_node_id),
+          ]
+        : [key];
+    for (const each of new Set(keys)) {
+      if (each === undefined) continue;
+      repairBlockMarkers(doc, each);
+      index.forget(each);
+    }
   }
   // Every address names something live, of the kind its operation takes,
   // before any operation runs.
@@ -737,6 +769,7 @@ function applyOperation(doc, { operation, arguments: args = {}, trace }) {
         touched,
         anchor: anchors[i],
         budget,
+        comments,
       }),
     );
     for (const key of touched) index.forget(key);

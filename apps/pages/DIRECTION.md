@@ -241,21 +241,21 @@ lists, images, views and dataframes in order. Blocks are a storage detail
    named sources are a third module, `pages.sources`, a document only the
    host writes ([model/sources-doc.mjs](model/sources-doc.mjs)).
 7. **One flow per Page** (item 6 above). Done: in-place insert after a
-   node, and "Continue writing" adds a paragraph. Then, each its own
-   change:
-   1. `move_nodes`, the host move with comment re-anchoring.
-   2. The host reads each block once per batch, and the editor carries its
+   node, "Continue writing" adds a paragraph, and `move_nodes` moves a
+   section with its comments ([model/move-nodes.mjs](model/move-nodes.mjs)).
+   Then, each its own change:
+   1. The host reads each block once per batch, and the editor carries its
       tree through structural and formatting writes. Measure the 115 KB
       case again after, and restate the per-block limits for a Page.
-   3. Omitted and `null` `after_node_id` write into the last and first
+   2. Omitted and `null` `after_node_id` write into the last and first
       blocks. The guides teach inserts by node only.
-   4. The explicit join for multi-block Pages, with comment re-anchoring.
-   5. Block ids leave the agent contract. This waits on node-scoped writes
+   3. The explicit join for multi-block Pages, with comment re-anchoring.
+   4. Block ids leave the agent contract. This waits on node-scoped writes
       (item 4 above), which need their own design first.
    `scripts/project-transfer.mjs` still splits a block around a dataframe
    on import and writes with `replace_block_markdown` and `delete_block`.
-   It moves to in-place insert with step 7.3 and off the block operations
-   with step 7.5.
+   It moves to in-place insert with step 7.2 and off the block operations
+   with step 7.4.
 
 ### Delete
 

@@ -130,6 +130,7 @@ import {
 } from "./asset-uploads.mjs";
 import { sessionStoreReady } from "./isolate-setup.mjs";
 import { startingPage } from "./starting-page.mjs";
+import { applyCommentRewrites, moveComments } from "../model/move-nodes.mjs";
 import { handleKiloSignIn, kiloSessionProvider } from "./kilo-handoff.mjs";
 import { signInCallbackOptions } from "./sign-in-failure.mjs";
 import { localOidcStore } from "./local-oidc-store.mjs";
@@ -225,6 +226,7 @@ import {
 import {
   COMMENTS_DOC,
   PAGE_DOC,
+  REANCHOR_LANE,
   SOURCES_DOC,
   documentMutation,
   recoverDocumentMutations,
@@ -8109,7 +8111,21 @@ export class Page {
         // name the characters it wrote. A replayed receipt has no caret.
         let caret = null;
         let applied;
-        const receipt = await documentMutation({
+        // A move re-anchors the comment threads on the text it moves. The
+        // moves read and update this copy of the thread targets, and the
+        // planned rewrites are journaled inside the Page receipt
+        // (result.reanchor), so a replay knows them. The host then writes
+        // them to the comments document as a second journaled write under
+        // the same nonce, in a lane of its own so the nonce can't meet a
+        // comment call's: a first attempt and every retry, including one
+        // after a restart between the two writes, run it, and it applies
+        // once. The comments change names the caller as its writer. A peer
+        // that moves its own thread's anchor between this read and the
+        // rewrite is overwritten.
+        const moves = ops.some((op) => op?.op === "move_nodes")
+          ? moveComments(this.commentsView())
+          : null;
+        const pageReceipt = await documentMutation({
           storage: this.ctx.storage,
           hostActorPrefix: this.plain.hostActorPrefix,
           handle: this.handle,
@@ -8196,7 +8212,13 @@ export class Page {
                 arguments: effectiveArgs,
                 identity: publicIdentity(identity),
                 trace,
+                comments: moves,
               });
+              if (moves && (moves.rewrites.size || moves.detached.length))
+                result.reanchor = {
+                  rewrites: [...moves.rewrites],
+                  detached: [...new Set(moves.detached)],
+                };
               if (body.operation === "edit_page") {
                 try {
                   caret = writeTargets(doc, trace);
@@ -8223,6 +8245,9 @@ export class Page {
           flush: () => this.flush(),
           onHeads: (heads) => (applied = heads),
         });
+        // The Page's own events go out before the comments write, so its
+        // peers hear of the edit even when that write fails and waits for
+        // the retry.
         this.cacheTitle();
         this.handle.broadcast({
           kind: "tool-edit",
@@ -8239,6 +8264,44 @@ export class Page {
               target.kind === "block" ? target : { ...target, heads: applied },
             ),
           );
+        let receipt = pageReceipt;
+        const reanchor = pageReceipt.result?.reanchor;
+        if (reanchor) {
+          const { reanchor: _planned, ...result } = pageReceipt.result;
+          const rewrites = new Map(reanchor.rewrites);
+          let reanchored;
+          if (rewrites.size) {
+            let commentHeads;
+            reanchored = await documentMutation({
+              storage: this.ctx.storage,
+              hostActorPrefix: this.plain.hostActorPrefix,
+              handle: this.commentsHandle,
+              doc: COMMENTS_DOC,
+              lane: REANCHOR_LANE,
+              pageId: this.metadata.pageId,
+              operation: "reanchor_comments",
+              args: { nonce: body.arguments.nonce, threads: [...rewrites.keys()] },
+              identity,
+              baseRevision: () => undefined,
+              guard: (input) => input,
+              apply: (draft) => applyCommentRewrites(draft, rewrites),
+              flush: () => this.flush(),
+              onHeads: (heads) => (commentHeads = heads),
+            });
+            this.commentsHandle.broadcast({
+              kind: "tool-edit",
+              identity: publicIdentity(identity),
+              heads: commentHeads,
+              comments: true,
+            });
+          }
+          receipt = {
+            ...pageReceipt,
+            result,
+            ...(reanchored?.comment_revision && { comment_revision: reanchored.comment_revision }),
+            comments: { reanchored: [...rewrites.keys()], detached: reanchor.detached },
+          };
+        }
         return json(receipt);
       }
       throw new HttpError(404, "Not found");
