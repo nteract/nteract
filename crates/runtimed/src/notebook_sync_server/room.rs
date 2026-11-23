@@ -1443,6 +1443,10 @@ pub(crate) struct KernelLaunchAttempt {
 }
 
 impl KernelLaunchAttempt {
+    pub(crate) fn is_automatic(&self) -> bool {
+        matches!(self.source, KernelLaunchSource::Auto)
+    }
+
     pub(crate) fn preserve_kernel_during_preparation(&mut self) {
         if self
             .room
@@ -3105,6 +3109,79 @@ impl NotebookRoom {
             self.persistence.clear_load_failed();
         }
         Ok(recovered)
+    }
+
+    /// Recover only the degradation owned by a failed kernelspec journal
+    /// append. The caller holds NotebookDoc across the retry and this recovery.
+    pub(crate) fn retry_kernelspec_persistence(
+        &self,
+        doc: &mut NotebookDoc,
+        path: Option<&Path>,
+        target: Option<&notebook_protocol::protocol::InstalledKernelspec>,
+        runtime: &str,
+    ) -> anyhow::Result<()> {
+        let source = self.lifecycle.source_state();
+        let durability = self.durability.status();
+        let recovery = match &source {
+            RoomSourceState::Failed(status) => {
+                let Some(error) = &status.error else {
+                    anyhow::bail!(
+                        "Reconcile the notebook source before retrying the environment save"
+                    );
+                };
+                let reason = error.message.as_str();
+                anyhow::ensure!(
+                    error.code == "source_degraded"
+                        && reason.starts_with(
+                            "kernelspec selection journal commit failed before acknowledgement:"
+                        ),
+                    "Reconcile the notebook source before retrying the environment save"
+                );
+                if durability.degraded.as_ref().is_some_and(|degraded| {
+                    degraded.kind != super::durability::DegradationKind::DurabilityBoundary
+                        || degraded.reason != reason
+                }) {
+                    anyhow::bail!(
+                        "Reconcile the notebook source before retrying the environment save"
+                    );
+                }
+                Some((status, reason))
+            }
+            _ if durability.is_degraded() || source.is_in_progress() => {
+                anyhow::bail!("Notebook source is not ready for an environment save");
+            }
+            _ => None,
+        };
+        crate::kernelspec::persist(self, doc, target, runtime)?;
+        if let Some((status, reason)) = recovery {
+            anyhow::ensure!(
+                !self.durability.status().is_degraded(),
+                "Notebook recovery storage still requires repair"
+            );
+            let generation = status.generation.saturating_add(1);
+            let projection = Arc::new(super::projection::build_recovered_notebook_projection(
+                self, doc, generation, path,
+            )?);
+            anyhow::ensure!(
+                self.lifecycle
+                    .recover_failed_matching(
+                        doc.cell_count(),
+                        projection.notebook_heads.clone(),
+                        projection,
+                        Some(status)
+                    )
+                    .is_some(),
+                "Notebook source changed during the environment save; review and try again"
+            );
+            self.clear_load_failed();
+            self.state.with_doc(|state| {
+                if matches!(state.read_state().file_checkpoint.source_issue, Some(runtime_doc::FileSourceIssue::Degraded { reason: current }) if current == reason) {
+                    state.set_file_source_issue(None)?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     /// Get kernel info if a kernel is running (runtime-agent-backed).

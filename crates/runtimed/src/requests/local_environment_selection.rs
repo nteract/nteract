@@ -16,14 +16,13 @@ use notebook_protocol::protocol::{
 };
 use tokio::sync::watch;
 
-/// Whether notebook metadata may still seed the staged intent. This is
-/// separate from the revision: the revision only grows, while a runtime
-/// session reset returns the selection to `Pending` so a reconnect re-imports
-/// the saved named kernel intent.
+/// Whether notebook metadata can seed staged intent or resolve a launch. The
+/// revision only grows, while a session reset returns this policy to `Pending`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Initialization {
     Pending,
     Initialized,
+    AppliedAutomatic,
 }
 
 #[derive(Default)]
@@ -130,6 +129,16 @@ impl Default for LocalEnvironmentSelection {
 }
 
 impl LocalEnvironmentSelection {
+    /// An explicit Apply of Automatic overrides a previously saved named
+    /// kernel for this session, even if the new intent could not be saved.
+    pub(crate) fn applied_automatic(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .initialization
+            == Initialization::AppliedAutomatic
+    }
+
     pub(crate) fn snapshot(&self) -> EnvironmentSelectionSnapshot {
         self.state
             .lock()
@@ -168,7 +177,9 @@ impl LocalEnvironmentSelection {
         Self::validate(&state, expected_revision)?;
         state.selected = selected;
         state.selected_kernelspec = kernelspec;
-        state.initialization = Initialization::Initialized;
+        if state.initialization != Initialization::AppliedAutomatic {
+            state.initialization = Initialization::Initialized;
+        }
         self.publish(&mut state);
         Ok(state.snapshot.clone())
     }
@@ -248,7 +259,11 @@ impl LocalEnvironmentSelection {
         spec: Option<&notebook_protocol::protocol::InstalledKernelspec>,
     ) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.applying || state.applied_kernelspec.as_ref() == spec {
+        if state.applying
+            || !matches!(state.intent_save, IntentSaveState::Current)
+            || state.initialization == Initialization::AppliedAutomatic
+            || state.applied_kernelspec.as_ref() == spec
+        {
             return;
         }
         if spec.is_some() {
@@ -259,10 +274,6 @@ impl LocalEnvironmentSelection {
             state.initialization = Initialization::Initialized;
         }
         state.applied_kernelspec = spec.cloned();
-        // A non-Apply launch did not save notebook intent. Preserve the
-        // pending save if it restarted the same choice (handled above), but
-        // never offer to save a named kernel that it replaced.
-        state.save_event(IntentSaveEvent::Reset);
         self.publish(&mut state);
     }
 
@@ -395,7 +406,12 @@ impl EnvironmentApply<'_> {
             state.applied_kernelspec = state.selected_kernelspec.clone();
             state.save_event(IntentSaveEvent::ApplyCompleted { unsaved_runtime });
             state.applying = false;
-            state.initialization = Initialization::Initialized;
+            state.initialization = if state.applied.is_none() && state.applied_kernelspec.is_none()
+            {
+                Initialization::AppliedAutomatic
+            } else {
+                Initialization::Initialized
+            };
             self.selection.publish(&mut state);
         }
     }
@@ -705,6 +721,7 @@ async fn retry_save(
     snapshot: &EnvironmentSelectionSnapshot,
     observed_heads: &[String],
 ) -> NotebookResponse {
+    let path = room.file_binding.path().await;
     let mut doc = room.doc.write().await;
     room.commit_without_launch(|| {
         if let Err(rejection) = super::guarded::ensure_trusted_for_doc(room, &doc).and_then(|()| {
@@ -720,9 +737,9 @@ async fn retry_save(
             Err(error) => return rejected(error),
         };
         match lease.commit_save_retry(|| {
-            crate::kernelspec::persist(
-                room,
+            room.retry_kernelspec_persistence(
                 &mut doc,
+                path.as_deref(),
                 snapshot.applied_kernelspec.as_ref(),
                 &runtime,
             )
@@ -878,6 +895,18 @@ mod tests {
         assert_eq!(snapshot.applied.unwrap().name, "old");
         assert!(!snapshot.applying);
         assert_eq!(snapshot.revision, 6);
+    }
+
+    #[test]
+    fn non_apply_launch_preserves_unsaved_automatic() {
+        let selection = LocalEnvironmentSelection::default();
+        selection
+            .begin_apply(0)
+            .unwrap()
+            .commit(None, Some("python".into()));
+        let unsaved = selection.snapshot();
+        selection.record_launch(Some(&missing_spec()));
+        assert_eq!(selection.snapshot(), unsaved);
     }
 
     #[test]

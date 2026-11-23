@@ -129,21 +129,18 @@ fn refuse_for_project_trust(launch_attempt: &mut Option<KernelLaunchAttempt>) ->
 
 fn commit_apply_delivery(
     room: &NotebookRoom,
+    doc: &notebook_doc::NotebookDoc,
     lease: &super::local_environment_selection::EnvironmentApply<'_>,
     attempt: &mut KernelLaunchAttempt,
     expected_runtime: &str,
     deliver: impl FnOnce(),
 ) -> anyhow::Result<()> {
-    let doc = room
-        .doc
-        .try_read()
-        .map_err(|_| anyhow::anyhow!("Notebook changed during environment preflight; try again"))?;
     if let Some(heads) = lease.observed_heads() {
-        guarded::validate_dependencies_unchanged_since_observed(&doc, &heads).map_err(|_| {
+        guarded::validate_dependencies_unchanged_since_observed(doc, &heads).map_err(|_| {
             anyhow::anyhow!("Notebook dependencies changed during environment preflight")
         })?;
     }
-    guarded::ensure_trusted_for_doc(room, &doc)?;
+    guarded::ensure_trusted_for_doc(room, doc)?;
     if let Some(metadata) = doc.get_metadata_snapshot() {
         if room
             .local_environment_selection
@@ -176,15 +173,17 @@ struct InstalledKernelDelivery {
     imported_name: Option<String>,
 }
 
-fn imported_kernelspec_target(
+pub(crate) fn imported_kernelspec_target(
     room: &NotebookRoom,
     metadata: Option<&notebook_doc::metadata::NotebookMetadataSnapshot>,
     mode: notebook_protocol::connection::CreateNotebookEnvironmentMode,
 ) -> Option<String> {
-    if matches!(
-        room.bound_environment.snapshot(),
-        super::bound_environment::BoundEnvironmentState::Bound(_)
-    ) {
+    if room.local_environment_selection.applied_automatic()
+        || matches!(
+            room.bound_environment.snapshot(),
+            super::bound_environment::BoundEnvironmentState::Bound(_)
+        )
+    {
         return None;
     }
     crate::kernelspec::imported(metadata, mode).map(|name| name.to_ascii_lowercase())
@@ -202,18 +201,25 @@ async fn send_installed_kernel_request(
     send_runtime_agent_request_with_kernel_ports_on_delivery(
         room,
         build_request,
-        |message, permit| {
+        Some(&room.doc),
+        |doc, message, permit| {
             // Same doc -> launch gate ordering as Apply. No asynchronous work
             // between reading the notebook and committing the queue send.
-            let doc = room.doc.try_read().map_err(|_| {
-                guarded::rejected("Notebook changed during environment preflight; try again")
-            })?;
+            let doc = doc
+                .ok_or_else(|| anyhow::anyhow!("Missing notebook document at guarded delivery"))?;
+            if !matches!(
+                room.initial_load.state(),
+                crate::notebook_sync_server::RoomInitialLoadState::Ready { .. }
+                    | crate::notebook_sync_server::RoomInitialLoadState::NotNeeded { .. }
+            ) {
+                return Err(stale_intent().into());
+            }
             let mode = room
                 .identity
                 .environment_mode
                 .try_read()
                 .map_err(|_| stale_intent())?;
-            guarded::ensure_trusted_for_doc(room, &doc)?;
+            guarded::ensure_trusted_for_doc(room, doc)?;
             let metadata = doc.get_metadata_snapshot();
             let imported = imported_kernelspec_target(room, metadata.as_ref(), *mode);
             let applied = room
@@ -235,6 +241,176 @@ async fn send_installed_kernel_request(
         },
     )
     .await
+}
+
+pub(crate) async fn wait_for_launch_metadata(room: &NotebookRoom) -> anyhow::Result<()> {
+    use crate::notebook_sync_server::RoomInitialLoadState;
+
+    match room.initial_load.wait_until_settled().await {
+        RoomInitialLoadState::Ready { .. } | RoomInitialLoadState::NotNeeded { .. } => Ok(()),
+        RoomInitialLoadState::Loading { .. } => {
+            anyhow::bail!("Notebook is still loading; try again")
+        }
+        RoomInitialLoadState::Failed { reason, .. } => {
+            anyhow::bail!("Notebook could not be loaded: {reason}")
+        }
+    }
+}
+
+fn installed_kernel_requires_user_start(
+    attempt: Option<&KernelLaunchAttempt>,
+    spec: &notebook_protocol::protocol::KernelspecLaunch,
+) -> bool {
+    attempt.is_some_and(KernelLaunchAttempt::is_automatic)
+        && crate::kernelspec::requires_explicit_launch(spec)
+}
+
+#[cfg(test)]
+mod installed_delivery_tests {
+    use super::*;
+    use crate::notebook_sync_server::{AutoLaunchAdmission, RuntimeAgentMessage};
+    use std::future::Future;
+
+    #[tokio::test]
+    async fn wrapper_policy_blocks_only_daemon_initiated_launches() {
+        let (_tmp, room) = super::tests::test_room();
+        let wrapped = notebook_protocol::protocol::KernelspecLaunch {
+            executable: "env".into(),
+            args: [
+                "python",
+                "-m",
+                "ipykernel_launcher",
+                "-f",
+                "{connection_file}",
+            ]
+            .map(String::from)
+            .to_vec(),
+            resource_dir: Default::default(),
+            env: Default::default(),
+            interrupt_mode: Default::default(),
+        };
+        let AutoLaunchAdmission::Admitted(auto) = room.try_begin_auto_launch() else {
+            panic!("auto admission")
+        };
+        assert!(installed_kernel_requires_user_start(Some(&auto), &wrapped));
+        auto.release_without_cooldown();
+        let ManualLaunchAdmission::Admitted(manual) = room.try_begin_manual_launch() else {
+            panic!("explicit admission")
+        };
+        assert!(!installed_kernel_requires_user_start(
+            Some(&manual),
+            &wrapped
+        ));
+        manual.release_without_cooldown();
+    }
+
+    #[tokio::test]
+    async fn applied_automatic_blocks_notebook_kernelspec_import_until_reset() {
+        let (_tmp, room) = super::tests::test_room();
+        let metadata = notebook_doc::metadata::NotebookMetadataSnapshot {
+            kernelspec: Some(notebook_doc::metadata::KernelspecSnapshot {
+                name: "julia".into(),
+                display_name: "Julia".into(),
+                language: Some("julia".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let selected = || imported_kernelspec_target(&room, Some(&metadata), Default::default());
+        assert_eq!(selected().as_deref(), Some("julia"));
+        let selection = &room.local_environment_selection;
+        selection
+            .begin_apply(0)
+            .unwrap()
+            .commit(None, Some("python".into()));
+        assert_eq!(selected(), None, "old metadata must not win on restart");
+        assert_eq!(
+            selection.snapshot().intent_persistence,
+            notebook_protocol::protocol::EnvironmentIntentPersistence::Unsaved
+        );
+        selection.reset();
+        assert_eq!(selected().as_deref(), Some("julia"));
+    }
+
+    #[tokio::test]
+    async fn environment_save_retry_does_not_clear_source_conflict() {
+        let (_tmp, room) = super::tests::test_room();
+        let mut doc = room.doc.write().await;
+        let heads = doc.get_heads_hex();
+        room.lifecycle
+            .mark_source_conflict("external edit".into(), heads.clone());
+        let availability = room.lifecycle.availability();
+        let error = room
+            .retry_kernelspec_persistence(&mut doc, None, None, "python")
+            .unwrap_err();
+        assert!(error.to_string().contains("Reconcile the notebook source"));
+        assert_eq!(room.lifecycle.availability(), availability);
+        assert_eq!(doc.get_heads_hex(), heads);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn launch_waits_for_import_and_delivery_waits_for_doc_writer() {
+        let (tmp, room) = super::tests::test_room();
+        let path = tmp.path().join("import.ipynb");
+        std::fs::write(&path, serde_json::json!({"nbformat":4,"nbformat_minor":5,"cells":[],"metadata":{"kernelspec":{"name":"julia","language":"julia","display_name":"Julia"}}}).to_string()).unwrap();
+        let claim = crate::notebook_sync_server::claim_room_initial_load(&room, path).unwrap();
+        let prepare = wait_for_launch_metadata(&room);
+        tokio::pin!(prepare);
+        assert!(matches!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(prepare.as_mut().poll(cx))).await,
+            std::task::Poll::Pending
+        ));
+        crate::notebook_sync_server::spawn_claimed_room_initial_load(
+            claim,
+            tmp.path().join("executions"),
+        );
+        prepare.await.unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (dummy_reply, _) = oneshot::channel();
+        assert!(tx
+            .try_send(RuntimeAgentMessage::Query(
+                notebook_protocol::protocol::RuntimeAgentRequestEnvelope {
+                    id: "fill-queue".into(),
+                    request: notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
+                },
+                dummy_reply,
+            ))
+            .is_ok());
+        *room.runtime_agent_request_tx.lock().await = Some(tx);
+        let delivery = InstalledKernelDelivery {
+            resolved_name: "julia".into(),
+            imported_name: Some("julia".into()),
+        };
+        let (built, request_built) = oneshot::channel();
+        let mut built = Some(built);
+        let send = send_installed_kernel_request(&room, &delivery, |_| {
+            built.take().unwrap().send(()).unwrap();
+            notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel
+        });
+        tokio::pin!(send);
+        tokio::select! {
+            biased;
+            response = &mut send => panic!("delivery must wait for capacity: {response:?}"),
+            built = request_built => built.unwrap(),
+        }
+        {
+            let writer = room.doc.write().await;
+            assert!(rx.try_recv().is_ok());
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(send.as_mut().poll(&mut context).is_pending());
+            assert!(rx.try_recv().is_err());
+            assert!(writer.get_metadata_snapshot().is_some());
+        }
+        tokio::select! {
+            response = &mut send => panic!("unexpected premature result: {response:?}"),
+            message = rx.recv() => {
+                let Some(RuntimeAgentMessage::Query(_, reply)) = message else { panic!("expected launch query") };
+                reply.send(notebook_protocol::protocol::RuntimeAgentResponse::Ok).unwrap();
+            }
+        }
+        assert!(send.await.is_ok());
+    }
 }
 
 async fn launch_delivery_refusal(
@@ -424,6 +600,11 @@ pub(crate) async fn handle(
     env_source: LaunchSpec,
     notebook_path: Option<String>,
 ) -> NotebookResponse {
+    if let Err(error) = wait_for_launch_metadata(room).await {
+        return NotebookResponse::Error {
+            error: error.to_string(),
+        };
+    }
     if let Err(rejection) = guarded::ensure_trusted(room).await {
         return rejection.into_response();
     }
@@ -660,11 +841,15 @@ async fn handle_attempt(
 
     // Resolve metadata snapshot from Automerge doc (preferred) or disk
     let initialization_fence = room.local_environment_selection.initialization_fence();
-    let mut metadata_snapshot = resolve_metadata_snapshot(room, notebook_path.as_deref()).await;
+    let live_metadata = room.doc.read().await.get_metadata_snapshot();
 
     let selection = room.local_environment_selection.snapshot();
     let mode = *room.identity.environment_mode.read().await;
-    let imported_name = imported_kernelspec_target(room, metadata_snapshot.as_ref(), mode);
+    let imported_name = imported_kernelspec_target(room, live_metadata.as_ref(), mode);
+    let mut metadata_snapshot = match live_metadata {
+        Some(metadata) => Some(metadata),
+        None => resolve_metadata_snapshot(room, notebook_path.as_deref()).await,
+    };
     let installed_name = if apply.is_some() {
         selection.selected_kernelspec.map(|s| s.name)
     } else if local_environment.is_none()
@@ -714,7 +899,24 @@ async fn handle_attempt(
             .await
             .and_then(|spec| Ok((Some(spec.info(&name)), Some(spec.prepare(&inherited)?))))
         {
-            Ok(spec) => spec,
+            Ok(spec) => {
+                if spec.1.as_ref().is_some_and(|spec| {
+                    installed_kernel_requires_user_start(launch_attempt.as_ref(), spec)
+                }) {
+                    let message = "This kernel starts through a wrapper nteract cannot isolate from files next to the notebook. Start it from the Environment menu.";
+                    reset_starting_state_with_outcome(
+                        room,
+                        None,
+                        ResetOutcome::Error {
+                            reason: Some(KernelErrorReason::EnvironmentPrepareFailed),
+                            details: message,
+                        },
+                    )
+                    .await;
+                    return guarded::rejected(message).into_response();
+                }
+                spec
+            }
             Err(e) => {
                 let error = format!("{e:#}");
                 if apply.is_none() {
@@ -2307,9 +2509,10 @@ async fn handle_attempt(
                     redact_env_values_in_outputs,
                 };
             let response = if let Some(lease) = apply {
-                crate::notebook_sync_server::send_runtime_agent_request_with_kernel_ports_on_delivery(room, build_request, |message, permit| {
+                crate::notebook_sync_server::send_runtime_agent_request_with_kernel_ports_on_delivery(room, build_request, Some(&room.doc), |doc, message, permit| {
+                    let doc = doc.ok_or_else(|| anyhow::anyhow!("Missing notebook document at Apply delivery"))?;
                     let attempt = launch_attempt.as_mut().ok_or_else(|| anyhow::anyhow!("Kernel launch ownership ended before delivery"))?;
-                    commit_apply_delivery(room, lease, attempt, &resolved_kernel_type, || { permit.send(message); })
+                    commit_apply_delivery(room, doc, lease, attempt, &resolved_kernel_type, || { permit.send(message); })
                 }).await
             } else if let Some(delivery) = &installed_delivery {
                 send_installed_kernel_request(room, delivery, build_request).await
@@ -2620,9 +2823,10 @@ async fn handle_attempt(
                         redact_env_values_in_outputs,
                     };
                 let response = if let Some(lease) = apply {
-                    crate::notebook_sync_server::send_runtime_agent_request_with_kernel_ports_on_delivery(room, build_request, |message, permit| {
+                    crate::notebook_sync_server::send_runtime_agent_request_with_kernel_ports_on_delivery(room, build_request, Some(&room.doc), |doc, message, permit| {
+                        let doc = doc.ok_or_else(|| anyhow::anyhow!("Missing notebook document at Apply delivery"))?;
                         let attempt = launch_attempt.as_mut().ok_or_else(|| anyhow::anyhow!("Kernel launch ownership ended before delivery"))?;
-                        commit_apply_delivery(room, lease, attempt, &resolved_kernel_type, || { permit.send(message); })
+                        commit_apply_delivery(room, doc, lease, attempt, &resolved_kernel_type, || { permit.send(message); })
                     }).await
                 } else if let Some(delivery) = &installed_delivery {
                     send_installed_kernel_request(room, delivery, build_request).await
@@ -2754,7 +2958,7 @@ mod tests {
     use crate::blob_store::BlobStore;
     use crate::notebook_sync_server::{AutoLaunchAdmission, ManualLaunchAdmission, NotebookRoom};
 
-    fn test_room() -> (tempfile::TempDir, Arc<NotebookRoom>) {
+    pub(super) fn test_room() -> (tempfile::TempDir, Arc<NotebookRoom>) {
         let tmp = tempfile::TempDir::new().unwrap();
         let room = Arc::new(NotebookRoom::new_fresh(
             uuid::Uuid::new_v4(),
@@ -2795,7 +2999,10 @@ mod tests {
         *room.current_runtime_agent_id.write().await = Some("agent-1".into());
         assert!(attempt.expect_runtime_agent("agent-1"));
         assert!(room.mark_runtime_agent_connected("agent-1"));
-        commit_apply_delivery(&room, &lease, &mut attempt, "julia", || {}).unwrap();
+        {
+            let doc = room.doc.read().await;
+            commit_apply_delivery(&room, &doc, &lease, &mut attempt, "julia", || {}).unwrap();
+        }
         room.doc
             .write()
             .await
@@ -2906,6 +3113,22 @@ mod tests {
             request_rx.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
+        assert!(matches!(
+            room.lifecycle.availability(),
+            crate::notebook_sync_server::RoomAvailability::Interactive(_)
+        ));
+        assert!(room
+            .state
+            .read(|sd| sd.read_state().file_checkpoint.source_issue)
+            .unwrap()
+            .is_none());
+        let path = tmp.path().join("export.ipynb");
+        crate::notebook_sync_server::save_notebook_to_disk(&room, path.to_str())
+            .await
+            .expect("ordinary save must work after the journal recovers");
+        let exported: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(exported["metadata"]["kernelspec"]["name"], "julia");
     }
 
     #[tokio::test(start_paused = true)]
@@ -3028,10 +3251,13 @@ mod tests {
             ManualLaunchAdmission::Admitted(attempt) => attempt,
             _ => panic!("admission"),
         };
-        let error = commit_apply_delivery(&room, &lease, &mut attempt, "python", || {
-            panic!("must not deliver")
-        })
-        .unwrap_err();
+        let error = {
+            let doc = room.doc.read().await;
+            commit_apply_delivery(&room, &doc, &lease, &mut attempt, "python", || {
+                panic!("must not deliver")
+            })
+            .unwrap_err()
+        };
         assert!(error.to_string().contains("runtime changed"));
         assert_eq!(
             room.state.read(|sd| sd.read_state().kernel).unwrap(),

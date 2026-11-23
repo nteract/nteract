@@ -3166,6 +3166,7 @@ pub(crate) async fn release_attempt_and_readmit_if_peer_waiting(
         drop(attempt);
         return None;
     }
+
     reset_starting_state(room, None).await;
     attempt.release_and_readmit_auto_if_peer_waiting()
 }
@@ -3217,8 +3218,7 @@ async fn bound_environment_for_auto_launch(
 
 /// One admitted auto-launch attempt, owned end to end.
 ///
-/// Resolves the metadata snapshot from the Automerge doc (if the first client
-/// has already synced) or falls back to reading the .ipynb from disk.
+/// Waits for the authoritative import before resolving environment intent.
 ///
 /// Token disposition: dropping `attempt` on any exit path that did not launch
 /// a kernel (and was not a benign abort) arms the failure cooldown, so error
@@ -3235,6 +3235,24 @@ async fn auto_launch_kernel_attempt(
 ) -> Option<super::room::KernelLaunchAttempt> {
     if attempt.is_cancelled() {
         debug!("[notebook-sync] Auto-launch cancelled before environment resolution");
+        return None;
+    }
+
+    let ready = tokio::select! {
+        biased;
+        _ = super::room::wait_for_kernel_launch_cancellation(attempt.cancellation_receiver()) => return None,
+        ready = crate::requests::launch_kernel::wait_for_launch_metadata(room) => ready,
+    };
+    if let Err(error) = ready {
+        reset_starting_state_with_outcome(
+            room,
+            None,
+            ResetOutcome::Error {
+                reason: None,
+                details: &error.to_string(),
+            },
+        )
+        .await;
         return None;
     }
 
@@ -3331,13 +3349,16 @@ async fn auto_launch_kernel_attempt(
 
     let selection = room.local_environment_selection.snapshot();
     let mode = *room.identity.environment_mode.read().await;
-    if selection.applied_kernelspec.is_some()
+    let live_metadata = room.doc.read().await.get_metadata_snapshot();
+    if room.local_environment_selection.applied_automatic()
+        || selection.applied_kernelspec.is_some()
         || (selection.applied.is_none()
-            && !matches!(
-                room.bound_environment.snapshot(),
-                crate::requests::bound_environment::BoundEnvironmentState::Bound(_)
+            && crate::requests::launch_kernel::imported_kernelspec_target(
+                room,
+                live_metadata.as_ref(),
+                mode,
             )
-            && crate::kernelspec::imported(metadata_snapshot.as_ref(), mode).is_some())
+            .is_some())
     {
         if crate::requests::guarded::ensure_trusted(room)
             .await
@@ -3347,7 +3368,7 @@ async fn auto_launch_kernel_attempt(
                 room,
                 None,
                 None,
-                "Trust changed before the installed kernelspec could launch",
+                "Trust changed before the selected environment could launch",
             )
             .await;
             return None;
