@@ -5,6 +5,7 @@ import { readServerAppSession, SERVER_SESSION_COOKIE } from "@nteract/session";
 import { ServerSessionGrantRejected } from "@cloud/server-oidc.ts";
 import { startLocalKiloHandoff } from "../scripts/fixtures/local-kilo-handoff.mjs";
 import { authenticate } from "./auth.mjs";
+import worker from "./index.mjs";
 import { kiloSignIn } from "./kilo-config.mjs";
 import { handleKiloSignIn, kiloSessionProvider } from "./kilo-handoff.mjs";
 
@@ -381,6 +382,37 @@ test("an agent token names the person a browser sign-in names", async (t) => {
   assert.equal(agent.displayName, session.displayName);
   assert.equal(agent.namespace, session.principalNamespace);
   assert.equal(agent.credentialKind, "kilo-token");
+});
+
+test("OAuth consent ends a lapsing Kilo session and asks for sign-in, without the OIDC token endpoint", async (t) => {
+  // Kilo deployments name no OIDC issuer. A renewal at consent must go to the
+  // Kilo provider, which ends the session, not to the OIDC refresh path.
+  const { env } = await fixture(t, {
+    NOTEBOOK_CLOUD_OIDC_ISSUER: undefined,
+    NOTEBOOK_CLOUD_OIDC_CLIENT_ID: undefined,
+  });
+  const started = await begin(env);
+  const signedIn = await callback(env, await throughKilo(started.enter), started.cookie);
+  const cookie = signedIn.headers
+    .getSetCookie()
+    .find((value) => value.startsWith(`${SERVER_SESSION_COOKIE}=`))
+    .split(";", 1)[0];
+  const now = Math.floor(Date.now() / 1000);
+  env.DB.sqlite.prepare("UPDATE oidc_server_sessions SET access_expires_at = ?").run(now + 30);
+  const params = new URLSearchParams({
+    client_id: "pages-kilo",
+    redirect_uri: "http://127.0.0.1:19876/mcp/oauth/callback",
+    response_type: "code",
+    resource: `${origin}/mcp`,
+    code_challenge: "c".repeat(43),
+    code_challenge_method: "S256",
+    scope: "pages:read",
+    state: "client-state",
+  });
+  const screen = await worker.fetch(request(`/oauth/authorize?${params}`, { cookie }), env);
+  assert.equal(screen.status, 200);
+  assert.match(await screen.text(), /Sign in to Pages to review this connection/);
+  assert.equal(env.DB.sqlite.prepare("SELECT COUNT(*) AS n FROM oidc_server_sessions").get().n, 0);
 });
 
 test("a Kilo session is never renewed", async (t) => {
