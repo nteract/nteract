@@ -1,7 +1,6 @@
 # Pages direction
 
-**Status:** the one direction for Pages work, set November 10, 2026. Where
-another document or an older plan disagrees, this one wins.
+Where another document disagrees, this one wins.
 [REFERENCE.md](REFERENCE.md) describes what the code does today.
 
 ## Destination
@@ -37,6 +36,10 @@ text as flat markers; formatting lives in marks. Moving a block changes its
 `position` and nothing else. `decode(spans)` builds the Wordgard tree and
 `encode(tree)` writes spans back ([model/wordgard-doc.mjs](model/wordgard-doc.mjs)).
 Comments live in their own document and anchor to the Page with cursors.
+
+To people and agents, a Page is one flow of nodes: paragraphs, headings,
+lists, images, views and dataframes in order. Blocks are a storage detail
+(item 6 below). A Page made in the browser already has one block.
 
 ## What changes from today
 
@@ -92,10 +95,12 @@ Comments live in their own document and anchor to the Page with cursors.
      it resolves an id by comparing it against the ids minted from the live
      document ([model/addresses.mjs](model/addresses.mjs)). Each field takes
      the kinds it acts on and refuses another with `wrong_address_kind`.
+     Item 6 takes the block kind out of the agent contract, so the address
+     becomes a node's or an image's.
    - `edit_page` and `patch_page` become one tool with one operation list. Done on `main`.
      Every operation stays: text and formatting edits, images, Parquet
-     dataframes, node insert, delete and retype, and block moves. Uploads
-     keep their flow.
+     dataframes, node insert, delete and retype, and block moves, until
+     item 6 retires the block operations. Uploads keep their flow.
    - Tool schemas stay in a portable subset: an operation is one object with
      an `op` enum, and no schema uses `oneOf`, `anyOf`, `allOf`, `const` or
      `$ref`. A test walks the schemas and enforces it.
@@ -114,6 +119,91 @@ Comments live in their own document and anchor to the Page with cursors.
      nonce alone. After its receipt is gone, a retried `create_page` can make
      a second Page. `purge_page` and `delete_project` keep their preview
      token. Done.
+6. **One flow per Page.** The stored model is node-first: structure lives in
+   markers. An insert without a node anchor still makes a block, so a Page
+   an agent builds in pieces is stacked editors. A selection can't cross
+   them, Backspace can't join them, and a person can't remove an empty one.
+   On a 15-Page sample from `pages.runtimed.run`, a block is in practice one
+   agent write, not a unit anyone chose.
+   - **Inserts go in place.** Done for an anchor node:
+     `insert_markdown`, `insert_image` and `insert_node` write after a
+     top-level node inside its block
+     ([model/insert-in-place.mjs](model/insert-in-place.mjs)), with no text moved and every
+     node id and comment anchor kept. Next, an omitted `after_node_id`
+     appends to the end of the last block and `null` writes at the start of
+     the first. No agent operation makes a block, except under the size rule
+     below.
+   - **`node_id` names nodes only.** Block ids leave the agent contract.
+     `replace_block_markdown` gives way to node-scoped writes (item 4),
+     `delete_block` to `delete_node` over a range, and `move_block` to a
+     section move (below). The block key stays the internal name in
+     storage, sync, presence and the comments document.
+   - **The browser makes no block.** "Continue writing" adds an empty
+     paragraph at the end of the last block
+     ([viewer/writing-continuation.mjs](viewer/writing-continuation.mjs)),
+     not an empty block. It still makes one when the Page has no block or
+     this build can't write the last one.
+   - **Large Pages are fixed in the decoder, not with more blocks.** One
+     block of about 115 KB costs 199 ms per line break in the editor
+     (17 ms at 16 KB), and a batch of 20 `format_match` takes 4.4 s on the
+     host (0.14 s split across 85 blocks). Both costs come from reading the
+     whole block again: the editor decodes it for every structural or
+     formatting write ([viewer/wordgard-binding.mjs](viewer/wordgard-binding.mjs)),
+     and the host reads the block's spans several times per operation
+     ([model/replace-match.mjs](model/replace-match.mjs)). Read once per
+     batch on the host, and carry the editor's tree through structural and
+     formatting writes as it already does for typing. If a measured Page
+     still needs it after that, the host starts a new block when the last
+     one passes a size, on append only. The host never splits existing
+     text on its own, since a split detaches the comments on the moved tail
+     and drops edits in flight to it.
+   - **Per-block limits become per-Page limits.** `replace_match` refuses a
+     block over 262,144 UTF-16 units
+     ([model/replace-match.mjs](model/replace-match.mjs)), a batch's
+     in-place inserts are bounded by the length of the blocks they read
+     ([model/insert-in-place.mjs](model/insert-in-place.mjs)), and one node
+     from a newer build makes in-place inserts and Markdown rewrites of its
+     block refuse with `newer_content`.
+     In one flow each of these covers the whole Page. Inserts stop making
+     blocks only after the host reads once per batch, and each limit is
+     restated for a Page before that change.
+   - **A join costs what a split costs.** Writing later blocks into the
+     first deletes their text objects, so an edit in flight to them is lost,
+     a comment made offline on them detaches, and their nodes get new ids.
+     The host never joins on its own. A join is an explicit action that
+     refuses at a stale revision, rewrites the comment anchors it can see,
+     and returns the new ids. Multi-block Pages that nobody joins stay
+     readable and editable node by node. A join is a content edit inside
+     format 3, as a section move is, not a format conversion: it needs no
+     format number or new document.
+   - **Re-anchoring is a host write.** A peer may move a thread's anchor
+     only if it wrote the thread
+     ([model/comment-authority.mjs](model/comment-authority.mjs)). A join or
+     a section move puts the anchor on the same text at its new place, so
+     the host writes it as its own write for the same request as the
+     content change, outside that rule. Moving an anchor to different text
+     stays the author's alone. An author's own anchor move that lands
+     between the host's read of the threads and its rewrite is overwritten.
+   - **A section moves with a host move.** Automerge text has no move, so
+     `move_nodes` deletes a run of nodes and writes the same spans after
+     another node: characters, marks and attributes come back as stored, the
+     moved nodes get new ids, and the host re-anchors the comment threads on
+     the moved text. In an eval of 100 agent runs (five move tasks on
+     commented Pages, two models, a local celld and Pages), agents with it
+     kept every thread on the moved text. With today's tools they kept them
+     in 18 of 50 runs, and telling them to keep comments doubled their calls
+     and cost without closing the gap.
+     - The host journals the planned rewrites with the Page change and
+       writes them to the comments document as a second write for the same
+       request. Every retry runs that write, so a restart between the two
+       leaves the threads detached only until the retry. One journal entry
+       for both documents would close that window. It changes the rule that
+       an entry covers one document, and is open.
+     - Text someone types into a moved node while the move lands is kept at
+       the end of the node before the run's old place, as for `delete_node`.
+       The eval had one writer; a concurrent-writer task is still to run.
+     - A thread that crosses the run's edge loses its anchor and is
+       reported. Whether a move should refuse instead is open.
 
 ## Order of work
 
@@ -150,6 +240,22 @@ Comments live in their own document and anchor to the Page with cursors.
    Page and comments documents as its first two modules. Started: a Page's
    named sources are a third module, `pages.sources`, a document only the
    host writes ([model/sources-doc.mjs](model/sources-doc.mjs)).
+7. **One flow per Page** (item 6 above). Done: in-place insert after a
+   node, and "Continue writing" adds a paragraph. Then, each its own
+   change:
+   1. `move_nodes`, the host move with comment re-anchoring.
+   2. The host reads each block once per batch, and the editor carries its
+      tree through structural and formatting writes. Measure the 115 KB
+      case again after, and restate the per-block limits for a Page.
+   3. Omitted and `null` `after_node_id` write into the last and first
+      blocks. The guides teach inserts by node only.
+   4. The explicit join for multi-block Pages, with comment re-anchoring.
+   5. Block ids leave the agent contract. This waits on node-scoped writes
+      (item 4 above), which need their own design first.
+   `scripts/project-transfer.mjs` still splits a block around a dataframe
+   on import and writes with `replace_block_markdown` and `delete_block`.
+   It moves to in-place insert with step 7.3 and off the block operations
+   with step 7.5.
 
 ### Delete
 
@@ -269,7 +375,7 @@ records the node addresses agents use.
   admission checks and the Markdown and outline projections are the first
   candidates, because the host, the tools and a Rust client can then share
   one codec. Moving the editor's document into WASM is a larger step.
-- How small blocks get. Marker `parents` stays a list: a scalar parents
+- How marker nesting merges. Marker `parents` stays a list: a scalar parents
   value and one path scalar for type and parents each merged no better in a
   census of concurrent writers. As lists, two writers that change one marker's parents at once merge into
   parents neither wrote. Every reader draws any stored spans, whatever their
