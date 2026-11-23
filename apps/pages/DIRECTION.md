@@ -145,20 +145,39 @@ lists, images, views and dataframes in order. Blocks are a storage detail
      block of about 115 KB costs 199 ms per line break in the editor
      (17 ms at 16 KB), and a batch of 20 `format_match` takes 4.4 s on the
      host (0.14 s split across 85 blocks). Both costs come from reading the
-     whole block again: the editor decodes it on every structural edit
-     ([viewer/wordgard-binding.mjs](viewer/wordgard-binding.mjs)), and the
-     host reads the block's spans several times per operation
+     whole block again: the editor decodes it for every structural or
+     formatting write ([viewer/wordgard-binding.mjs](viewer/wordgard-binding.mjs)),
+     and the host reads the block's spans several times per operation
      ([model/replace-match.mjs](model/replace-match.mjs)). Read once per
-     batch on the host, and patch the editor's tree in place for structural
-     edits too. If a measured Page still needs it after that,
-     the host starts a new block when the last one passes a size, on append
-     only. Nothing ever splits existing text, since a split detaches the
-     comments on the moved tail and drops edits in flight to it.
-   - **Existing multi-block Pages join.** A join is an ordinary edit within
-     format 3: the host writes the later blocks' content into the first,
-     refuses at a stale revision, and rewrites the comment anchors that
-     pointed into the old blocks. It needs no format number or new document.
-     A whole-block comment re-anchors to the joined range.
+     batch on the host, and carry the editor's tree through structural and
+     formatting writes as it already does for typing. If a measured Page
+     still needs it after that, the host starts a new block when the last
+     one passes a size, on append only. Nothing ever splits existing text,
+     since a split detaches the comments on the moved tail and drops edits
+     in flight to it.
+   - **Per-block limits become per-Page limits.** `replace_match` refuses a
+     block over 262,144 UTF-16 units
+     ([model/replace-match.mjs](model/replace-match.mjs)), a batch's
+     in-place inserts are bounded by the length of the blocks they read
+     ([model/insert-in-place.mjs](model/insert-in-place.mjs)), and one node
+     from a newer build makes its whole block refuse with `newer_content`.
+     In one flow each of these covers the whole Page. Inserts stop making
+     blocks only after the host reads once per batch, and each limit is
+     restated for a Page before that change.
+   - **A join costs what a split costs.** Writing later blocks into the
+     first deletes their text objects, so an edit in flight to them is lost,
+     a comment made offline on them detaches, and their nodes get new ids.
+     The host never joins on its own. A join is an explicit action that
+     refuses at a stale revision, rewrites the comment anchors it can see,
+     and returns the new ids. Multi-block Pages that nobody joins keep
+     working as they do today. It needs no format number or new document.
+   - **Re-anchoring is a host write.** A peer may move a thread's anchor
+     only if it wrote the thread
+     ([model/comment-authority.mjs](model/comment-authority.mjs)). A join or
+     a section move puts the anchor on the same text at its new place, so
+     the host writes it in the same intent as the content change, not on
+     any author's behalf. Moving an anchor to different text stays the
+     author's alone.
    - **Moving a section is open** (Not decided, below).
 
 ## Order of work
@@ -199,15 +218,16 @@ lists, images, views and dataframes in order. Blocks are a storage detail
 7. **One flow per Page** (item 6 above). In-place insert after a node is
    done. Then, each its own change:
    1. "Continue writing" stops making a block.
-   2. Omitted and `null` `after_node_id` write into the last and first
+   2. The host reads each block once per batch, and the editor carries its
+      tree through structural and formatting writes. Measure the 115 KB
+      case again after, and restate the per-block limits for a Page.
+   3. Omitted and `null` `after_node_id` write into the last and first
       blocks. The guides teach inserts by node only.
-   3. The host reads each block once per batch, and the editor patches
-      structural edits in place. Measure the 115 KB case again after.
-   4. The host join for multi-block Pages, with comment re-anchoring.
+   4. The explicit join for multi-block Pages, with comment re-anchoring.
    5. Block ids leave the agent contract, together with node-scoped writes
       (item 4) and the section move once it is decided.
    `scripts/project-transfer.mjs` still splits a block around a dataframe
-   on import; it moves to in-place insert with step 2.
+   on import; it moves to in-place insert with step 3.
 
 ### Delete
 
@@ -328,10 +348,11 @@ records the node addresses agents use.
   candidates, because the host, the tools and a Rust client can then share
   one codec. Moving the editor's document into WASM is a larger step.
 - How an agent moves a section in one flow. Automerge text has no move, so
-  a move inside one block is a delete and an insert, and comments on the
-  moved text detach. The candidate: a host operation that moves a node range,
-  refuses at a stale revision, and rewrites the comment anchors in the
-  comments document it owns. Today only agents move content (`move_block`);
+  a move inside one block is a delete and an insert: comments on the moved
+  text detach, the moved nodes get new ids, and an edit in flight to them is
+  lost. The candidate: a host operation that moves a node range, refuses at
+  a stale revision, rewrites the comment anchors in the comments document it
+  owns, and returns the new ids. Today only agents move content (`move_block`);
   the editor has no move. Decide with evals: agents with the candidate tools
   and the local guides, against a local celld and Pages, on edit tasks that
   include moves on commented Pages. Score whether the task landed, whether
