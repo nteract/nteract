@@ -13,6 +13,7 @@ import { nodeChange, setNode } from "./set-node.mjs";
 import { repairBlockMarkers } from "./richtext-page.mjs";
 import { addressIndex, resolveAddressFor } from "./addresses.mjs";
 import { validateEditFields } from "./page.mjs";
+import { atOperation, refused, withRefusal } from "./edit-refusals.mjs";
 
 // Operations a target-scoped batch may contain. Each finds one literal range
 // the same way; replace_match changes its text, format_match its marks and
@@ -46,15 +47,26 @@ function passageTarget(index, doc, input) {
 function validatePassage(input) {
   validateEditFields(input);
   if (input.all !== undefined)
-    throw Error("all addresses every match, so it needs conflict_scope page");
+    throw refused(
+      "field_invalid",
+      "all addresses every match, so it needs conflict_scope page",
+      "all",
+    );
   if (input.op === "format_match") formatChanges(input);
   else if (input.op === "set_node") nodeChange(input);
   else replacementOf(input);
 }
 
-const invalid = (message) => {
-  throw Object.assign(Error(message), { status: 400, code: "invalid_edit_selector" });
+const invalid = (reason, message) => {
+  throw Object.assign(refused(reason, message), { status: 400, code: "invalid_edit_selector" });
 };
+/** `error`, a refusal an operation raised, as invalid_edit_selector. It
+ * keeps the reason and field the operation gave it. */
+const selectorRefusal = (error) =>
+  withRefusal(
+    Object.assign(Error(error.message), { status: 400, code: "invalid_edit_selector" }),
+    error,
+  );
 const samePath = (a, b) => a.length === b.length && a.every((part, i) => part === b[i]);
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const lastWidth = (text) => (/^[\udc00-\udfff]$/.test(text.at(-1)) ? 2 : 1);
@@ -156,7 +168,7 @@ export function guardPassageEdits(current, baseHeads, operations) {
     new Set(baseHeads).size !== baseHeads.length ||
     baseHeads.some((head) => typeof head !== "string" || !/^[a-f0-9]{64}$/.test(head))
   )
-    invalid("A revision from a Page read is required");
+    invalid("revision_required", "A revision from a Page read is required");
   if (
     !Array.isArray(operations) ||
     !operations.length ||
@@ -164,6 +176,7 @@ export function guardPassageEdits(current, baseHeads, operations) {
     operations.some((op) => !op || !PASSAGE_OPS.has(op.op) || typeof op.node_id !== "string")
   )
     invalid(
+      "target_scope_ops",
       "Target-scoped edits require 1 to 100 replace_match, format_match or set_node operations with node_id",
     );
   if (!A.hasHeads(current, baseHeads))
@@ -193,7 +206,7 @@ export function guardPassageEdits(current, baseHeads, operations) {
     if (patches.length > 10000) conflict({ input: operations[0] }, "change_set_too_large");
     const baseIndex = addressIndex(base);
     const currentIndex = addressIndex(current);
-    const targets = operations.map((input) => {
+    const targets = operations.map((input, i) => {
       let id;
       let range;
       let address;
@@ -207,9 +220,10 @@ export function guardPassageEdits(current, baseHeads, operations) {
         // A refusal with its own code (unsupported_markdown from
         // replacement_markdown, wrong_address_kind) keeps it, as in page
         // scope; so does an id that names nothing at the base revision.
-        if (error.status) throw error;
-        if (error.code === "node_not_found") throw Object.assign(error, { status: 400 });
-        invalid(error.message);
+        if (error.status) throw atOperation(error, i, input);
+        if (error.code === "node_not_found")
+          throw atOperation(Object.assign(error, { status: 400 }), i, input);
+        throw atOperation(selectorRefusal(error), i, input);
       }
       const target = {
         input,
@@ -289,7 +303,7 @@ export function guardPassageEdits(current, baseHeads, operations) {
         for (const target of targets) repairBlockMarkers(draft, target.key);
         const index = addressIndex(draft);
         const budget = { writes: 0 };
-        for (const target of targets) {
+        for (const [i, target] of targets.entries()) {
           // An occurrence names a match in the batch's starting snapshot, as
           // in page scope: follow the captured characters, never recount.
           const anchor =
@@ -315,8 +329,8 @@ export function guardPassageEdits(current, baseHeads, operations) {
           } catch (error) {
             // A rule the operation enforces on the text it found, such as
             // format_match refusing code text: the caller's request, not a race.
-            if (error.status) throw error;
-            invalid(error.message);
+            if (error.status) throw atOperation(error, i, target.input);
+            throw atOperation(selectorRefusal(error), i, target.input);
           }
           index.forget(target.key);
         }
