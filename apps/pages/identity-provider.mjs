@@ -9,8 +9,9 @@
  * it; none of them names a provider itself (test/identity-provider.test.mjs
  * holds them to that).
  *
- * Two providers exist. A deployment with `PAGES_KILO_APP_URL` set signs in
- * with Kilo accounts; every other deployment signs in with Anaconda.
+ * Three providers exist. A deployment with `PAGES_TAILSCALE_LOGINS` set
+ * signs in with Tailscale logins, one with `PAGES_KILO_APP_URL` set signs in
+ * with Kilo accounts, and every other deployment signs in with Anaconda.
  * `identityProvider` picks between them from the deployment's settings.
  *
  * `apiKey` is null for a provider with no long-lived keys. Readers of the
@@ -128,8 +129,24 @@ const KILO = Object.freeze({
   verifiedEmail: false,
 });
 
+const TAILSCALE = Object.freeze({
+  id: "tailscale",
+  /** What people call the provider, in running text. */
+  label: "Tailscale",
+  /** Email domains an owner may open a Page to. Tailscale has none. */
+  companyDomains: reviewedDomains([]),
+  /** Tailscale doesn't report organizations to Pages. */
+  organizations: false,
+  /** Agents connect by OAuth, from a browser signed in on the tailnet. */
+  apiKey: null,
+  /** A login is marked verified only when it is shaped like an address
+   * (worker/tailscale-config.mjs); GitHub and passkey logins carry none. */
+  verifiedEmail: false,
+});
+
 /** The description of the provider this deployment signs in with. */
 export function identityProvider(env) {
+  if (env?.PAGES_TAILSCALE_LOGINS) return TAILSCALE;
   if (env?.PAGES_KILO_APP_URL) return KILO;
   return anacondaProvider(env ?? {});
 }

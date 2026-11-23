@@ -97,6 +97,21 @@ test("PAGES_KILO_APP_URL selects Kilo, which has no API key and vouches for some
   }
 });
 
+test("PAGES_TAILSCALE_LOGINS selects Tailscale, which has no API key, ahead of Kilo", () => {
+  const tailscale = { ...origin, PAGES_TAILSCALE_LOGINS: "person@example.test" };
+  assert.deepEqual(identityProvider(tailscale), {
+    id: "tailscale",
+    label: "Tailscale",
+    companyDomains: [],
+    organizations: false,
+    apiKey: null,
+    verifiedEmail: false,
+  });
+  // tailscaleSignIn refuses a deployment that names both.
+  assert.equal(identityProvider({ ...kilo, ...tailscale }).id, "tailscale");
+  assert.equal(identityProvider({ ...origin, PAGES_TAILSCALE_LOGINS: "" }).id, "anaconda");
+});
+
 test("the guide and the connect page for a provider with no API key describe OAuth only", async () => {
   const provider = identityProvider(kilo);
   const guide = agentGuide(kilo);
