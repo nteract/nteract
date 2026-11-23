@@ -212,6 +212,17 @@ button.anchor-chip:hover {
   font-size: 7px;
   font-weight: 700;
 }
+/* A model's mark sits on the page surface, so marks drawn in currentColor
+   (OpenAI) and colored marks (Claude, Gemini) both read. */
+.comment-avatar-badge-mark {
+  width: 14px;
+  height: 14px;
+  right: -4px;
+  bottom: -4px;
+  background: var(--surface);
+  color: var(--foreground);
+  border-color: var(--border);
+}
 .message-body {
   position: relative;
 }
