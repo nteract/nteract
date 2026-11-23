@@ -217,10 +217,19 @@ pub struct EnvironmentSelection {
     /// Target the running kernel was applied with. Null means Automatic.
     pub applied: Option<LocalCondaEnvironmentInfo>,
     pub applying: bool,
+    pub intent_persistence: Option<EnvironmentIntentPersistence>,
+}
+
+#[napi(string_enum = "lowercase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnvironmentIntentPersistence {
+    Unsaved,
+    Saving,
 }
 
 impl From<notebook_protocol::protocol::EnvironmentSelectionSnapshot> for EnvironmentSelection {
     fn from(value: notebook_protocol::protocol::EnvironmentSelectionSnapshot) -> Self {
+        use notebook_protocol::protocol::EnvironmentIntentPersistence as Persistence;
         Self {
             revision: i64::try_from(value.revision).unwrap_or(i64::MAX),
             selected_kernelspec: value.selected_kernelspec.map(Into::into),
@@ -228,6 +237,11 @@ impl From<notebook_protocol::protocol::EnvironmentSelectionSnapshot> for Environ
             selected: value.selected.map(Into::into),
             applied: value.applied.map(Into::into),
             applying: value.applying,
+            intent_persistence: match value.intent_persistence {
+                Persistence::Current => None,
+                Persistence::Unsaved => Some(EnvironmentIntentPersistence::Unsaved),
+                Persistence::Saving => Some(EnvironmentIntentPersistence::Saving),
+            },
         }
     }
 }
@@ -1414,8 +1428,9 @@ impl Session {
         )
     }
 
-    /// Start or restart the kernel with the staged selection after trust
-    /// checks. `observedHeads` defaults to this session's current heads.
+    /// Apply the staged selection after trust checks. If that choice is
+    /// already applied but unsaved, retry saving it without a restart.
+    /// `observedHeads` defaults to this session's current heads.
     #[napi]
     pub async fn apply_environment_selection(
         &self,

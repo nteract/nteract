@@ -92,6 +92,31 @@ describe("LocalEnvironmentSelector", () => {
     expect(screen.queryByRole("button", { name: "Apply and restart" })).toBeNull();
   });
 
+  it("offers a save-only retry when the running choice was not saved", async () => {
+    const unsaved = {
+      revision: 4,
+      selected: rankings,
+      applied: rankings,
+      applying: false,
+      intent_persistence: "unsaved" as const,
+    };
+    const options = props({
+      selection: unsaved,
+      running: { id: rankings.id, name: rankings.name, pythonVersion: "3.12" },
+    });
+    const { rerender } = render(<LocalEnvironmentSelector {...options} />);
+    expect(screen.queryByRole("button", { name: "Apply and restart" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Retry saving choice" }));
+    expect(options.onApply).toHaveBeenCalledExactlyOnceWith(4);
+    rerender(
+      <LocalEnvironmentSelector
+        {...options}
+        selection={{ ...unsaved, applying: true, intent_persistence: "saving" }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Saving choice..." })).toBeDisabled();
+  });
+
   it("accepts an absolute prefix with spaces as path data and presents inventory warnings", async () => {
     const user = userEvent.setup();
     const options = props({

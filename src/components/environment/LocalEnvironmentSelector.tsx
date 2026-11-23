@@ -90,6 +90,13 @@ export function LocalEnvironmentSelector({
   const disabled = blocked || mutating || loadingSelection || !selection || selection.applying;
   const next = selection ? nextChoice(selection) : null;
   const differs = Boolean(next && next.id !== (running?.id ?? null));
+  const retrySave = Boolean(
+    selection?.intent_persistence &&
+    next?.id ===
+      (selection.applied_kernelspec
+        ? kernelspecEnvironmentId(selection.applied_kernelspec.name)
+        : (selection.applied?.id ?? null)),
+  );
   const kernelspecs =
     kernelspecCatalog && kernelspecCatalog.status !== "unsupported" ? kernelspecCatalog : null;
   const kernelspecInventory =
@@ -119,14 +126,18 @@ export function LocalEnvironmentSelector({
           <p className="break-words text-xs leading-4 text-muted-foreground">
             {running
               ? `Running: ${running.name}${runningDetail ? ` · ${runningDetail}` : ""}`
-              : selection?.applying
+              : selection?.applying && !retrySave
                 ? "Starting kernel"
                 : "No running kernel"}
           </p>
           {available && next && (
             <p className="break-words text-xs leading-4 text-muted-foreground">
               {`Next: ${next.name}`}
-              {differs && !selection?.applying && (running ? " · not applied" : " · not started")}
+              {retrySave
+                ? " · not saved"
+                : differs &&
+                  !selection?.applying &&
+                  (running ? " · not applied" : " · not started")}
             </p>
           )}
         </div>
@@ -374,14 +385,22 @@ export function LocalEnvironmentSelector({
               Automatic.
             </p>
           )}
-          {selection && (!running || differs) && (
+          {selection && (retrySave || !running || differs) && (
             <Button
               type="button"
               size="sm"
               disabled={disabled}
               onClick={() => onApply(selection.revision)}
             >
-              {selection.applying ? "Applying..." : running ? "Apply and restart" : "Start kernel"}
+              {retrySave
+                ? selection.applying
+                  ? "Saving choice..."
+                  : "Retry saving choice"
+                : selection.applying
+                  ? "Applying..."
+                  : running
+                    ? "Apply and restart"
+                    : "Start kernel"}
             </Button>
           )}
         </>

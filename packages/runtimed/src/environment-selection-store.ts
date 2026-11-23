@@ -156,7 +156,10 @@ export class EnvironmentSelectionStore extends ObservableStore<EnvironmentSelect
       if (
         !selection ||
         !Number.isSafeInteger(selection.revision) ||
-        typeof selection.applying !== "boolean"
+        typeof selection.applying !== "boolean" ||
+        (selection.intent_persistence !== undefined &&
+          selection.intent_persistence !== "unsaved" &&
+          selection.intent_persistence !== "saving")
       )
         return;
       this.acceptSelection(selection);

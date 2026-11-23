@@ -167,6 +167,8 @@ export interface EnvironmentSelection {
   /** Target the running kernel was applied with. Absent means Automatic. */
   applied?: LocalCondaEnvironmentInfo;
   applying: boolean;
+  /** The choice still needs to be saved, or a save-only retry is in progress. */
+  intentPersistence?: "unsaved" | "saving";
 }
 
 export interface OpenNotebookOptions {
@@ -508,7 +510,7 @@ export class Session {
     target: EnvironmentSelectionTarget,
     expectedRevision: number,
   ): Promise<EnvironmentSelection>;
-  /** Launch with the staged target. `observedHeads` defaults to current heads. */
+  /** Apply the staged target or retry saving it without restart. `observedHeads` defaults to current heads. */
   applyEnvironmentSelection(
     expectedRevision: number,
     observedHeads?: string[],

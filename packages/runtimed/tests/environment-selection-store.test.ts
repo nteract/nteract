@@ -146,6 +146,34 @@ describe("EnvironmentSelectionStore", () => {
     store.dispose();
   });
 
+  it("mirrors unsaved and saving intent and retries Apply with fresh heads", async () => {
+    const { store, client, broadcasts, transport, requests } = setup();
+    store.activate({ client, broadcasts$: broadcasts });
+    await vi.waitFor(() => expect(store.snapshot.selection?.revision).toBe(1));
+    const applied = selection(2, rankings, rankings);
+    const notify = (selection: EnvironmentSelectionSnapshot) =>
+      broadcasts.next({ event: "environment_selection_changed", selection });
+    notify({ ...applied, intent_persistence: "unsaved" });
+    expect(store.snapshot.selection?.intent_persistence).toBe("unsaved");
+    transport.requestHandler = async (request) => {
+      requests.push(request as NotebookRequest);
+      notify({ ...applied, revision: 3, applying: true, intent_persistence: "saving" });
+      expect(store.snapshot.selection?.intent_persistence).toBe("saving");
+      return { result: "environment_selection", selection: { ...applied, revision: 4 } };
+    };
+    expect((await store.apply(2, ["fresh-head"], store.generation)).result).toBe(
+      "environment_selection",
+    );
+    expect(requests.at(-1)).toEqual({
+      type: "apply_environment_selection",
+      expected_revision: 2,
+      observed_heads: ["fresh-head"],
+    });
+    notify({ ...applied, intent_persistence: "unsaved" });
+    expect(store.snapshot.selection).toEqual({ ...applied, revision: 4 });
+    store.dispose();
+  });
+
   it("does not apply responses from a disposed attachment to its replacement", async () => {
     const { store, client, broadcasts, transport } = setup();
     let resolveOld!: (response: unknown) => void;

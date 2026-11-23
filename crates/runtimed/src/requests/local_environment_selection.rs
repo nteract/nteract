@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crate::{daemon::Daemon, notebook_sync_server::NotebookRoom};
 use notebook_protocol::protocol::{
-    EnvironmentSelectionSnapshot, LocalCondaEnvironment, LocalEnvironmentTarget, NotebookResponse,
+    EnvironmentIntentPersistence, EnvironmentSelectionSnapshot, LocalCondaEnvironment,
+    LocalEnvironmentTarget, NotebookResponse,
 };
 use tokio::sync::watch;
 
@@ -25,9 +26,67 @@ enum Initialization {
     Initialized,
 }
 
+#[derive(Default)]
+enum IntentSaveState {
+    #[default]
+    Current,
+    Unsaved(String),
+    Saving(String),
+}
+
+impl IntentSaveState {
+    fn projection(&self) -> EnvironmentIntentPersistence {
+        match self {
+            Self::Current => EnvironmentIntentPersistence::Current,
+            Self::Unsaved(_) => EnvironmentIntentPersistence::Unsaved,
+            Self::Saving(_) => EnvironmentIntentPersistence::Saving,
+        }
+    }
+}
+
+enum IntentSaveEvent {
+    ApplyCompleted { unsaved_runtime: Option<String> },
+    RetryStarted,
+    RetryCompleted,
+    RetryAborted,
+    Reset,
+}
+
+fn transition_intent_persistence(
+    state: IntentSaveState,
+    event: IntentSaveEvent,
+) -> IntentSaveState {
+    use IntentSaveState::{Current, Saving, Unsaved};
+    match (state, event) {
+        (_, IntentSaveEvent::Reset) => Current,
+        (_, IntentSaveEvent::ApplyCompleted { unsaved_runtime }) => {
+            unsaved_runtime.map_or(Current, Unsaved)
+        }
+        (Unsaved(runtime), IntentSaveEvent::RetryStarted) => Saving(runtime),
+        (Saving(_), IntentSaveEvent::RetryCompleted) => Current,
+        (Saving(runtime), IntentSaveEvent::RetryAborted) => Unsaved(runtime),
+        (state, _) => state,
+    }
+}
+
+fn staged_target_matches_applied(state: &EnvironmentSelectionSnapshot) -> bool {
+    state.selected.as_ref().map(|env| &env.id) == state.applied.as_ref().map(|env| &env.id)
+        && state.selected_kernelspec.as_ref().map(|spec| &spec.name)
+            == state.applied_kernelspec.as_ref().map(|spec| &spec.name)
+}
+
 struct SelectionState {
     snapshot: EnvironmentSelectionSnapshot,
     initialization: Initialization,
+    intent_save: IntentSaveState,
+}
+
+impl SelectionState {
+    fn save_event(&mut self, event: IntentSaveEvent) {
+        self.intent_save =
+            transition_intent_persistence(std::mem::take(&mut self.intent_save), event);
+        self.snapshot.intent_persistence = self.intent_save.projection();
+    }
 }
 
 impl std::ops::Deref for SelectionState {
@@ -59,6 +118,7 @@ impl Default for LocalEnvironmentSelection {
             state: Mutex::new(SelectionState {
                 snapshot: EnvironmentSelectionSnapshot::default(),
                 initialization: Initialization::Pending,
+                intent_save: IntentSaveState::Current,
             }),
             changed,
             replacing: std::sync::atomic::AtomicBool::new(false),
@@ -122,6 +182,27 @@ impl LocalEnvironmentSelection {
         if self.sync_lease().is_some() {
             return Err("Environment sync in progress; retry after it completes".into());
         }
+        Ok(self.start_apply(&mut state))
+    }
+
+    fn begin_save_retry(
+        &self,
+        expected_revision: u64,
+    ) -> Result<(EnvironmentApply<'_>, String), String> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        Self::validate(&state, expected_revision)?;
+        let IntentSaveState::Unsaved(runtime) = &state.intent_save else {
+            return Err("No unsaved environment choice to retry".into());
+        };
+        if !staged_target_matches_applied(&state) {
+            return Err("Environment selection changed; refresh and try again".into());
+        }
+        let runtime = runtime.clone();
+        state.save_event(IntentSaveEvent::RetryStarted);
+        Ok((self.start_apply(&mut state), runtime))
+    }
+
+    fn start_apply(&self, state: &mut SelectionState) -> EnvironmentApply<'_> {
         state.applying = true;
         *self
             .observed_heads
@@ -133,11 +214,11 @@ impl LocalEnvironmentSelection {
             .unwrap_or_else(|e| e.into_inner()) = None;
         self.replacing
             .store(false, std::sync::atomic::Ordering::Release);
-        self.publish(&mut state);
-        Ok(EnvironmentApply {
+        self.publish(state);
+        EnvironmentApply {
             selection: self,
             revision: state.revision,
-        })
+        }
     }
 
     /// Preserve imported intent before discovery or launch can fail. `fence`
@@ -178,6 +259,10 @@ impl LocalEnvironmentSelection {
             state.initialization = Initialization::Initialized;
         }
         state.applied_kernelspec = spec.cloned();
+        // A non-Apply launch did not save notebook intent. Preserve the
+        // pending save if it restarted the same choice (handled above), but
+        // never offer to save a named kernel that it replaced.
+        state.save_event(IntentSaveEvent::Reset);
         self.publish(&mut state);
     }
 
@@ -245,10 +330,9 @@ impl LocalEnvironmentSelection {
     }
 
     pub(crate) fn is_preparing(&self) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .applying
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.applying
+            && state.intent_persistence != EnvironmentIntentPersistence::Saving
             && !self.replacing.load(std::sync::atomic::Ordering::Acquire)
     }
 
@@ -259,6 +343,7 @@ impl LocalEnvironmentSelection {
         state.selected_kernelspec = None;
         state.applied_kernelspec = None;
         state.applying = false;
+        state.save_event(IntentSaveEvent::Reset);
         state.initialization = Initialization::Pending;
         self.publish(&mut state);
     }
@@ -295,7 +380,11 @@ impl EnvironmentApply<'_> {
             .replacing
             .store(true, std::sync::atomic::Ordering::Release);
     }
-    pub(crate) fn commit(&self, applied: Option<LocalCondaEnvironment>) {
+    pub(crate) fn commit(
+        &self,
+        applied: Option<LocalCondaEnvironment>,
+        unsaved_runtime: Option<String>,
+    ) {
         let mut state = self
             .selection
             .state
@@ -304,10 +393,32 @@ impl EnvironmentApply<'_> {
         if state.revision == self.revision && state.applying {
             state.applied = applied;
             state.applied_kernelspec = state.selected_kernelspec.clone();
+            state.save_event(IntentSaveEvent::ApplyCompleted { unsaved_runtime });
             state.applying = false;
             state.initialization = Initialization::Initialized;
             self.selection.publish(&mut state);
         }
+    }
+
+    fn commit_save_retry(
+        &self,
+        persist: impl FnOnce() -> anyhow::Result<()>,
+    ) -> anyhow::Result<EnvironmentSelectionSnapshot> {
+        let mut state = self
+            .selection
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if state.revision != self.revision
+            || !matches!(state.intent_save, IntentSaveState::Saving(_))
+        {
+            anyhow::bail!("Environment selection changed; refresh and try again");
+        }
+        persist()?;
+        state.save_event(IntentSaveEvent::RetryCompleted);
+        state.applying = false;
+        self.selection.publish(&mut state);
+        Ok(state.snapshot.clone())
     }
 }
 
@@ -319,6 +430,7 @@ impl Drop for EnvironmentApply<'_> {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if state.revision == self.revision && state.applying {
+            state.save_event(IntentSaveEvent::RetryAborted);
             state.applying = false;
             self.selection.publish(&mut state);
         }
@@ -495,6 +607,11 @@ pub(crate) async fn apply(
     if let Err(error) = LocalEnvironmentSelection::validate(&snapshot, expected_revision) {
         return rejected(error);
     }
+    if snapshot.intent_persistence == EnvironmentIntentPersistence::Unsaved
+        && staged_target_matches_applied(&snapshot)
+    {
+        return retry_save(room, &snapshot, &observed_heads).await;
+    }
     let runtime = crate::notebook_sync_server::resolve_metadata_snapshot(
         room,
         room.file_binding.path().await.as_deref(),
@@ -579,6 +696,44 @@ pub(crate) async fn apply(
     } else {
         response
     }
+}
+
+/// Retry against fresh reviewed heads without resolving, starting or replacing
+/// the kernel. The pending choice remains saveable even if the kernel stops.
+async fn retry_save(
+    room: &NotebookRoom,
+    snapshot: &EnvironmentSelectionSnapshot,
+    observed_heads: &[String],
+) -> NotebookResponse {
+    let mut doc = room.doc.write().await;
+    room.commit_without_launch(|| {
+        if let Err(rejection) = super::guarded::ensure_trusted_for_doc(room, &doc).and_then(|()| {
+            super::guarded::validate_dependencies_unchanged_since_observed(&doc, observed_heads)
+        }) {
+            return rejection.into_response();
+        }
+        let (lease, runtime) = match room
+            .local_environment_selection
+            .begin_save_retry(snapshot.revision)
+        {
+            Ok(retry) => retry,
+            Err(error) => return rejected(error),
+        };
+        match lease.commit_save_retry(|| {
+            crate::kernelspec::persist(
+                room,
+                &mut doc,
+                snapshot.applied_kernelspec.as_ref(),
+                &runtime,
+            )
+        }) {
+            Ok(selection) => NotebookResponse::EnvironmentSelection { selection },
+            Err(error) => NotebookResponse::Error {
+                error: format!("Selection not saved: {error:#}"),
+            },
+        }
+    })
+    .unwrap_or_else(|| rejected("A kernel launch is already in progress".into()))
 }
 
 /// Match Automatic launch policy before disturbing the running kernel.
@@ -699,7 +854,7 @@ mod tests {
         assert!(selection.snapshot().applying);
         assert!(selection.set(None, 2).is_err());
         assert!(selection.begin_apply(2).is_err());
-        apply.commit(Some(environment("rankings")));
+        apply.commit(Some(environment("rankings")), None);
         let committed = selection.snapshot();
         assert_eq!(committed.revision, 3);
         assert_eq!(committed.applied, committed.selected);
@@ -715,7 +870,7 @@ mod tests {
         selection
             .begin_apply(1)
             .unwrap()
-            .commit(Some(environment("old")));
+            .commit(Some(environment("old")), None);
         selection.set(Some(environment("new")), 3).unwrap();
         drop(selection.begin_apply(4).unwrap());
         let snapshot = selection.snapshot();
@@ -726,12 +881,50 @@ mod tests {
     }
 
     #[test]
+    fn save_retry_is_revisioned_and_failure_preserves_unsaved_choice() {
+        use EnvironmentIntentPersistence::{Current, Saving, Unsaved};
+        let selection = LocalEnvironmentSelection::default();
+        selection
+            .begin_apply(0)
+            .unwrap()
+            .commit(None, Some("python".into()));
+        let unsaved = selection.snapshot();
+        assert_eq!(unsaved.intent_persistence, Unsaved);
+        assert!(selection.begin_save_retry(unsaved.revision - 1).is_err());
+        let (retry, runtime) = selection.begin_save_retry(unsaved.revision).unwrap();
+        assert_eq!(runtime, "python");
+        let saving = selection.snapshot();
+        assert_eq!(saving.intent_persistence, Saving);
+        assert!(saving.applying);
+        assert!(!selection.is_preparing());
+        assert!(selection.begin_apply(saving.revision).is_err());
+        assert!(retry
+            .commit_save_retry(|| anyhow::bail!("write failed"))
+            .is_err());
+        drop(retry);
+        let unsaved = selection.snapshot();
+        assert_eq!(unsaved.intent_persistence, Unsaved);
+        assert!(!unsaved.applying);
+        let staged = selection
+            .set(Some(environment("new")), unsaved.revision)
+            .unwrap();
+        assert!(selection.begin_save_retry(staged.revision).is_err());
+        let restaged = selection.set(None, staged.revision).unwrap();
+        let (retry, _) = selection.begin_save_retry(restaged.revision).unwrap();
+        selection.reset();
+        assert!(retry
+            .commit_save_retry(|| panic!("reset invalidates retry"))
+            .is_err());
+        assert_eq!(selection.snapshot().intent_persistence, Current);
+    }
+
+    #[test]
     fn runtime_session_reset_invalidates_inflight_completion() {
         let selection = LocalEnvironmentSelection::default();
         selection.set(Some(environment("old")), 0).unwrap();
         let apply = selection.begin_apply(1).unwrap();
         selection.reset();
-        apply.commit(Some(environment("old")));
+        apply.commit(Some(environment("old")), None);
         let snapshot = selection.snapshot();
         assert_eq!(snapshot.revision, 3);
         assert!(snapshot.selected.is_none());
@@ -750,7 +943,7 @@ mod tests {
         selection.stage(None, Some(target.clone()), 0).unwrap();
         let lease = selection.begin_apply(1).unwrap();
         assert!(selection.set(None, 2).is_err());
-        lease.commit(None);
+        lease.commit(None, None);
         let staged = selection.set(Some(environment("other")), 3).unwrap();
         assert!(staged.selected_kernelspec.is_none());
         assert_eq!(staged.applied_kernelspec, Some(target));
@@ -759,7 +952,7 @@ mod tests {
         selection
             .begin_apply(6)
             .unwrap()
-            .commit(Some(environment("other")));
+            .commit(Some(environment("other")), None);
         assert!(selection.snapshot().applied_kernelspec.is_none());
     }
 

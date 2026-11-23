@@ -2003,6 +2003,16 @@ impl NotebookRoom {
         Some(commit())
     }
 
+    /// Serialize a save-only environment Apply against kernel replacement.
+    /// The caller holds the notebook write guard before entering the gate.
+    pub(crate) fn commit_without_launch<R>(&self, commit: impl FnOnce() -> R) -> Option<R> {
+        let state = self.kernel_launch_gate.lock_state();
+        if state.in_flight_generation.is_some() {
+            return None;
+        }
+        Some(commit())
+    }
+
     pub(crate) fn register_launch_abort_handle(
         &self,
         generation: u64,

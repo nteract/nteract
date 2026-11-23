@@ -274,6 +274,8 @@ export interface EnvironmentSelectionSnapshot {{
   selected_kernelspec?: InstalledKernelspec;
   applied_kernelspec?: InstalledKernelspec;
   applying: boolean;
+  /** The choice still needs to be saved, or a save-only retry is in progress. */
+  intent_persistence?: "unsaved" | "saving";
 }}
 
 export interface LocalEnvironmentIdentity {{

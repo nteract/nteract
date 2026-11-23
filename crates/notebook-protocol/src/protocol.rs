@@ -85,6 +85,25 @@ pub struct KernelspecInventory {
     pub truncated: bool,
 }
 
+/// Persistence of the most recently applied environment choice.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentIntentPersistence {
+    /// No failed save to retry.
+    #[default]
+    Current,
+    /// The kernel started, but its environment choice was not saved.
+    Unsaved,
+    /// Retrying the metadata write without restarting the kernel.
+    Saving,
+}
+
+impl EnvironmentIntentPersistence {
+    fn is_current(&self) -> bool {
+        *self == Self::Current
+    }
+}
+
 /// Owner-scoped, daemon-session intent, separate from actual kernel facts.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EnvironmentSelectionSnapshot {
@@ -96,6 +115,11 @@ pub struct EnvironmentSelectionSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_kernelspec: Option<InstalledKernelspec>,
     pub applying: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "EnvironmentIntentPersistence::is_current"
+    )]
+    pub intent_persistence: EnvironmentIntentPersistence,
 }
 
 /// Safe running identity projected to peers without local executable paths.
@@ -734,7 +758,8 @@ pub enum NotebookRequest {
         target: LocalEnvironmentTarget,
         expected_revision: u64,
     },
-    /// Explicitly start/restart the fixed reviewed target after trust checks.
+    /// Start/restart the reviewed target, or retry saving its intent without
+    /// restarting if a previous Apply launched that target but did not save it.
     ApplyEnvironmentSelection {
         expected_revision: u64,
         observed_heads: Vec<String>,
@@ -1736,6 +1761,30 @@ mod tests {
             serde_json::to_value(parsed).expect("reserialize GuardRejected"),
             serde_json::to_value(response).expect("serialize original GuardRejected")
         );
+    }
+
+    #[test]
+    fn environment_selection_intent_persistence_round_trips_with_legacy_default() {
+        for (status, wire) in [
+            (EnvironmentIntentPersistence::Current, None),
+            (EnvironmentIntentPersistence::Unsaved, Some("unsaved")),
+            (EnvironmentIntentPersistence::Saving, Some("saving")),
+        ] {
+            let selection = EnvironmentSelectionSnapshot {
+                intent_persistence: status,
+                applying: status == EnvironmentIntentPersistence::Saving,
+                ..Default::default()
+            };
+            let json = serde_json::to_value(&selection).unwrap();
+            assert_eq!(
+                json.get("intent_persistence").and_then(|v| v.as_str()),
+                wire
+            );
+            assert_eq!(
+                serde_json::from_value::<EnvironmentSelectionSnapshot>(json).unwrap(),
+                selection
+            );
+        }
     }
 
     #[test]
