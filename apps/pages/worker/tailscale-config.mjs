@@ -35,9 +35,14 @@ const LOGIN = /^[^\s,\p{Cc}]+$/u;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const LOOPBACK = ["localhost", "127.0.0.1", "[::1]"];
 
+// The longest principal a session or OAuth grant can store
+// (@nteract/session checkedProviderGrant, oauth-store.mjs).
+const MAX_PRINCIPAL_LENGTH = 512;
+
 /** The logins in `value`, lower-cased and without repeats, or throws when
- * the list is empty or holds something that can't be a login. */
-function allowedLogins(value) {
+ * the list is empty, holds something that can't be a login, or names a login
+ * whose principal in `namespace` would be too long to store. */
+function allowedLogins(value, namespace) {
   const logins = String(value)
     .split(",")
     .map((login) => login.trim().toLowerCase())
@@ -45,7 +50,12 @@ function allowedLogins(value) {
   if (
     !logins.length ||
     logins.length > MAX_LOGINS ||
-    logins.some((login) => login.length > MAX_LOGIN_LENGTH || !LOGIN.test(login))
+    logins.some(
+      (login) =>
+        login.length > MAX_LOGIN_LENGTH ||
+        !LOGIN.test(login) ||
+        tailscalePrincipal(namespace, login).length > MAX_PRINCIPAL_LENGTH,
+    )
   )
     throw new Error("Tailscale sign-in is misconfigured");
   return Object.freeze([...new Set(logins)]);
@@ -61,7 +71,8 @@ export function tailscaleSignIn(env, request) {
   const configured = env?.PAGES_TAILSCALE_LOGINS;
   if (!configured) return null;
   if (env.PAGES_KILO_APP_URL) throw new Error("Tailscale sign-in is misconfigured");
-  const logins = allowedLogins(configured);
+  const namespace = tailscalePrincipalNamespace(env);
+  const logins = allowedLogins(configured, namespace);
   let origin;
   try {
     origin = new URL(env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || request.url);
@@ -71,7 +82,17 @@ export function tailscaleSignIn(env, request) {
   const local = env.NOTEBOOK_CLOUD_LOCAL_OIDC === "true" && LOOPBACK.includes(origin.hostname);
   if (origin.protocol !== "https:" && !(local && origin.protocol === "http:"))
     throw new Error("Tailscale sign-in is misconfigured");
-  return { origin: origin.origin, logins, namespace: tailscalePrincipalNamespace(env) };
+  return { origin: origin.origin, logins, namespace };
+}
+
+/** Whether `principal` may use a credential this deployment issued earlier,
+ * such as an OAuth grant. True on a deployment that doesn't use Tailscale.
+ * On one that does, only the principal of a login still on the list passes,
+ * so taking a login off the list also cuts off the agents it connected. */
+export function tailscalePrincipalAllowed(env, request, principal) {
+  const config = tailscaleSignIn(env, request);
+  if (!config) return true;
+  return config.logins.some((login) => tailscalePrincipal(config.namespace, login) === principal);
 }
 
 /** Decodes RFC 2047 "Q" encoded words, which Tailscale uses for a name with
@@ -125,7 +146,12 @@ export function tailscaleRequester(config, request) {
   if (!config.logins.includes(login)) return { refused: "not_allowed" };
   const header = request.headers.get(TAILSCALE_NAME_HEADER);
   const decoded = header ? decodeEncodedWords(header) : null;
-  const name = decoded && !/\p{Cc}/u.test(decoded) ? decoded.trim().slice(0, MAX_NAME_LENGTH) : "";
+  // Control and format characters (bidi overrides) never reach a display
+  // name; the cut counts code points so it can't split a surrogate pair.
+  const name =
+    decoded && !/[\p{Cc}\p{Cf}]/u.test(decoded)
+      ? Array.from(decoded.trim()).slice(0, MAX_NAME_LENGTH).join("")
+      : "";
   return { login, name: name || login };
 }
 

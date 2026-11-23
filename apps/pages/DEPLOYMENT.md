@@ -1454,10 +1454,10 @@ turns on the Kilo redirect sign-in
 the identity provider ([identity-provider.mjs](identity-provider.mjs)).
 `PAGES_TAILSCALE_LOGINS` turns on [Tailscale sign-in](#tailscale-sign-in) for
 a deployment on a tailnet. A deployment that sets both refuses to sign anyone
-in. Both sign-ins plug into the gateway through
+in, and refuses Kilo agent tokens. Both sign-ins plug into the gateway through
 [worker/custom-providers.mjs](worker/custom-providers.mjs).
 
-With either provider, each isolate remembers a browser session it read from
+With any provider, each isolate remembers a browser session it read from
 D1 for at most 10 seconds, and never past the session's expiry
 ([session-memo.mjs](worker/session-memo.mjs)). Signing out forgets it in the
 isolate that handles the sign-out. After sign-out or sign out everywhere,
@@ -1771,20 +1771,24 @@ listener directly can write them, so:
 - `PAGES_TAILSCALE_LOGINS` lists the logins that may sign in, comma-separated
   and compared without case. A login not on it is refused even when the
   tailnet's access rules let the request through, so sharing the machine with
-  someone doesn't hand them an account.
+  someone doesn't hand them an account. Taking a login off the list also
+  refuses the OAuth grants its agents hold, on their next request.
 
 Tagged devices get no user headers and can't sign in. Agents connect their MCP
 client by OAuth from a browser signed in on the tailnet; the provider has no
 API keys. A login shaped like an email address carries signed email proof,
 because the deployment's owner listed that exact address, so it can accept
 invitations sent to it. GitHub and passkey logins (`name@github`) carry none.
-Principals are `user:tailscale:<login>`, or another namespace set with
-`PAGES_TAILSCALE_PRINCIPAL_NAMESPACE`.
+Principals are `user:tailscale:` followed by the percent-encoded login, such
+as `user:tailscale:person%40example.com`. `PAGES_TAILSCALE_PRINCIPAL_NAMESPACE`
+replaces the `user:tailscale` part. A login whose principal would be longer
+than 512 characters makes the list invalid.
 
-A session's proof lasts an hour, and renews on any request whose headers
-still name its login. A renewal ends the session when the request names
-another login or the login has left the list; one that arrives without
-headers keeps the session and is retried.
+A session's proof lasts an hour. Near its expiry, a session check
+(`/api/auth/session`, or OAuth consent) renews it from that request's headers.
+The renewal ends the session when the request names another login or the
+login has left the list; one that arrives without headers keeps the session
+and is retried. Between renewals the session cookie alone authenticates.
 
 The output frame host can't be another name on the same tailnet. `ts.net` is
 a public suffix, so every host in a tailnet is one site, and the

@@ -132,9 +132,9 @@ test("encoded words decode as RFC 2047 says, and anything else falls back", () =
   assert.equal(decodeEncodedWords("=?utf-8?q?=C3?="), null);
 });
 
-test("a name that doesn't decode, or carries control characters, shows the login instead", async (t) => {
+test("a name that doesn't decode, or carries control or format characters, shows the login instead", async (t) => {
   const { env } = fixture(t);
-  for (const name of ["=?utf-8?q?=C3?=", "=?utf-8?q?a=0Ab?="]) {
+  for (const name of ["=?utf-8?q?=C3?=", "=?utf-8?q?a=0Ab?=", "=?utf-8?q?evil=E2=80=AEtxt?="]) {
     const { cookie } = await signIn(env, person, { name });
     const session = await readServerAppSession(env, request("/", { cookie }), now());
     assert.equal(session.displayName, person);
@@ -225,6 +225,8 @@ test("an unusable configuration throws instead of falling back to another sign-i
   for (const env of [
     { ...base, PAGES_TAILSCALE_LOGINS: " , " },
     { ...base, PAGES_TAILSCALE_LOGINS: "has space@b.c" },
+    // 200 "+" fit the login limit, but percent-encode past the principal limit.
+    { ...base, PAGES_TAILSCALE_LOGINS: `${"+".repeat(200)}@b.c` },
     { ...base, PAGES_TAILSCALE_LOGINS: "a@b.c", PAGES_KILO_APP_URL: "https://kilo.example" },
     { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "http://pages.example", PAGES_TAILSCALE_LOGINS: "a@b.c" },
     {
@@ -234,6 +236,103 @@ test("an unusable configuration throws instead of falling back to another sign-i
     },
   ])
     assert.throws(() => tailscaleSignIn(env, at), /Tailscale sign-in is misconfigured/);
+});
+
+test("a name is cut at whole characters", async (t) => {
+  const { env } = fixture(t);
+  const emoji = "\u{1F600}";
+  const encoded = Array.from(Buffer.from(emoji.repeat(300)))
+    .map((byte) => `=${byte.toString(16).toUpperCase().padStart(2, "0")}`)
+    .join("");
+  const { cookie } = await signIn(env, person, { name: `=?utf-8?q?${encoded}?=` });
+  const session = await readServerAppSession(env, request("/", { cookie }), now());
+  assert.equal(session.displayName, emoji.repeat(Array.from(session.displayName).length));
+  assert.ok(!/[\uD800-\uDBFF]$/.test(session.displayName), "no lone high surrogate at the cut");
+});
+
+test("an OAuth grant stops working once its login leaves the list", async (t) => {
+  const { env } = fixture(t);
+  const { cookie } = await signIn(env);
+  const { createHash, randomBytes } = await import("node:crypto");
+  const verifier = randomBytes(32).toString("base64url");
+  const redirect = "http://127.0.0.1:19876/mcp/oauth/callback";
+  const params = new URLSearchParams({
+    client_id: "pages-kilo",
+    redirect_uri: redirect,
+    response_type: "code",
+    resource: `${origin}/mcp`,
+    code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+    code_challenge_method: "S256",
+    scope: "pages:read pages:write",
+    state: "s",
+  });
+  const serve = { login: person, cookie };
+  const screen = await (
+    await worker.fetch(request(`/oauth/authorize?${params}`, serve), env)
+  ).text();
+  const field = (name) => screen.match(new RegExp(`name="${name}" value="([^"]+)"`))[1];
+  const approve = await worker.fetch(
+    new Request(`${origin}/oauth/authorize`, {
+      method: "POST",
+      headers: {
+        cookie,
+        origin,
+        "Tailscale-User-Login": person,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        consent_id: field("consent_id"),
+        csrf_token: field("csrf_token"),
+        decision: "approve",
+      }),
+    }),
+    env,
+  );
+  const code = new URL(approve.headers.get("location")).searchParams.get("code");
+  const token = await (
+    await worker.fetch(
+      new Request(`${origin}/oauth/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          client_id: "pages-kilo",
+          code,
+          redirect_uri: redirect,
+          code_verifier: verifier,
+          resource: `${origin}/mcp`,
+        }),
+      }),
+      env,
+    )
+  ).json();
+  const whoami = (environment) =>
+    authenticate(
+      new Request(`${origin}/mcp`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token.access_token}` },
+      }),
+      environment,
+    );
+  assert.equal((await whoami(env)).principal, "user:tailscale:person%40example.test");
+  await assert.rejects(
+    whoami({ ...env, PAGES_TAILSCALE_LOGINS: relative }),
+    (error) => error.status === 401,
+  );
+});
+
+test("a deployment that names Kilo and Tailscale refuses Kilo too", async () => {
+  const { kiloClient } = await import("./kilo-config.mjs");
+  assert.throws(
+    () =>
+      kiloClient({
+        PAGES_KILO_APP_URL: "https://kilo.example",
+        PAGES_KILO_AUDIENCE: "pages-dev",
+        PAGES_KILO_EXCHANGE_SECRET: "s".repeat(40),
+        PAGES_TAILSCALE_LOGINS: person,
+      }),
+    /Kilo sign-in is misconfigured/,
+  );
 });
 
 test("the gateway's provider hook answers sign-in with Tailscale ahead of OIDC", async (t) => {
