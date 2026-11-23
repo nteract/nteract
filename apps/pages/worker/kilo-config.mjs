@@ -52,10 +52,13 @@ export function kiloSignIn(env, request) {
 
 /** What a server-to-server call to Kilo needs, `{ appUrl, audience, secret,
  * namespace }`, or null when this deployment doesn't use Kilo. The same
- * checks as `kiloSignIn`, without the sign-in's own origin. */
+ * checks as `kiloSignIn`, without the sign-in's own origin. A deployment that
+ * also lists Tailscale logins is misconfigured: every Kilo path, including
+ * agent tokens, refuses rather than admit accounts the list doesn't name. */
 export function kiloClient(env) {
   const configured = env?.PAGES_KILO_APP_URL;
   if (!configured) return null;
+  if (env.PAGES_TAILSCALE_LOGINS) throw new Error("Kilo sign-in is misconfigured");
   let app;
   try {
     app = new URL(String(configured));

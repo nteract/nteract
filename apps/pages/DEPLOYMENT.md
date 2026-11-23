@@ -1448,11 +1448,16 @@ shows the new slot registering its connections before the old one logs
 ## Identity provider
 
 A deployment signs people and agents in with Anaconda, unless
-`PAGES_KILO_APP_URL` is set. That setting turns on the Kilo redirect sign-in
+`PAGES_KILO_APP_URL` or `PAGES_TAILSCALE_LOGINS` is set. `PAGES_KILO_APP_URL`
+turns on the Kilo redirect sign-in
 ([worker/kilo-handoff.mjs](worker/kilo-handoff.mjs)) and also selects Kilo as
 the identity provider ([identity-provider.mjs](identity-provider.mjs)).
+`PAGES_TAILSCALE_LOGINS` turns on [Tailscale sign-in](#tailscale-sign-in) for
+a deployment on a tailnet. A deployment that sets both refuses to sign anyone
+in, and refuses Kilo agent tokens. Both sign-ins plug into the gateway through
+[worker/custom-providers.mjs](worker/custom-providers.mjs).
 
-With either provider, each isolate remembers a browser session it read from
+With any provider, each isolate remembers a browser session it read from
 D1 for at most 10 seconds, and never past the session's expiry
 ([session-memo.mjs](worker/session-memo.mjs)). Signing out forgets it in the
 isolate that handles the sign-out. After sign-out or sign out everywhere,
@@ -1744,6 +1749,52 @@ A Project's owner can share it with one organization the same way
 
 The auth log's `kilo_token.accepted` line carries how many organizations the
 exchange reported (`organizations`). No organization id or name reaches a log.
+
+### Tailscale sign-in
+
+A deployment can run on one machine in a tailnet, reached only through
+[Tailscale Serve](https://tailscale.com/kb/1312/serve). Serve proxies tailnet
+requests to Pages and adds `Tailscale-User-Login` and `Tailscale-User-Name`,
+after removing any copies the client sent. With `PAGES_TAILSCALE_LOGINS` set,
+`GET /api/auth/login` reads those headers and starts a session for the login
+they name ([worker/tailscale-signin.mjs](worker/tailscale-signin.mjs)). There
+is no redirect and no callback; `/oidc` answers 404.
+
+The headers are proof only behind Serve. Anything that reaches the Pages
+listener directly can write them, so:
+
+- Pages must listen on loopback only (`celld dev --host 127.0.0.1`, or
+  celld's `--listen 127.0.0.1:PORT`), with Serve as its one way in. Any
+  process on that machine can still sign in as any listed login.
+- `NOTEBOOK_CLOUD_PUBLIC_ORIGIN` is the Serve address, such as
+  `https://host.tailnet.ts.net:8443`. It must be `https:`.
+- `PAGES_TAILSCALE_LOGINS` lists the logins that may sign in, comma-separated
+  and compared without case. A login not on it is refused even when the
+  tailnet's access rules let the request through, so sharing the machine with
+  someone doesn't hand them an account. Taking a login off the list also
+  refuses the OAuth grants its agents hold, on their next request. The grants
+  aren't revoked: putting the login back restores them until they expire, and
+  an upload capability already issued works for its 10 minutes.
+
+Tagged devices get no user headers and can't sign in. Agents connect their MCP
+client by OAuth from a browser signed in on the tailnet; the provider has no
+API keys. A login shaped like an email address carries signed email proof,
+because the deployment's owner listed that exact address, so it can accept
+invitations sent to it. GitHub and passkey logins (`name@github`) carry none.
+Principals are `user:tailscale:` followed by the percent-encoded login, such
+as `user:tailscale:person%40example.com`. `PAGES_TAILSCALE_PRINCIPAL_NAMESPACE`
+replaces the `user:tailscale` part. A login whose principal would be longer
+than 512 characters makes the list invalid.
+
+A session's proof lasts an hour. Near its expiry, a session check
+(`/api/auth/session`, or OAuth consent) renews it from that request's headers.
+The renewal ends the session when the request names another login or the
+login has left the list; one that arrives without headers keeps the session
+and is retried. Between renewals the session cookie alone authenticates.
+
+The output frame host can't be another name on the same tailnet. `ts.net` is
+a public suffix, so every host in a tailnet is one site, and the
+[output host](#interactive-output-host) should be another registrable domain.
 
 ### Company domains
 

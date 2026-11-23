@@ -199,6 +199,33 @@ test("renewing the browser session at OAuth consent keeps its private account-me
   assert.equal(await readServerAccountEmail(env, session), "dev@localhost");
 });
 
+test("OAuth consent renews a Tailscale browser session from the request's headers", async (t) => {
+  const local = "http://127.0.0.1:9477";
+  const env = fixture(t, {
+    NOTEBOOK_CLOUD_PUBLIC_ORIGIN: local,
+    NOTEBOOK_CLOUD_LOCAL_OIDC: "true",
+    NOTEBOOK_CLOUD_OIDC_ISSUER: undefined,
+    NOTEBOOK_CLOUD_OIDC_CLIENT_ID: undefined,
+    PAGES_TAILSCALE_LOGINS: "person@example.test",
+  });
+  const serve = { "Tailscale-User-Login": "person@example.test" };
+  const signedIn = await worker.fetch(get("/api/auth/login", undefined, serve), env);
+  assert.equal(signedIn.status, 303);
+  const cookie = signedIn.headers.getSetCookie()[0].split(";", 1)[0];
+  const now = Math.floor(Date.now() / 1000);
+  env.DB.sqlite.prepare("UPDATE oidc_server_sessions SET access_expires_at = ?").run(now + 30);
+  const screen = await worker.fetch(
+    get("/oauth/authorize?" + (await authorization(env)), cookie, serve),
+    env,
+  );
+  assert.equal(screen.status, 200);
+  assert.match(await screen.text(), /Allow access/);
+  assert.equal(
+    env.DB.sqlite.prepare("SELECT generation FROM oidc_server_sessions").get().generation,
+    1,
+  );
+});
+
 async function consent(env, login, overrides = {}) {
   const result = await handleOAuth(
     get("/oauth/authorize?" + (await authorization(env, overrides)), login.cookie),
