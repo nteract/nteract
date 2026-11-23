@@ -75,13 +75,13 @@ def notebook_dir(tmp_path: Path) -> Path:
 
 
 def _run_entry(
-    entry: Path, module: str, cwd: Path, pythonpath: Path, tmp_path: Path
+    entry: Path, module: str, cwd: Path, pythonpath: Path, tmp_path: Path, *flags: str
 ) -> tuple[subprocess.CompletedProcess, dict | None, Path]:
     out = tmp_path / "probe.json"
     marker = tmp_path / "stray-ran"
     env = _child_env(PYTHONPATH=str(pythonpath), PROBE_OUT=str(out), STRAY_MARKER=str(marker))
     proc = subprocess.run(
-        [sys.executable, "-Xfrozen_modules=off", str(entry), module, "-f", "conn.json"],
+        [sys.executable, "-Xfrozen_modules=off", *flags, str(entry), module, "-f", "conn.json"],
         cwd=cwd,
         env=env,
         capture_output=True,
@@ -130,13 +130,16 @@ def test_package_launcher_wins_over_same_named_package_in_cwd(tmp_path, entry_sc
     assert record["file"] == str(managed / "probe_launcher" / "__main__.py")
 
 
-def test_module_launcher_wins_over_same_named_module_in_cwd(tmp_path, entry_script, notebook_dir):
+@pytest.mark.parametrize("flags", [(), ("-x",)], ids=["default", "skip-first-line"])
+def test_module_launcher_wins_over_same_named_module_in_cwd(
+    tmp_path, entry_script, notebook_dir, flags
+):
     managed = tmp_path / "managed"
     _write(managed / "probe_launcher.py", _PROBE_LAUNCHER)
     _write(notebook_dir / "probe_launcher.py", _STRAY_MODULE)
 
     proc, record, marker = _run_entry(
-        entry_script, "probe_launcher", notebook_dir, managed, tmp_path
+        entry_script, "probe_launcher", notebook_dir, managed, tmp_path, *flags
     )
 
     assert proc.returncode == 0, proc.stderr

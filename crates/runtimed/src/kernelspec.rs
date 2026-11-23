@@ -203,7 +203,7 @@ pub async fn command(
     spec: &KernelspecLaunch,
     connection: &Path,
 ) -> Result<tokio::process::Command> {
-    let Some(module) = python_module_launch(spec) else {
+    let Some(module) = protected_python_module(spec) else {
         return Ok(build_command(spec, connection, None));
     };
     let entry = crate::launcher_cache::kernel_entry_script()
@@ -246,8 +246,22 @@ struct PythonModuleLaunch<'a> {
     name: &'a str,
 }
 
-fn python_module_launch(spec: &KernelspecLaunch) -> Option<PythonModuleLaunch<'_>> {
-    let mut args = spec.args.iter().enumerate();
+fn protected_python_module(spec: &KernelspecLaunch) -> Option<PythonModuleLaunch<'_>> {
+    python_module_launch(&spec.args).filter(|_| is_direct_python(&spec.executable))
+}
+
+/// Wrapped Python module launches are not rewritten: wrapper arguments are
+/// wrapper-specific. Require an explicit launch when argv exposes such a command.
+pub(crate) fn requires_explicit_launch(spec: &KernelspecLaunch) -> bool {
+    !is_direct_python(&spec.executable)
+        && spec.args.iter().enumerate().any(|(index, arg)| {
+            is_python_executable(Path::new(arg))
+                && python_module_launch(&spec.args[index + 1..]).is_some()
+        })
+}
+
+fn python_module_launch(args: &[String]) -> Option<PythonModuleLaunch<'_>> {
+    let mut args = args.iter().enumerate();
     while let Some((index, arg)) = args.next() {
         if arg == "--check-hash-based-pycs" {
             args.next()?;
@@ -269,16 +283,6 @@ fn python_module_launch(spec: &KernelspecLaunch) -> Option<PythonModuleLaunch<'_
                     break;
                 }
                 'm' => {
-                    // Inspect both the executable's own name and its symlink target.
-                    // A kernelspec's display name and language do not identify its executable.
-                    if !is_python_executable(&spec.executable)
-                        && !spec
-                            .executable
-                            .canonicalize()
-                            .is_ok_and(|p| is_python_executable(&p))
-                    {
-                        return None;
-                    }
                     let (name, consumed) = if rest.is_empty() {
                         (args.next()?.1.as_str(), 2)
                     } else {
@@ -300,13 +304,21 @@ fn python_module_launch(spec: &KernelspecLaunch) -> Option<PythonModuleLaunch<'_
     None
 }
 
+fn is_direct_python(executable: &Path) -> bool {
+    // Use the executable name or its symlink target, not kernelspec metadata.
+    is_python_executable(executable)
+        || executable
+            .canonicalize()
+            .is_ok_and(|path| is_python_executable(&path))
+}
+
 fn is_python_executable(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
     let name = name.to_ascii_lowercase();
     let name = name.strip_suffix(".exe").unwrap_or(&name);
-    ["python", "pypy"].iter().any(|prefix| {
+    ["python", "pythonw", "pypy"].iter().any(|prefix| {
         name.strip_prefix(prefix).is_some_and(|suffix| {
             let version = suffix.strip_suffix('t').unwrap_or(suffix);
             suffix.is_empty()
@@ -557,6 +569,12 @@ mod tests {
                 vec!["-Xfrozen_modules=off", "-W", "ignore", "-I"],
             ),
             ("pypy3", vec![], vec!["-Bumipykernel_launcher"], vec!["-Bu"]),
+            (
+                "pythonw3.12.exe",
+                vec!["-x"],
+                vec!["-m", "ipykernel_launcher"],
+                vec!["-x"],
+            ),
         ] {
             let spec = KernelspecLaunch {
                 executable: PathBuf::from(exe),
@@ -571,7 +589,7 @@ mod tests {
                 env: BTreeMap::new(),
                 interrupt_mode: InterruptMode::Signal,
             };
-            let module = python_module_launch(&spec).unwrap();
+            let module = protected_python_module(&spec).unwrap();
             let cmd = build_command(&spec, connection, Some((module, entry)));
             assert_eq!(cmd.as_std().get_program(), exe);
             let expected = expected
@@ -613,7 +631,7 @@ mod tests {
                 env: BTreeMap::new(),
                 interrupt_mode: InterruptMode::Signal,
             };
-            assert!(python_module_launch(&spec).is_none());
+            assert!(protected_python_module(&spec).is_none());
             let cmd = build_command(&spec, connection, None);
             assert_eq!(cmd.as_std().get_program(), exe);
             let expected = args
@@ -621,6 +639,72 @@ mod tests {
                 .chain(["connection.json"])
                 .collect::<Vec<_>>();
             assert_eq!(cmd.as_std().get_args().collect::<Vec<_>>(), expected);
+        }
+    }
+
+    #[test]
+    fn pythonw_executables_are_recognized() {
+        for executable in [
+            "pythonw",
+            "pythonw.exe",
+            "PythonW3.12.exe",
+            "bin/pythonw3.13t",
+        ] {
+            assert!(is_python_executable(Path::new(executable)), "{executable}");
+        }
+        for executable in ["python-wrapper", "pythonw-launcher.exe", "pythonw.dll"] {
+            assert!(!is_python_executable(Path::new(executable)), "{executable}");
+        }
+    }
+
+    #[test]
+    fn wrapped_python_modules_require_explicit_launch() {
+        for (executable, args, required) in [
+            (
+                "conda",
+                vec!["run", "-n", "x", "python", "-m", "ipykernel_launcher"],
+                true,
+            ),
+            (
+                "/usr/bin/env",
+                vec!["python3", "-W", "ignore", "-m", "entry"],
+                true,
+            ),
+            (
+                "uv",
+                vec!["run", "python", "-Xfrozen_modules=off", "-m", "entry"],
+                true,
+            ),
+            (
+                "pixi",
+                vec!["run", "{resource_dir}/bin/python3.12", "-Bumlauncher"],
+                true,
+            ),
+            ("python", vec!["-m", "ipykernel_launcher"], false),
+            ("pythonw.exe", vec!["-x", "-m", "ipykernel_launcher"], false),
+            ("julia", vec!["--project=@.", "kernel.jl"], false),
+            ("ark", vec!["-m", "ark_launcher"], false),
+            (
+                "conda",
+                vec!["run", "python", "script.py", "-m", "arg"],
+                false,
+            ),
+            ("env", vec!["python", "-c", "pass", "-m", "arg"], false),
+            ("env", vec!["python", "-W", "-m", "script.py"], false),
+        ] {
+            let spec = KernelspecLaunch {
+                executable: PathBuf::from(executable),
+                args: args.into_iter().map(String::from).collect(),
+                resource_dir: PathBuf::new(),
+                env: BTreeMap::new(),
+                interrupt_mode: InterruptMode::Signal,
+            };
+            assert_eq!(
+                requires_explicit_launch(&spec),
+                required,
+                "{executable} {:?}",
+                spec.args
+            );
         }
     }
 
