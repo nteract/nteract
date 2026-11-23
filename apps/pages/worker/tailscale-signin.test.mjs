@@ -132,13 +132,27 @@ test("encoded words decode as RFC 2047 says, and anything else falls back", () =
   assert.equal(decodeEncodedWords("=?utf-8?q?=C3?="), null);
 });
 
-test("a name that doesn't decode, or carries control or format characters, shows the login instead", async (t) => {
+test("a name that doesn't decode, or carries control characters, shows the login instead", async (t) => {
   const { env } = fixture(t);
-  for (const name of ["=?utf-8?q?=C3?=", "=?utf-8?q?a=0Ab?=", "=?utf-8?q?evil=E2=80=AEtxt?="]) {
+  for (const name of ["=?utf-8?q?=C3?=", "=?utf-8?q?a=0Ab?="]) {
     const { cookie } = await signIn(env, person, { name });
     const session = await readServerAppSession(env, request("/", { cookie }), now());
     assert.equal(session.displayName, person);
   }
+});
+
+test("a name drops bidi controls and keeps joiners", async (t) => {
+  const { env } = fixture(t);
+  const shown = async (name) => {
+    const { cookie } = await signIn(env, person, { name });
+    return (await readServerAppSession(env, request("/", { cookie }), now())).displayName;
+  };
+  assert.equal(await shown("=?utf-8?q?evil=E2=80=AEtxt?="), "eviltxt");
+  // Woman technologist: woman, zero-width joiner, laptop.
+  assert.equal(
+    await shown("=?utf-8?q?Ada_=F0=9F=91=A9=E2=80=8D=F0=9F=92=BB?="),
+    "Ada \u{1F469}\u200D\u{1F4BB}",
+  );
 });
 
 test("a request without a listed login is refused and starts no session", async (t) => {

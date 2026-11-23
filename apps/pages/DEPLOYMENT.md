@@ -1772,7 +1772,9 @@ listener directly can write them, so:
   and compared without case. A login not on it is refused even when the
   tailnet's access rules let the request through, so sharing the machine with
   someone doesn't hand them an account. Taking a login off the list also
-  refuses the OAuth grants its agents hold, on their next request.
+  refuses the OAuth grants its agents hold, on their next request. The grants
+  aren't revoked: putting the login back restores them until they expire, and
+  an upload capability already issued works for its 10 minutes.
 
 Tagged devices get no user headers and can't sign in. Agents connect their MCP
 client by OAuth from a browser signed in on the tailnet; the provider has no

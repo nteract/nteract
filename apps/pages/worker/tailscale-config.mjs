@@ -34,6 +34,7 @@ const LOGIN = /^[^\s,\p{Cc}]+$/u;
 // and are not addresses.
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const LOOPBACK = ["localhost", "127.0.0.1", "[::1]"];
+const BIDI_CONTROLS = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu;
 
 // The longest principal a session or OAuth grant can store
 // (@nteract/session checkedProviderGrant, oauth-store.mjs).
@@ -146,11 +147,13 @@ export function tailscaleRequester(config, request) {
   if (!config.logins.includes(login)) return { refused: "not_allowed" };
   const header = request.headers.get(TAILSCALE_NAME_HEADER);
   const decoded = header ? decodeEncodedWords(header) : null;
-  // Control and format characters (bidi overrides) never reach a display
-  // name; the cut counts code points so it can't split a surrogate pair.
+  // A name with control characters falls back to the login. Bidi controls
+  // are dropped, so a name can't reorder the text around it; joiners stay,
+  // which Persian, Indic and emoji names need. The cut counts code points so
+  // it can't split a surrogate pair.
   const name =
-    decoded && !/[\p{Cc}\p{Cf}]/u.test(decoded)
-      ? Array.from(decoded.trim()).slice(0, MAX_NAME_LENGTH).join("")
+    decoded && !/\p{Cc}/u.test(decoded)
+      ? Array.from(decoded.replace(BIDI_CONTROLS, "").trim()).slice(0, MAX_NAME_LENGTH).join("")
       : "";
   return { login, name: name || login };
 }

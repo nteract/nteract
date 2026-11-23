@@ -305,8 +305,15 @@ async function authenticateRequest(request, env) {
       );
       if (!grant) throw new HttpError(401, "Reconnect your Pages client", "oauth_invalid_token");
       // A Tailscale deployment admits a grant only while its login is listed.
-      if (!tailscalePrincipalAllowed(env, request, grant.identity.principal))
+      if (!tailscalePrincipalAllowed(env, request, grant.identity.principal)) {
+        await logAuthEvent({
+          action: "oauth.token_refused",
+          principal: grant.identity.principal,
+          credential: "oauth",
+          reason: "tailscale_login_not_listed",
+        });
         throw new HttpError(401, "Reconnect your Pages client", "oauth_invalid_token");
+      }
       const scopes = new Set(grant.scope.split(" "));
       if (
         ["/internal/space/access", "/internal/access"].includes(new URL(request.url).pathname) &&
