@@ -558,6 +558,7 @@ export const CLIENT_ERROR_CODES = Object.freeze([
   "purge_preview_required",
   "purge_preview_invalid",
   "invalid_edit_selector",
+  "invalid_move",
   "replace_match_too_large",
   "invalid_comment_selector",
   "stale_revision",

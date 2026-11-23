@@ -222,6 +222,10 @@ ${part.authErrorItems}
   refused the same way when it would put a list beside a list of the same
   kind: start the new content with another kind of node, insert after another
   node, or give after_node_id the block's id.
+- invalid_move (400): move_nodes can't move this run as named: node_id and
+  through_node_id are in different blocks or out of order, after_node_id is
+  inside the run, or the run is already where after_node_id puts it. Read
+  the outline again and name the run's first and last nodes in one block.
 - stored_form_unsupported (409): part of this Page is stored in a form from an
   earlier version of Pages that this build doesn't read. Retrying doesn't
   help; tell the person, since the Page needs an operator.

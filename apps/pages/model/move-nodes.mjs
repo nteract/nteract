@@ -66,7 +66,7 @@ function endpoint(doc, key, offset) {
   };
 }
 
-const refuse = (message, code = "invalid_edit_selector") =>
+const refuse = (message, code = "invalid_move") =>
   Object.assign(Error(message), { status: 400, code });
 
 /**

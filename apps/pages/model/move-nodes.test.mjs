@@ -196,19 +196,19 @@ test("move_nodes refuses an anchor inside the run, a reversed run and a no-op", 
   refused(
     doc,
     [{ op: "move_nodes", node_id: alpha, through_node_id: gamma, after_node_id: beta }],
-    "invalid_edit_selector",
+    "invalid_move",
     /inside the range/,
   );
   refused(
     doc,
     [{ op: "move_nodes", node_id: gamma, through_node_id: alpha, after_node_id: null }],
-    "invalid_edit_selector",
+    "invalid_move",
     /at or after/,
   );
   refused(
     doc,
     [{ op: "move_nodes", node_id: beta, after_node_id: alpha }],
-    "invalid_edit_selector",
+    "invalid_move",
     /nothing to move/,
   );
 });

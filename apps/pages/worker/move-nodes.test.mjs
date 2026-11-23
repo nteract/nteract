@@ -132,5 +132,15 @@ test("move_nodes needs the current revision and refuses target scope", async (t)
     { ok: false },
   );
   assert.equal(scoped.code, "invalid_edit_selector");
-  void a;
+  // A move that changes nothing has its own code, outside the catch-all.
+  const noop = await call(
+    "edit_page",
+    {
+      revision: written.revision,
+      nonce: nonce(),
+      operations: [{ op: "move_nodes", node_id: b, after_node_id: a }],
+    },
+    { ok: false },
+  );
+  assert.equal(noop.code, "invalid_move");
 });
