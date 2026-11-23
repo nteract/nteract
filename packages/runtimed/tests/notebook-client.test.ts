@@ -71,6 +71,22 @@ describe("NotebookClient", () => {
     ]);
   });
 
+  it("lists installed kernelspecs without arguments and stages one by name", async () => {
+    const { client, sendRequest } = stubClient();
+    await client.listInstalledKernelspecs();
+    await client.setEnvironmentSelection({ kind: "kernelspec", name: "ir" }, 7);
+    expect(sendRequest.mock.calls).toEqual([
+      [{ type: "list_installed_kernelspecs" }],
+      [
+        {
+          type: "set_environment_selection",
+          target: { kind: "kernelspec", name: "ir" },
+          expected_revision: 7,
+        },
+      ],
+    ]);
+  });
+
   it("emits unguarded sync_environment requests", async () => {
     const { client, sendRequest } = stubClient();
 

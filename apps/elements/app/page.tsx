@@ -241,6 +241,12 @@ const catalogGroups = [
         icon: PackageCheck,
       },
       {
+        title: "Local environment selector",
+        description: "Automatic, Conda, and installed Jupyter kernel choices.",
+        href: "/docs/local-environment-selector",
+        icon: PackageCheck,
+      },
+      {
         title: "Read-only notebooks",
         description: "Hosted notebook cells through shared components.",
         href: "/docs/read-only-notebook-surfaces",

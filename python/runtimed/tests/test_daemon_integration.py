@@ -45,8 +45,9 @@ import runtimed._internals
 # Test utilities
 # ============================================================================
 
-# Substring of the daemon's LaunchKernel error when a project file's folder
-# has no trust decision on this machine.
+# Substring of the daemon's LaunchKernel guard rejection reason when a project
+# file's folder has no trust decision on this machine. The Python binding
+# raises it as a RuntimedError.
 PROJECT_NOT_TRUSTED = "project folder is not trusted"
 
 KERNEL_LAUNCH_LIFECYCLES = {

@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 import type {
   CondaEnvironmentInventory,
   EnvironmentSelectionSnapshot,
+  KernelspecCatalogState,
   LocalEnvironmentTarget,
 } from "runtimed";
 import { Button } from "@/components/ui/button";
@@ -12,22 +13,64 @@ export interface LocalEnvironmentSelectorProps {
   available: boolean;
   selection: EnvironmentSelectionSnapshot | null;
   inventory: CondaEnvironmentInventory | null;
+  /**
+   * Whether this notebook can use a Conda environment. `false` hides the Conda
+   * choices and sends no Conda discovery request. Defaults to `true`.
+   */
+  condaAvailable?: boolean;
+  /** Installed Jupyter kernels. Omitted or `unsupported` hides them and sends nothing. */
+  kernelspecCatalog?: KernelspecCatalogState;
   loadingSelection: boolean;
   loadingInventory: boolean;
   mutating: boolean;
   error: string | null;
-  running: { id: string | null; name: string; pythonVersion: string | null } | null;
+  running: {
+    id: string | null;
+    name: string;
+    pythonVersion: string | null;
+    language?: string | null;
+  } | null;
   blocked: boolean;
   onLoadInventory: (refresh: boolean) => unknown;
+  onLoadKernelspecs?: () => unknown;
   onSelect: (target: LocalEnvironmentTarget) => unknown;
   onApply: (revision: number) => unknown;
   onRetrySelection: () => unknown;
+}
+
+const CHOICE_CLASS_NAME =
+  "w-full rounded-md border border-border bg-background px-2.5 py-2 text-left transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50 aria-[current=true]:border-foreground/40";
+
+/** Running-kernel identity the daemon reports for an installed kernelspec. */
+function kernelspecEnvironmentId(name: string): string {
+  return `kernelspec:${name}`;
+}
+
+/** The staged target. A kernelspec and a Conda prefix are never staged together. */
+function nextChoice(selection: EnvironmentSelectionSnapshot): { id: string | null; name: string } {
+  if (selection.selected_kernelspec) {
+    const spec = selection.selected_kernelspec;
+    return { id: kernelspecEnvironmentId(spec.name), name: spec.display_name || spec.name };
+  }
+  if (selection.selected) return { id: selection.selected.id, name: selection.selected.name };
+  return { id: null, name: "Automatic" };
+}
+
+function ChoiceMarks({ next, running }: { next: boolean; running: boolean }) {
+  if (!next && !running) return null;
+  return (
+    <span className="mt-0.5 block text-xs text-muted-foreground">
+      {[running && "Running", next && "Next"].filter(Boolean).join(" · ")}
+    </span>
+  );
 }
 
 export function LocalEnvironmentSelector({
   available,
   selection,
   inventory,
+  condaAvailable = true,
+  kernelspecCatalog,
   loadingSelection,
   loadingInventory,
   mutating,
@@ -35,6 +78,7 @@ export function LocalEnvironmentSelector({
   running,
   blocked,
   onLoadInventory,
+  onLoadKernelspecs,
   onSelect,
   onApply,
   onRetrySelection,
@@ -44,7 +88,31 @@ export function LocalEnvironmentSelector({
   const [prefix, setPrefix] = useState("");
   const prefixId = useId();
   const disabled = blocked || mutating || loadingSelection || !selection || selection.applying;
-  const differs = Boolean(selection && (selection.selected?.id ?? null) !== running?.id);
+  const next = selection ? nextChoice(selection) : null;
+  const differs = Boolean(next && next.id !== (running?.id ?? null));
+  const retrySave = Boolean(
+    selection?.intent_persistence &&
+    next?.id ===
+      (selection.applied_kernelspec
+        ? kernelspecEnvironmentId(selection.applied_kernelspec.name)
+        : (selection.applied?.id ?? null)),
+  );
+  const kernelspecs =
+    kernelspecCatalog && kernelspecCatalog.status !== "unsupported" ? kernelspecCatalog : null;
+  const kernelspecInventory =
+    kernelspecs && "inventory" in kernelspecs ? kernelspecs.inventory : null;
+  const kernelspecsLoading = kernelspecs?.status === "loading";
+  const selectedSpec = selection?.selected_kernelspec ?? null;
+  // Only a complete, current listing can show that the staged kernel is gone.
+  const selectedSpecMissing = Boolean(
+    selectedSpec &&
+    kernelspecs?.status === "ready" &&
+    !kernelspecs.inventory.truncated &&
+    !kernelspecs.inventory.kernelspecs.some((spec) => spec.name === selectedSpec.name),
+  );
+  const runningDetail = running?.pythonVersion
+    ? `Python ${running.pythonVersion}`
+    : running?.language || null;
 
   return (
     <section
@@ -52,15 +120,26 @@ export function LocalEnvironmentSelector({
       className="space-y-2 border-b border-border/70 pb-3 text-sm"
       data-testid="environment-selector"
     >
-      <div className="flex min-w-0 items-center justify-between gap-3">
+      <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-sm font-semibold leading-5">Environment</h3>
-          <p className="truncate text-xs leading-4 text-muted-foreground">
+          <p className="break-words text-xs leading-4 text-muted-foreground">
             {running
-              ? `Running: ${running.name}${running.pythonVersion ? ` · Python ${running.pythonVersion}` : ""}`
-              : "No running kernel"}
-            {available && selection && ` · Next: ${selection.selected?.name ?? "Automatic"}`}
+              ? `Running: ${running.name}${runningDetail ? ` · ${runningDetail}` : ""}`
+              : selection?.applying && !retrySave
+                ? "Starting kernel"
+                : "No running kernel"}
           </p>
+          {available && next && (
+            <p className="break-words text-xs leading-4 text-muted-foreground">
+              {`Next: ${next.name}`}
+              {retrySave
+                ? " · not saved"
+                : differs &&
+                  !selection?.applying &&
+                  (running ? " · not applied" : " · not started")}
+            </p>
+          )}
         </div>
         {available && (
           <Button
@@ -71,9 +150,12 @@ export function LocalEnvironmentSelector({
             disabled={disabled}
             aria-expanded={changing}
             onClick={() => {
-              const next = !changing;
-              setChanging(next);
-              if (next) onLoadInventory(false);
+              const opening = !changing;
+              setChanging(opening);
+              if (opening) {
+                if (condaAvailable) onLoadInventory(false);
+                if (kernelspecs) onLoadKernelspecs?.();
+              }
             }}
           >
             {changing ? "Done" : "Change"}
@@ -99,84 +181,169 @@ export function LocalEnvironmentSelector({
             </Button>
           )}
           {changing && (
-            <div className="space-y-2 border-t border-border pt-2">
+            <div className="space-y-3 border-t border-border pt-2">
               <div className="flex flex-wrap gap-2">
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
                   disabled={disabled}
+                  aria-current={next?.id === null && !selectedSpec ? "true" : undefined}
                   onClick={() => onSelect({ kind: "automatic" })}
                 >
                   Automatic
                 </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  disabled={disabled || loadingInventory}
-                  onClick={() => onLoadInventory(true)}
-                >
-                  Refresh
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  disabled={disabled}
-                  onClick={() => setEnteringPrefix(!enteringPrefix)}
-                >
-                  Enter prefix...
-                </Button>
+                {(condaAvailable || kernelspecs) && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={disabled || loadingInventory || kernelspecsLoading}
+                    onClick={() => {
+                      if (condaAvailable) onLoadInventory(true);
+                      if (kernelspecs) onLoadKernelspecs?.();
+                    }}
+                  >
+                    Refresh
+                  </Button>
+                )}
+                {condaAvailable && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={disabled}
+                    onClick={() => setEnteringPrefix(!enteringPrefix)}
+                  >
+                    Enter prefix...
+                  </Button>
+                )}
               </div>
-              {loadingInventory && <Skeleton className="h-10 w-full" />}
-              {inventory && !loadingInventory && (
-                <>
-                  {inventory.environments.length === 0 && (
-                    <p className="text-muted-foreground">
-                      No Conda environments found. Enter an absolute prefix instead.
-                    </p>
+              {condaAvailable && (
+                <div className="space-y-2">
+                  {kernelspecs && (
+                    <h4 className="text-xs font-medium text-muted-foreground">
+                      Conda environments
+                    </h4>
                   )}
-                  <ul aria-label="Available Conda environments" className="space-y-1">
-                    {inventory.environments.map((environment) => (
-                      <li key={environment.id}>
-                        <button
-                          type="button"
-                          disabled={disabled}
-                          className="w-full rounded-md border border-border bg-background px-2.5 py-2 text-left transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50"
-                          onClick={() => onSelect({ kind: "conda", prefix: environment.prefix })}
+                  {loadingInventory && <Skeleton className="h-10 w-full" />}
+                  {inventory && !loadingInventory && (
+                    <>
+                      {inventory.environments.length === 0 && (
+                        <p className="text-muted-foreground">
+                          No Conda environments found. Enter an absolute prefix instead.
+                        </p>
+                      )}
+                      <ul aria-label="Available Conda environments" className="space-y-1">
+                        {inventory.environments.map((environment) => (
+                          <li key={environment.id}>
+                            <button
+                              type="button"
+                              disabled={disabled}
+                              aria-current={next?.id === environment.id ? "true" : undefined}
+                              className={CHOICE_CLASS_NAME}
+                              onClick={() =>
+                                onSelect({ kind: "conda", prefix: environment.prefix })
+                              }
+                            >
+                              <span className="block truncate text-sm font-medium leading-snug">
+                                {environment.name}
+                              </span>
+                              {environment.python_version && (
+                                <span className="mt-0.5 block text-xs text-muted-foreground">
+                                  Python {environment.python_version}
+                                </span>
+                              )}
+                              <span className="mt-1 block break-all font-mono text-xs leading-relaxed text-muted-foreground">
+                                {environment.prefix}
+                              </span>
+                              <ChoiceMarks
+                                next={next?.id === environment.id}
+                                running={running?.id === environment.id}
+                              />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                      {inventory.truncated && (
+                        <p className="text-sm leading-relaxed text-muted-foreground">
+                          Not all environments are listed. Enter a prefix if yours is missing.
+                        </p>
+                      )}
+                      {inventory.warnings.map((warning, index) => (
+                        <p
+                          key={index}
+                          className="break-words text-sm leading-relaxed text-muted-foreground"
                         >
-                          <span className="block truncate text-sm font-medium leading-snug">
-                            {environment.name}
-                          </span>
-                          {environment.python_version && (
-                            <span className="mt-0.5 block text-xs text-muted-foreground">
-                              Python {environment.python_version}
-                            </span>
-                          )}
-                          <span className="mt-1 block break-all font-mono text-xs leading-relaxed text-muted-foreground">
-                            {environment.prefix}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                  {inventory.truncated && (
-                    <p className="text-sm leading-relaxed text-muted-foreground">
-                      Not all environments are listed. Enter a prefix if yours is missing.
+                          {warning}
+                        </p>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+              {kernelspecs && (
+                <div className="space-y-2">
+                  <h4 className="text-xs font-medium text-muted-foreground">Jupyter kernels</h4>
+                  <p className="text-xs leading-relaxed text-muted-foreground">
+                    Kernels installed on this computer. nteract runs them as they are and does not
+                    manage their packages.
+                  </p>
+                  {kernelspecsLoading && !kernelspecInventory && (
+                    <Skeleton className="h-10 w-full" />
+                  )}
+                  {kernelspecInventory && (
+                    <>
+                      {kernelspecInventory.kernelspecs.length === 0 && (
+                        <p className="text-muted-foreground">No installed Jupyter kernels found.</p>
+                      )}
+                      <ul aria-label="Installed Jupyter kernels" className="space-y-1">
+                        {kernelspecInventory.kernelspecs.map((spec) => {
+                          const id = kernelspecEnvironmentId(spec.name);
+                          return (
+                            <li key={spec.name}>
+                              <button
+                                type="button"
+                                disabled={disabled}
+                                aria-current={next?.id === id ? "true" : undefined}
+                                className={CHOICE_CLASS_NAME}
+                                onClick={() => onSelect({ kind: "kernelspec", name: spec.name })}
+                              >
+                                <span className="block break-words text-sm font-medium leading-snug">
+                                  {spec.display_name || spec.name}
+                                </span>
+                                <span className="mt-0.5 block break-all text-xs text-muted-foreground">
+                                  {[spec.language, spec.name].filter(Boolean).join(" · ")}
+                                </span>
+                                <ChoiceMarks next={next?.id === id} running={running?.id === id} />
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                      {kernelspecInventory.truncated && (
+                        <p className="text-sm leading-relaxed text-muted-foreground">
+                          Not all installed kernels are listed.
+                        </p>
+                      )}
+                      {kernelspecInventory.warnings.map((warning, index) => (
+                        <p
+                          key={index}
+                          className="break-words text-sm leading-relaxed text-muted-foreground"
+                        >
+                          {warning}
+                        </p>
+                      ))}
+                    </>
+                  )}
+                  {kernelspecs.status === "failed" && (
+                    <p role="alert" className="break-words text-destructive">
+                      Installed kernels could not be listed: {kernelspecs.error}
                     </p>
                   )}
-                  {inventory.warnings.map((warning, index) => (
-                    <p
-                      key={index}
-                      className="break-words text-sm leading-relaxed text-muted-foreground"
-                    >
-                      {warning}
-                    </p>
-                  ))}
-                </>
+                </div>
               )}
-              {enteringPrefix && (
+              {condaAvailable && enteringPrefix && (
                 <form
                   className="space-y-3 rounded-md border border-border bg-muted/30 p-3"
                   onSubmit={(event) => {
@@ -211,14 +378,29 @@ export function LocalEnvironmentSelector({
               )}
             </div>
           )}
-          {selection && (!running || differs) && (
+          {selectedSpec && selectedSpecMissing && (
+            <p role="alert" className="break-words text-destructive">
+              The selected kernel "{selectedSpec.display_name || selectedSpec.name}" is not
+              installed on this computer. It stays selected until you choose another kernel or
+              Automatic.
+            </p>
+          )}
+          {selection && (retrySave || !running || differs) && (
             <Button
               type="button"
               size="sm"
               disabled={disabled}
               onClick={() => onApply(selection.revision)}
             >
-              {selection.applying ? "Applying..." : running ? "Apply and restart" : "Start kernel"}
+              {retrySave
+                ? selection.applying
+                  ? "Saving choice..."
+                  : "Retry saving choice"
+                : selection.applying
+                  ? "Applying..."
+                  : running
+                    ? "Apply and restart"
+                    : "Start kernel"}
             </Button>
           )}
         </>

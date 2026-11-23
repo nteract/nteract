@@ -42,6 +42,7 @@ pub struct KernelLaunchConfig {
     pub launched_config: LaunchedEnvConfig,
     /// Daemon-reserved TCP ports for the Jupyter kernel ZMQ sockets.
     pub kernel_ports: KernelPorts,
+    pub kernelspec: Option<notebook_protocol::protocol::KernelspecLaunch>,
     /// Extra environment variables to set in the kernel process.
     pub env_vars: Vec<(String, String)>,
     /// Whether textual output should redact matching environment values.

@@ -2250,9 +2250,8 @@ impl Daemon {
                     )
                     .await;
                 }
-                // Drop the handle so it tears down the runtime-agent ownership
-                // group and removes the matching manifest only after cleanup
-                // succeeds.
+                // Dropping the Unix handle requests graceful termination. If the
+                // runtime stops polling its watcher, the watcher owner kills the group on drop.
                 {
                     let mut ra_guard = room.runtime_agent_handle.lock().await;
                     *ra_guard = None;
@@ -2741,8 +2740,8 @@ impl Daemon {
         //
         // Runtime agents are spawned in their own process group (process_group(0)),
         // so they do NOT receive the SIGINT/SIGTERM that the daemon receives.
-        // Their kernel subprocesses inherit the agent's PGID, so killing the
-        // agent's process group kills the kernel too.
+        // Managed kernels inherit the agent's PGID. Installed kernels have
+        // separate groups whose guards observe EOF when the agent dies.
         //
         // Without explicit shutdown here, agent process groups become orphans.
         // We cannot rely on Drop alone because:
@@ -8465,8 +8464,9 @@ mod tests {
         };
         let temp = TempDir::new().unwrap();
         let daemon = Daemon::new_for_test(lease_test_config(&temp)).unwrap();
+        let room_id = uuid::Uuid::new_v4();
         let room = Arc::new(NotebookRoom::new_fresh(
-            uuid::Uuid::new_v4(),
+            room_id,
             None,
             temp.path(),
             Arc::new(BlobStore::new(temp.path().join("blobs"))),
@@ -8476,14 +8476,29 @@ mod tests {
             let mut doc = room.doc.write().await;
             let mut metadata = notebook_doc::metadata::NotebookMetadataSnapshot::default();
             metadata.kernelspec = Some(notebook_doc::metadata::KernelspecSnapshot {
-                name: "python3".into(),
-                display_name: "Python 3".into(),
+                name: "lumen".into(),
+                display_name: "Lumen".into(),
                 language: Some("python".into()),
                 ..Default::default()
             });
+            metadata
+                .runt
+                .extra
+                .insert("installed_kernelspec".into(), "lumen".into());
             doc.set_metadata_snapshot(&metadata).unwrap();
         }
         let observed_heads = room.doc.write().await.get_heads_hex();
+        let NotebookResponse::EnvironmentSelection { selection } =
+            crate::requests::local_environment_selection::get(&room).await
+        else {
+            panic!("expected local selection")
+        };
+        let staged = room
+            .local_environment_selection
+            .set(None, selection.revision)
+            .unwrap();
+        assert!(staged.selected_kernelspec.is_none());
+        let expected_revision = staged.revision;
         let cache = kernel_env::uv::default_cache_dir_uv();
         std::fs::create_dir_all(&cache).unwrap();
         let pool_dir = TempDir::new_in(&cache).unwrap();
@@ -8516,7 +8531,7 @@ mod tests {
                 crate::requests::local_environment_selection::apply(
                     &room,
                     &daemon,
-                    0,
+                    expected_revision,
                     observed_heads,
                 )
                 .await
@@ -8557,6 +8572,23 @@ mod tests {
                 .unwrap(),
             runtime_doc::RuntimeLifecycle::Running(_)
         ));
+        drop(room);
+        let reopened = NotebookRoom::new_fresh(
+            room_id,
+            None,
+            temp.path(),
+            Arc::new(BlobStore::new(temp.path().join("blobs"))),
+            false,
+        );
+        let meta = reopened
+            .doc
+            .read()
+            .await
+            .get_metadata_snapshot()
+            .expect("recover saved Automatic selection");
+        assert_eq!(meta.kernelspec.as_ref().unwrap().name, "python3");
+        assert!(!meta.runt.extra.contains_key("installed_kernelspec"));
+        assert!(crate::kernelspec::imported(Some(&meta), Default::default()).is_none());
     }
 
     #[tokio::test]

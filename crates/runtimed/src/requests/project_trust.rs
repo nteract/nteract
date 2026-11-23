@@ -509,7 +509,22 @@ mod tests {
         room.state
             .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Shutdown))
             .unwrap();
-        park_override(&room, &project);
+        let trust_before = room.state.read(|sd| sd.read_state().project_trust).unwrap();
+        // The gate reports the cancellation, not a park, so the handler never
+        // replies with the trust refusal for a prompt it did not publish.
+        let manifest = crate::project_file::detect_project_file(&project).unwrap();
+        assert!(matches!(
+            crate::project_trust::require_for_launch_in_context(
+                &room,
+                Some(&manifest),
+                Some(launch_context(&room, &project)),
+            ),
+            crate::project_trust::RoomProjectGate::Cancelled
+        ));
+        assert_eq!(
+            room.state.read(|sd| sd.read_state().project_trust).unwrap(),
+            trust_before
+        );
         assert!(room
             .project_trust_prompt
             .lock()
@@ -1019,5 +1034,71 @@ mod tests {
             .await,
             NotebookResponse::Ok {}
         ));
+    }
+
+    fn kernel_lifecycle(room: &NotebookRoom) -> runtime_doc::RuntimeLifecycle {
+        room.state
+            .read(|sd| sd.read_state().kernel.lifecycle)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn park_with_current_identity_commits_prompt() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("proj");
+        pyproject(&project, "pandas");
+        let room = room(temp.path(), &project, json!({}), "");
+        let manifest = crate::project_file::detect_project_file(&project).unwrap();
+        assert!(matches!(
+            crate::project_trust::require_for_launch_in_context(
+                &room,
+                Some(&manifest),
+                Some(launch_context(&room, &project)),
+            ),
+            crate::project_trust::RoomProjectGate::Parked
+        ));
+        assert_eq!(
+            kernel_lifecycle(&room),
+            runtime_doc::RuntimeLifecycle::AwaitingProjectTrust
+        );
+        assert!(room
+            .state
+            .read(|sd| sd.read_state().project_trust.needs_approval)
+            .unwrap());
+        assert!(room
+            .project_trust_prompt
+            .lock()
+            .unwrap()
+            .launch_context
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn park_with_stale_identity_reports_context_change_without_prompt() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("proj");
+        pyproject(&project, "pandas");
+        let room = room(temp.path(), &project, json!({}), "");
+        let manifest = crate::project_file::detect_project_file(&project).unwrap();
+        let context = launch_context(&room, &project);
+        room.project_trust_prompt.lock().unwrap().identity_changed();
+        assert!(matches!(
+            crate::project_trust::require_for_launch_in_context(
+                &room,
+                Some(&manifest),
+                Some(context),
+            ),
+            crate::project_trust::RoomProjectGate::ContextChanged
+        ));
+        assert_ne!(
+            kernel_lifecycle(&room),
+            runtime_doc::RuntimeLifecycle::AwaitingProjectTrust
+        );
+        assert!(room
+            .project_trust_prompt
+            .lock()
+            .unwrap()
+            .launch_context
+            .is_none());
     }
 }

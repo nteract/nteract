@@ -91,6 +91,8 @@ export interface DaemonReadyPayload {
   connection_scope?: string;
   /** Optional daemon feature; absent on older daemons means unavailable. */
   local_environment_selection?: boolean;
+  /** Optional daemon feature; absent on older daemons means no kernelspec requests. */
+  installed_kernelspecs?: boolean;
   /** Daemon-authoritative CommentsDoc identity for this room. */
   comments_doc_id?: string | null;
   /** Daemon-authoritative notebook reference stored inside the CommentsDoc. */

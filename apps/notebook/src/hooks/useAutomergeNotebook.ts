@@ -162,6 +162,7 @@ export function useNotebook() {
   const [hostedNotebookUrl, setHostedNotebookUrl] = useState<string | null>(null);
   const [localEnvironmentSelectionAvailable, setLocalEnvironmentSelectionAvailable] =
     useState(false);
+  const [installedKernelspecsAvailable, setInstalledKernelspecsAvailable] = useState(false);
   const [connectionGeneration, setConnectionGeneration] = useState(0);
   const canWriteNotebookRef = useRef(true);
   const initialLoadReadyForMutationsRef = useRef(false);
@@ -460,6 +461,7 @@ export function useNotebook() {
         );
         setHostedNotebookUrl(trigger.payload.hosted_notebook_url ?? null);
         setLocalEnvironmentSelectionAvailable(trigger.payload.local_environment_selection === true);
+        setInstalledKernelspecsAvailable(trigger.payload.installed_kernelspecs === true);
         setConnectionGeneration((generation) => generation + 1);
         const connectionScope = trigger.payload.connection_scope ?? null;
         setConnectionScope(connectionScope);
@@ -735,6 +737,7 @@ export function useNotebook() {
     connectionScope,
     hostedNotebookUrl,
     localEnvironmentSelectionAvailable,
+    installedKernelspecsAvailable,
     connectionGeneration,
   };
 }

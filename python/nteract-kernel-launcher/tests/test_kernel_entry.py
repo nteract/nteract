@@ -75,13 +75,13 @@ def notebook_dir(tmp_path: Path) -> Path:
 
 
 def _run_entry(
-    entry: Path, module: str, cwd: Path, pythonpath: Path, tmp_path: Path
+    entry: Path, module: str, cwd: Path, pythonpath: Path, tmp_path: Path, *flags: str
 ) -> tuple[subprocess.CompletedProcess, dict | None, Path]:
     out = tmp_path / "probe.json"
     marker = tmp_path / "stray-ran"
     env = _child_env(PYTHONPATH=str(pythonpath), PROBE_OUT=str(out), STRAY_MARKER=str(marker))
     proc = subprocess.run(
-        [sys.executable, "-Xfrozen_modules=off", str(entry), module, "-f", "conn.json"],
+        [sys.executable, "-Xfrozen_modules=off", *flags, str(entry), module, "-f", "conn.json"],
         cwd=cwd,
         env=env,
         capture_output=True,
@@ -130,13 +130,16 @@ def test_package_launcher_wins_over_same_named_package_in_cwd(tmp_path, entry_sc
     assert record["file"] == str(managed / "probe_launcher" / "__main__.py")
 
 
-def test_module_launcher_wins_over_same_named_module_in_cwd(tmp_path, entry_script, notebook_dir):
+@pytest.mark.parametrize("flags", [(), ("-x",)], ids=["default", "skip-first-line"])
+def test_module_launcher_wins_over_same_named_module_in_cwd(
+    tmp_path, entry_script, notebook_dir, flags
+):
     managed = tmp_path / "managed"
     _write(managed / "probe_launcher.py", _PROBE_LAUNCHER)
     _write(notebook_dir / "probe_launcher.py", _STRAY_MODULE)
 
     proc, record, marker = _run_entry(
-        entry_script, "probe_launcher", notebook_dir, managed, tmp_path
+        entry_script, "probe_launcher", notebook_dir, managed, tmp_path, *flags
     )
 
     assert proc.returncode == 0, proc.stderr
@@ -182,15 +185,19 @@ def test_missing_module_exits_with_error(tmp_path, entry_script, notebook_dir):
     assert "No module named no_such_launcher_module" in proc.stderr
 
 
+@pytest.mark.parametrize(
+    ("module", "shell"),
+    [("nteract_kernel_launcher", "NteractShell"), ("ipykernel_launcher", "ZMQInteractiveShell")],
+)
 def test_real_kernel_ignores_stray_launcher_and_imports_siblings(
-    tmp_path, entry_script, notebook_dir
+    tmp_path, entry_script, notebook_dir, module, shell
 ):
     jupyter_client = pytest.importorskip("jupyter_client")
     from jupyter_client.connect import write_connection_file
 
     launcher_src = KERNEL_ENTRY_SOURCE.parent
     marker = tmp_path / "stray-ran"
-    _write(notebook_dir / "nteract_kernel_launcher.py", _STRAY_MODULE)
+    _write(notebook_dir / f"{module}.py", _STRAY_MODULE)
 
     conn_file, _ = write_connection_file(str(tmp_path / "kernel.json"))
     env = _child_env(PYTHONPATH=str(launcher_src), STRAY_MARKER=str(marker))
@@ -199,7 +206,7 @@ def test_real_kernel_ignores_stray_launcher_and_imports_siblings(
             sys.executable,
             "-Xfrozen_modules=off",
             str(entry_script),
-            "nteract_kernel_launcher",
+            module,
             "-f",
             conn_file,
         ],
@@ -219,16 +226,18 @@ def test_real_kernel_ignores_stray_launcher_and_imports_siblings(
             if msg["msg_type"] == "stream":
                 outputs.append(msg["content"]["text"])
 
-        reply = client.execute_interactive(
-            "import helpers, os, sys\n"
-            "print(helpers.VALUE)\n"
-            "print(sys.path[0] == os.getcwd())\n"
-            "print(type(get_ipython()).__name__)\n",
-            output_hook=collect,
-            timeout=60,
-        )
+        code = "import helpers, os, sys\nprint(helpers.VALUE)\n"
+        expected = ["from-notebook-dir"]
+        # Stock ipykernel removes cwd again while loading its dependencies;
+        # IPython then adds it back after the stdlib, before site-packages.
+        if shell == "NteractShell":
+            code += "print(sys.path[0] == os.getcwd())\n"
+            expected.append("True")
+        code += "print(type(get_ipython()).__name__)\n"
+        expected.append(shell)
+        reply = client.execute_interactive(code, output_hook=collect, timeout=60)
         assert reply["content"]["status"] == "ok", reply["content"]
-        assert "".join(outputs).split() == ["from-notebook-dir", "True", "NteractShell"]
+        assert "".join(outputs).split() == expected
         assert not marker.exists()
     finally:
         client.shutdown()

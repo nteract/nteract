@@ -93,7 +93,15 @@ pub(crate) async fn build_live_notebook_projection_for_generation(
         let mut doc = room.doc.write().await;
         capture_notebook_document_projection(&mut doc)
     };
-    finish_notebook_projection(room, load_generation, cells, dependencies, notebook_heads).await
+    let path = room.file_binding.path().await;
+    finish_notebook_projection(
+        room,
+        load_generation,
+        cells,
+        dependencies,
+        notebook_heads,
+        path.as_deref(),
+    )
 }
 
 /// Build the generation-owned projection from the immutable staged document.
@@ -104,7 +112,25 @@ pub(crate) async fn build_staged_notebook_projection(
     load_generation: u64,
 ) -> anyhow::Result<NotebookProjection> {
     let (cells, dependencies, notebook_heads) = capture_notebook_document_projection(staged);
-    finish_notebook_projection(room, load_generation, cells, dependencies, notebook_heads).await
+    let path = room.file_binding.path().await;
+    finish_notebook_projection(
+        room,
+        load_generation,
+        cells,
+        dependencies,
+        notebook_heads,
+        path.as_deref(),
+    )
+}
+
+pub(super) fn build_recovered_notebook_projection(
+    room: &NotebookRoom,
+    doc: &mut notebook_doc::NotebookDoc,
+    generation: u64,
+    path: Option<&std::path::Path>,
+) -> anyhow::Result<NotebookProjection> {
+    let (cells, dependencies, heads) = capture_notebook_document_projection(doc);
+    finish_notebook_projection(room, generation, cells, dependencies, heads, path)
 }
 
 type ProjectedDocumentCell = (String, String, String, Option<String>);
@@ -131,18 +157,15 @@ fn capture_notebook_document_projection(
     (cells, dependencies, notebook_heads)
 }
 
-async fn finish_notebook_projection(
+fn finish_notebook_projection(
     room: &NotebookRoom,
     load_generation: u64,
     cells: Vec<ProjectedDocumentCell>,
     dependencies: Vec<String>,
     notebook_heads: Vec<String>,
+    notebook_path: Option<&std::path::Path>,
 ) -> anyhow::Result<NotebookProjection> {
-    let notebook_path = room
-        .file_binding
-        .path()
-        .await
-        .map(|path| path.to_string_lossy().into_owned());
+    let notebook_path = notebook_path.map(|path| path.to_string_lossy().into_owned());
 
     let (runtime_state, runtime_state_heads) = room.state.with_doc(|state_doc| {
         let runtime_state = state_doc.read_state();

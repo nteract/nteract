@@ -344,8 +344,102 @@ impl tracing_subscriber::fmt::time::FormatTime for LocalTime {
     }
 }
 
+fn main() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+        let mut args = std::env::args_os().skip(1);
+        match args.next().as_deref().and_then(|s| s.to_str()) {
+            Some("__kernelspec_exec") => {
+                anyhow::ensure!(
+                    nix::unistd::getpgrp() == nix::unistd::getpid(),
+                    "expected dedicated kernel group"
+                );
+                let exe = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("missing installed kernel executable"))?;
+                // Only the guard inherits the read end of the agent's ownership pipe.
+                // No kernel code runs until guard creation succeeds.
+                let mut guard = Command::new(std::env::current_exe()?);
+                guard
+                    .arg("__kernelspec_guard")
+                    .arg(std::process::id().to_string())
+                    .stdin(Stdio::inherit())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null());
+                unsafe {
+                    guard.pre_exec(|| {
+                        libc::signal(libc::SIGINT, libc::SIG_IGN);
+                        libc::signal(libc::SIGTERM, libc::SIG_IGN);
+                        Ok(())
+                    });
+                }
+                let mut guard = guard.spawn()?;
+                let status = guard.wait()?;
+                anyhow::ensure!(status.success(), "kernel guard startup failed: {status}");
+                let mut ready = [0];
+                std::io::Read::read_exact(
+                    &mut guard
+                        .stdout
+                        .take()
+                        .ok_or_else(|| anyhow::anyhow!("missing kernel guard readiness pipe"))?,
+                    &mut ready,
+                )?;
+                anyhow::ensure!(ready == [1], "kernel ownership guard failed to arm");
+                return Err(Command::new(exe)
+                    .args(args)
+                    .stdin(Stdio::null())
+                    .exec()
+                    .into());
+            }
+            Some("__kernelspec_guard") => {
+                use std::io::Read;
+                let group = nix::unistd::getpgrp();
+                anyhow::ensure!(
+                    args.next().and_then(|s| s.to_str()?.parse::<i32>().ok())
+                        == Some(group.as_raw()),
+                    "unexpected kernel group"
+                );
+                // EOF must come from the ownership pipe, not a terminal or file.
+                // The guard only signals its own group, which it pins by membership.
+                let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+                anyhow::ensure!(
+                    unsafe { libc::fstat(0, &mut stat) } == 0
+                        && stat.st_mode & libc::S_IFMT == libc::S_IFIFO,
+                    "expected ownership pipe"
+                );
+                use std::io::Write;
+                // The single-threaded startup parent exits and is reaped before
+                // exec. The guard stays in the group, but isn't a kernel child.
+                match unsafe { nix::unistd::fork() }? {
+                    nix::unistd::ForkResult::Parent { .. } => unsafe { libc::_exit(0) },
+                    nix::unistd::ForkResult::Child => {}
+                }
+                let mut ready = std::io::stdout().lock();
+                ready.write_all(&[1])?;
+                ready.flush()?;
+                drop(ready);
+                let mut b = [0];
+                loop {
+                    match std::io::stdin().read(&mut b) {
+                        Ok(0) => break,
+                        Ok(_) => continue,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
+                    }
+                }
+                nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL)?;
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+    daemon_main()
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn daemon_main() -> anyhow::Result<()> {
     // Install panic hook to ensure panics are logged to the daemon log file.
     // Uses early_log_path() which falls back to /tmp if HOME is not set.
     std::panic::set_hook(Box::new(|panic_info| {

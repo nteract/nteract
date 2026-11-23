@@ -103,7 +103,8 @@ where
     send_runtime_agent_request_with_kernel_ports_on_delivery(
         room,
         build_request,
-        |message, permit| {
+        None,
+        |_, message, permit| {
             permit.send(message);
             Ok(())
         },
@@ -111,11 +112,13 @@ where
     .await
 }
 
-/// All fallible reservation/enqueue waits precede the synchronous delivery
-/// commit, so a failed or cancelled preflight cannot destroy the old kernel.
+/// Wait for queue capacity before taking the optional NotebookDoc read guard.
+/// The callback validates and sends synchronously under that guard, which is
+/// released before waiting for the agent's reply.
 pub(crate) async fn send_runtime_agent_request_with_kernel_ports_on_delivery<F, C>(
     room: &NotebookRoom,
     mut build_request: F,
+    notebook: Option<&tokio::sync::RwLock<notebook_doc::NotebookDoc>>,
     mut on_delivery: C,
 ) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse>
 where
@@ -123,6 +126,7 @@ where
         notebook_protocol::protocol::KernelPorts,
     ) -> notebook_protocol::protocol::RuntimeAgentRequest,
     C: FnMut(
+        Option<&notebook_doc::NotebookDoc>,
         RuntimeAgentMessage,
         tokio::sync::mpsc::Permit<'_, RuntimeAgentMessage>,
     ) -> anyhow::Result<()>,
@@ -142,16 +146,23 @@ where
             .await
             .map_err(|_| anyhow::anyhow!("Runtime agent disconnected"))?;
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        on_delivery(
-            RuntimeAgentMessage::Query(
-                notebook_protocol::protocol::RuntimeAgentRequestEnvelope {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    request,
-                },
-                reply_tx,
-            ),
-            permit,
-        )?;
+        {
+            let doc = match notebook {
+                Some(notebook) => Some(notebook.read().await),
+                None => None,
+            };
+            on_delivery(
+                doc.as_deref(),
+                RuntimeAgentMessage::Query(
+                    notebook_protocol::protocol::RuntimeAgentRequestEnvelope {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        request,
+                    },
+                    reply_tx,
+                ),
+                permit,
+            )?;
+        }
         let response = recv_runtime_agent_query_response(reply_rx, timeout).await?;
 
         if let Some(delay) = kernel_launch_retry_delay(
@@ -475,7 +486,8 @@ mod tests {
         let response = send_runtime_agent_request_with_kernel_ports_on_delivery(
             &room,
             |_| notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
-            |_, _| anyhow::bail!("selection changed"),
+            Some(&room.doc),
+            |_, _, _| anyhow::bail!("selection changed"),
         )
         .await;
         assert!(response

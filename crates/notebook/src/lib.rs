@@ -608,6 +608,8 @@ struct DaemonReadyPayload {
     connection_scope: Option<String>,
     /// Optional daemon feature support, independent of the connection's authority.
     local_environment_selection: bool,
+    /// Whether the local daemon can discover and launch installed Jupyter kernels.
+    installed_kernelspecs: bool,
     /// Daemon-authoritative CommentsDoc identity for this room.
     comments_doc_id: Option<String>,
     /// Daemon-authoritative notebook reference stored inside the CommentsDoc.
@@ -1004,6 +1006,7 @@ async fn initialize_notebook_sync_open(
         actor_label: info.capabilities.actor_label.clone(),
         connection_scope: info.capabilities.connection_scope.clone(),
         local_environment_selection: info.capabilities.local_environment_selection,
+        installed_kernelspecs: info.capabilities.installed_kernelspecs,
         comments_doc_id: info.capabilities.comments_doc_id.clone(),
         comments_notebook_ref: info.capabilities.comments_notebook_ref.clone(),
         keyed_doc_kinds: info.capabilities.keyed_doc_kinds.clone(),
@@ -1091,6 +1094,7 @@ async fn initialize_notebook_sync_create(
         actor_label: info.capabilities.actor_label.clone(),
         connection_scope: info.capabilities.connection_scope.clone(),
         local_environment_selection: info.capabilities.local_environment_selection,
+        installed_kernelspecs: info.capabilities.installed_kernelspecs,
         comments_doc_id: info.capabilities.comments_doc_id.clone(),
         comments_notebook_ref: info.capabilities.comments_notebook_ref.clone(),
         keyed_doc_kinds: info.capabilities.keyed_doc_kinds.clone(),
@@ -1222,6 +1226,7 @@ fn attach_ready_payload(
         actor_label: capabilities.actor_label,
         connection_scope: capabilities.connection_scope,
         local_environment_selection: capabilities.local_environment_selection,
+        installed_kernelspecs: capabilities.installed_kernelspecs,
         comments_doc_id: capabilities.comments_doc_id,
         comments_notebook_ref: capabilities.comments_notebook_ref,
         keyed_doc_kinds: capabilities.keyed_doc_kinds,
@@ -1325,6 +1330,7 @@ async fn initialize_notebook_sync_hosted(
         actor_label: info.capabilities.actor_label.clone(),
         connection_scope: info.capabilities.connection_scope.clone(),
         local_environment_selection: info.capabilities.local_environment_selection,
+        installed_kernelspecs: info.capabilities.installed_kernelspecs,
         comments_doc_id: info.capabilities.comments_doc_id.clone(),
         comments_notebook_ref: info.capabilities.comments_notebook_ref.clone(),
         keyed_doc_kinds: info.capabilities.keyed_doc_kinds.clone(),

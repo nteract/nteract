@@ -1360,6 +1360,25 @@ enum KernelLaunchOutcome {
     /// Benign abort (no peers left, kernel already present); reopen the gate
     /// immediately so the next connect can launch without waiting.
     Released,
+    /// The launch committed a project trust park. Joiners receive the typed
+    /// trust refusal and auto-launch arms the failure cooldown. Without a
+    /// restored prior kernel, abandoned-launch cleanup runs first. When an
+    /// Apply restored its prior kernel, that kernel's agent slots are left
+    /// alone and only the completion is recorded.
+    ProjectTrustRequired { prior_kernel_restored: bool },
+}
+
+impl KernelLaunchOutcome {
+    /// Outcome after an Apply restored the kernel it preserved. A committed
+    /// trust refusal stays the generation's result; anything else is benign.
+    fn after_prior_kernel_restored(&self) -> Self {
+        match self {
+            Self::ProjectTrustRequired { .. } => Self::ProjectTrustRequired {
+                prior_kernel_restored: true,
+            },
+            _ => Self::Released,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1374,6 +1393,17 @@ pub(crate) enum KernelLaunchCompletion {
     Succeeded,
     Released,
     Cancelled,
+    /// The generation stopped at the project trust gate after committing the
+    /// `AwaitingProjectTrust` prompt.
+    ProjectTrustRequired,
+}
+
+impl KernelLaunchCompletion {
+    /// A refused trust park closes the auto-launch gate like a failure, so a
+    /// reconnect loop cannot re-run detection at connect frequency.
+    fn arms_auto_launch_cooldown(self) -> bool {
+        matches!(self, Self::Failed | Self::ProjectTrustRequired)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1413,6 +1443,10 @@ pub(crate) struct KernelLaunchAttempt {
 }
 
 impl KernelLaunchAttempt {
+    pub(crate) fn is_automatic(&self) -> bool {
+        matches!(self.source, KernelLaunchSource::Auto)
+    }
+
     pub(crate) fn preserve_kernel_during_preparation(&mut self) {
         if self
             .room
@@ -1596,6 +1630,24 @@ impl KernelLaunchAttempt {
         self.outcome = KernelLaunchOutcome::Released;
     }
 
+    /// Record that this generation stopped at a committed project trust park.
+    /// The token stays owned, so dropping it runs the same abandoned-launch
+    /// cleanup and auto-launch cooldown as a failure. A cancellation recorded
+    /// first still wins.
+    pub(crate) fn require_project_trust(&mut self) {
+        self.outcome = KernelLaunchOutcome::ProjectTrustRequired {
+            prior_kernel_restored: false,
+        };
+    }
+
+    /// Finish an Apply whose preparation stopped after the caller restored
+    /// the prior kernel projection. The prior kernel's agent slots stay
+    /// installed. A recorded trust refusal remains the generation's result;
+    /// otherwise this is [`Self::release_without_cooldown`].
+    pub(crate) fn release_to_prior_kernel(mut self) {
+        self.outcome = self.outcome.after_prior_kernel_restored();
+    }
+
     /// Atomically finish a pre-spawn no-peer abort and, if a reconnect raced
     /// it, admit the successor on that peer's behalf. Shutdown cancellation
     /// and readmission contend on the same gate lock, eliminating the gap
@@ -1717,10 +1769,18 @@ impl Drop for KernelLaunchAttempt {
                         )
                     })
                 });
-                self.outcome = KernelLaunchOutcome::Released;
+                self.outcome = self.outcome.after_prior_kernel_restored();
             }
         }
-        if self.is_cancelled() || matches!(self.outcome, KernelLaunchOutcome::Failed) {
+        if self.is_cancelled()
+            || matches!(
+                self.outcome,
+                KernelLaunchOutcome::Failed
+                    | KernelLaunchOutcome::ProjectTrustRequired {
+                        prior_kernel_restored: false
+                    }
+            )
+        {
             // A request worker can be aborted at any await when its peer
             // disconnects, including after agent provenance, a subprocess, or
             // connect channels have been installed. Keep the generation
@@ -1732,9 +1792,16 @@ impl Drop for KernelLaunchAttempt {
             let room = Arc::clone(&self.room);
             let generation = self.generation;
             let source = self.source;
+            let abandoned = match self.outcome {
+                KernelLaunchOutcome::ProjectTrustRequired { .. } => {
+                    KernelLaunchCompletion::ProjectTrustRequired
+                }
+                _ => KernelLaunchCompletion::Failed,
+            };
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                 handle.spawn(async move {
-                    room.cleanup_abandoned_launch(generation, source).await;
+                    room.cleanup_abandoned_launch(generation, source, abandoned)
+                        .await;
                     let gate = room.kernel_launch_gate.lock_state();
                     if gate.admitted_count == generation {
                         *room
@@ -1749,7 +1816,7 @@ impl Drop for KernelLaunchAttempt {
             // liveness in the defensive no-runtime case; no async-installed
             // Tokio resources can be live here.
             self.room
-                .finish_abandoned_launch(self.generation, self.source);
+                .finish_abandoned_launch(self.generation, self.source, abandoned);
             return;
         }
         let mut st = self.room.kernel_launch_gate.lock_state();
@@ -1757,6 +1824,15 @@ impl Drop for KernelLaunchAttempt {
             KernelLaunchOutcome::Failed => KernelLaunchCompletion::Failed,
             KernelLaunchOutcome::Succeeded => KernelLaunchCompletion::Succeeded,
             KernelLaunchOutcome::Released => KernelLaunchCompletion::Released,
+            // A cancellation that landed after the check above still wins
+            // over the refusal.
+            KernelLaunchOutcome::ProjectTrustRequired { .. } => {
+                if st.cancelled_generations.remove(&self.generation) {
+                    KernelLaunchCompletion::Cancelled
+                } else {
+                    KernelLaunchCompletion::ProjectTrustRequired
+                }
+            }
         };
         st.completed_outcomes.insert(self.generation, completion);
         // Waiters time out after 60 seconds and failed attempts have a
@@ -1770,8 +1846,7 @@ impl Drop for KernelLaunchAttempt {
             st.in_flight_cancel_tx = None;
             st.in_flight_abort_handle = None;
         }
-        if completion == KernelLaunchCompletion::Failed
-            && matches!(self.source, KernelLaunchSource::Auto)
+        if completion.arms_auto_launch_cooldown() && matches!(self.source, KernelLaunchSource::Auto)
         {
             st.cooldown_until = Some(tokio::time::Instant::now() + AUTO_LAUNCH_FAILURE_COOLDOWN);
         }
@@ -1932,6 +2007,16 @@ impl NotebookRoom {
         Some(commit())
     }
 
+    /// Serialize a save-only environment Apply against kernel replacement.
+    /// The caller holds the notebook write guard before entering the gate.
+    pub(crate) fn commit_without_launch<R>(&self, commit: impl FnOnce() -> R) -> Option<R> {
+        let state = self.kernel_launch_gate.lock_state();
+        if state.in_flight_generation.is_some() {
+            return None;
+        }
+        Some(commit())
+    }
+
     pub(crate) fn register_launch_abort_handle(
         &self,
         generation: u64,
@@ -1971,7 +2056,12 @@ impl NotebookRoom {
             .map(tokio::sync::watch::Sender::subscribe)
     }
 
-    async fn cleanup_abandoned_launch(&self, generation: u64, source: KernelLaunchSource) {
+    async fn cleanup_abandoned_launch(
+        &self,
+        generation: u64,
+        source: KernelLaunchSource,
+        abandoned: KernelLaunchCompletion,
+    ) {
         {
             let mut state = self.kernel_launch_gate.lock_state();
             if state.in_flight_generation != Some(generation) {
@@ -1985,10 +2075,18 @@ impl NotebookRoom {
         *self.runtime_agent_handle.lock().await = None;
         *self.runtime_agent_request_tx.lock().await = None;
         *self.pending_runtime_agent_connect_tx.lock().await = None;
-        self.finish_abandoned_launch(generation, source);
+        self.finish_abandoned_launch(generation, source, abandoned);
     }
 
-    fn finish_abandoned_launch(&self, generation: u64, source: KernelLaunchSource) {
+    /// Record the completion of an abandoned generation. `abandoned` is
+    /// `Failed` or `ProjectTrustRequired`; a cancellation recorded on the
+    /// gate takes precedence over either.
+    fn finish_abandoned_launch(
+        &self,
+        generation: u64,
+        source: KernelLaunchSource,
+        abandoned: KernelLaunchCompletion,
+    ) {
         let mut state = self.kernel_launch_gate.lock_state();
         if state.in_flight_generation != Some(generation) {
             return;
@@ -1997,13 +2095,14 @@ impl NotebookRoom {
         let completion = if cancelled {
             KernelLaunchCompletion::Cancelled
         } else {
-            KernelLaunchCompletion::Failed
+            abandoned
         };
 
         // Only an unprojected abrupt failure gets a generic Error. Normal
         // failure paths have already moved to Error or NotStarted; cancelled
-        // paths have already committed Shutdown or disconnect Error.
-        if !cancelled {
+        // paths have already committed Shutdown or disconnect Error; a trust
+        // refusal has already committed `AwaitingProjectTrust`.
+        if completion == KernelLaunchCompletion::Failed {
             if let Err(error) = self.state.with_doc(|doc| {
                 if matches!(
                     doc.read_state().kernel.lifecycle,
@@ -2032,9 +2131,7 @@ impl NotebookRoom {
         state.in_flight_generation = None;
         state.in_flight_cancel_tx = None;
         state.in_flight_abort_handle = None;
-        if completion == KernelLaunchCompletion::Failed
-            && matches!(source, KernelLaunchSource::Auto)
-        {
+        if completion.arms_auto_launch_cooldown() && matches!(source, KernelLaunchSource::Auto) {
             state.cooldown_until = Some(tokio::time::Instant::now() + AUTO_LAUNCH_FAILURE_COOLDOWN);
         }
     }
@@ -2776,6 +2873,22 @@ impl NotebookRoom {
         true
     }
 
+    /// Fence a peer write against runtime-agent replacement. The closure is
+    /// synchronous so ownership cannot change between admission and mutation.
+    pub(crate) fn with_runtime_agent_owner<T>(
+        &self,
+        runtime_agent_id: &str,
+        write: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let state = self.kernel_launch_gate.lock_state();
+        anyhow::ensure!(
+            state.expected_runtime_agent_id.as_deref() == Some(runtime_agent_id)
+                && state.connected_runtime_agent_id.as_deref() == Some(runtime_agent_id),
+            "Runtime agent no longer owns this notebook"
+        );
+        write()
+    }
+
     pub(crate) fn invalidate_runtime_agent_connection(&self) {
         let mut state = self.kernel_launch_gate.lock_state();
         state.expected_runtime_agent_id = None;
@@ -2996,6 +3109,79 @@ impl NotebookRoom {
             self.persistence.clear_load_failed();
         }
         Ok(recovered)
+    }
+
+    /// Recover only the degradation owned by a failed kernelspec journal
+    /// append. The caller holds NotebookDoc across the retry and this recovery.
+    pub(crate) fn retry_kernelspec_persistence(
+        &self,
+        doc: &mut NotebookDoc,
+        path: Option<&Path>,
+        target: Option<&notebook_protocol::protocol::InstalledKernelspec>,
+        runtime: &str,
+    ) -> anyhow::Result<()> {
+        let source = self.lifecycle.source_state();
+        let durability = self.durability.status();
+        let recovery = match &source {
+            RoomSourceState::Failed(status) => {
+                let Some(error) = &status.error else {
+                    anyhow::bail!(
+                        "Reconcile the notebook source before retrying the environment save"
+                    );
+                };
+                let reason = error.message.as_str();
+                anyhow::ensure!(
+                    error.code == "source_degraded"
+                        && reason.starts_with(
+                            "kernelspec selection journal commit failed before acknowledgement:"
+                        ),
+                    "Reconcile the notebook source before retrying the environment save"
+                );
+                if durability.degraded.as_ref().is_some_and(|degraded| {
+                    degraded.kind != super::durability::DegradationKind::DurabilityBoundary
+                        || degraded.reason != reason
+                }) {
+                    anyhow::bail!(
+                        "Reconcile the notebook source before retrying the environment save"
+                    );
+                }
+                Some((status, reason))
+            }
+            _ if durability.is_degraded() || source.is_in_progress() => {
+                anyhow::bail!("Notebook source is not ready for an environment save");
+            }
+            _ => None,
+        };
+        crate::kernelspec::persist(self, doc, target, runtime)?;
+        if let Some((status, reason)) = recovery {
+            anyhow::ensure!(
+                !self.durability.status().is_degraded(),
+                "Notebook recovery storage still requires repair"
+            );
+            let generation = status.generation.saturating_add(1);
+            let projection = Arc::new(super::projection::build_recovered_notebook_projection(
+                self, doc, generation, path,
+            )?);
+            anyhow::ensure!(
+                self.lifecycle
+                    .recover_failed_matching(
+                        doc.cell_count(),
+                        projection.notebook_heads.clone(),
+                        projection,
+                        Some(status)
+                    )
+                    .is_some(),
+                "Notebook source changed during the environment save; review and try again"
+            );
+            self.clear_load_failed();
+            self.state.with_doc(|state| {
+                if matches!(state.read_state().file_checkpoint.source_issue, Some(runtime_doc::FileSourceIssue::Degraded { reason: current }) if current == reason) {
+                    state.set_file_source_issue(None)?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     /// Get kernel info if a kernel is running (runtime-agent-backed).

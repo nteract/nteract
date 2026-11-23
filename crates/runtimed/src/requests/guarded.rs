@@ -8,7 +8,8 @@ use notebook_doc::{diff::DocChangeset, NotebookDoc};
 use crate::notebook_sync_server::{check_and_update_trust_state, NotebookRoom};
 use crate::protocol::NotebookResponse;
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, thiserror::Error)]
+#[error("{reason}")]
 pub(crate) struct GuardRejection {
     reason: &'static str,
 }
@@ -26,8 +27,17 @@ type GuardResult<T = ()> = Result<T, GuardRejection>;
 pub(crate) async fn ensure_trusted(room: &NotebookRoom) -> GuardResult {
     check_and_update_trust_state(room).await;
     let trust_state = room.trust_state.read().await;
+    validate_trust(&trust_state.status)
+}
+
+pub(crate) fn ensure_trusted_for_doc(room: &NotebookRoom, doc: &NotebookDoc) -> GuardResult {
+    let trust = crate::notebook_sync_server::verify_trust_from_doc(doc, &room.trusted_packages);
+    validate_trust(&trust.status)
+}
+
+fn validate_trust(status: &runt_trust::TrustStatus) -> GuardResult {
     if matches!(
-        trust_state.status,
+        status,
         runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
     ) {
         Ok(())
@@ -56,17 +66,7 @@ pub(crate) async fn ensure_trusted_pep723(
             "PEP 723 dependencies changed before launch. Review the notebook again.",
         ));
     }
-    let trust = crate::notebook_sync_server::verify_trust_from_doc(&doc, &room.trusted_packages);
-    if matches!(
-        trust.status,
-        runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
-    ) {
-        Ok(())
-    } else {
-        Err(rejected(
-            "Trust changed before the action could run. Review the notebook again.",
-        ))
-    }
+    ensure_trusted_for_doc(room, &doc)
 }
 
 pub(crate) fn validate_execute_cell(
@@ -132,6 +132,15 @@ pub(crate) fn validate_dependencies_unchanged_since_observed(
 ) -> GuardResult {
     let observed = parse_heads(observed_heads)?;
     let reviewed = dependency_fingerprint_at_observed_heads(doc, &observed)?;
+    if doc
+        .get_metadata_snapshot_at_heads(&observed)
+        .and_then(|s| s.kernelspec)
+        != doc.get_metadata_snapshot().and_then(|s| s.kernelspec)
+    {
+        return Err(rejected(
+            "Notebook kernelspec changed; review before applying",
+        ));
+    }
     let current = current_dependency_fingerprint(doc);
     if current != reviewed {
         return Err(rejected(
@@ -209,7 +218,7 @@ fn parse_heads(heads: &[String]) -> GuardResult<Vec<ChangeHash>> {
         .collect()
 }
 
-fn rejected(reason: &'static str) -> GuardRejection {
+pub(crate) fn rejected(reason: &'static str) -> GuardRejection {
     GuardRejection { reason }
 }
 
