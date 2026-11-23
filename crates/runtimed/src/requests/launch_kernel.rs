@@ -259,10 +259,11 @@ pub(crate) async fn wait_for_launch_metadata(room: &NotebookRoom) -> anyhow::Res
 
 fn installed_kernel_requires_user_start(
     attempt: Option<&KernelLaunchAttempt>,
+    language: &str,
     spec: &notebook_protocol::protocol::KernelspecLaunch,
 ) -> bool {
     attempt.is_some_and(KernelLaunchAttempt::is_automatic)
-        && crate::kernelspec::requires_explicit_launch(spec)
+        && crate::kernelspec::requires_explicit_launch(language, spec)
 }
 
 #[cfg(test)]
@@ -275,12 +276,12 @@ mod installed_delivery_tests {
     async fn wrapper_policy_blocks_only_daemon_initiated_launches() {
         let (_tmp, room) = super::tests::test_room();
         let wrapped = notebook_protocol::protocol::KernelspecLaunch {
-            executable: "env".into(),
+            executable: "/bin/sh".into(),
             args: [
-                "python",
-                "-m",
-                "ipykernel_launcher",
-                "-f",
+                "-c",
+                "\"$1\" -m ipykernel_launcher -f \"$2\"; wait",
+                "wrapper",
+                "/opt/env/bin/python",
                 "{connection_file}",
             ]
             .map(String::from)
@@ -292,13 +293,23 @@ mod installed_delivery_tests {
         let AutoLaunchAdmission::Admitted(auto) = room.try_begin_auto_launch() else {
             panic!("auto admission")
         };
-        assert!(installed_kernel_requires_user_start(Some(&auto), &wrapped));
+        assert!(installed_kernel_requires_user_start(
+            Some(&auto),
+            "PyThOn",
+            &wrapped
+        ));
+        assert!(!installed_kernel_requires_user_start(
+            Some(&auto),
+            "julia",
+            &wrapped
+        ));
         auto.release_without_cooldown();
         let ManualLaunchAdmission::Admitted(manual) = room.try_begin_manual_launch() else {
             panic!("explicit admission")
         };
         assert!(!installed_kernel_requires_user_start(
             Some(&manual),
+            "python",
             &wrapped
         ));
         manual.release_without_cooldown();
@@ -897,13 +908,15 @@ async fn handle_attempt(
         }
         match crate::kernelspec::resolve(name.clone())
             .await
-            .and_then(|spec| Ok((Some(spec.info(&name)), Some(spec.prepare(&inherited)?))))
+            .and_then(|spec| Ok((spec.info(&name), spec.prepare(&inherited)?)))
         {
-            Ok(spec) => {
-                if spec.1.as_ref().is_some_and(|spec| {
-                    installed_kernel_requires_user_start(launch_attempt.as_ref(), spec)
-                }) {
-                    let message = "This kernel starts through a wrapper nteract cannot isolate from files next to the notebook. Start it from the Environment menu.";
+            Ok((info, spec)) => {
+                if installed_kernel_requires_user_start(
+                    launch_attempt.as_ref(),
+                    &info.language,
+                    &spec,
+                ) {
+                    let message = "This Python kernel does not use nteract's protected launch path. Start it from the Environment menu.";
                     reset_starting_state_with_outcome(
                         room,
                         None,
@@ -915,7 +928,7 @@ async fn handle_attempt(
                     .await;
                     return guarded::rejected(message).into_response();
                 }
-                spec
+                (Some(info), Some(spec))
             }
             Err(e) => {
                 let error = format!("{e:#}");
@@ -3086,6 +3099,19 @@ mod tests {
         let selection = room.local_environment_selection.snapshot();
         assert_eq!(selection.intent_persistence, Unsaved);
         assert_eq!(room.doc.write().await.get_heads_hex(), fresh_heads);
+        // Model reconciliation paused after it computes its next generation.
+        // Retry must not publish that same generation while the claim is held.
+        let reconciliation = room.try_claim_source_reconciliation().unwrap();
+        let source_before = room.lifecycle.source_state();
+        let next_generation = source_before.generation().saturating_add(1);
+        assert!(matches!(
+            super::super::local_environment_selection::apply(&room, &daemon, selection.revision, fresh_heads.clone()).await,
+            NotebookResponse::EnvironmentSelectionRejected { error } if error.contains("reconciliation is already in progress"),
+        ));
+        assert_eq!(room.lifecycle.source_state(), source_before);
+        assert_eq!(room.local_environment_selection.snapshot(), selection);
+        assert_eq!(room.doc.write().await.get_heads_hex(), fresh_heads);
+        drop(reconciliation);
         let response = super::super::local_environment_selection::apply(
             &room,
             &daemon,
@@ -3096,6 +3122,7 @@ mod tests {
         assert!(
             matches!(response, NotebookResponse::EnvironmentSelection { selection } if selection.intent_persistence == Current && !selection.applying)
         );
+        assert_eq!(room.lifecycle.source_state().generation(), next_generation);
         let metadata = room.doc.read().await.get_metadata_snapshot().unwrap();
         assert_eq!(metadata.kernelspec.unwrap().name, "julia");
         assert_eq!(metadata.runt.extra["installed_kernelspec"], "julia");

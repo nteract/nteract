@@ -1307,11 +1307,33 @@ async fn stalled_kernelspec_teardown(force: bool) {
     let peer = connect::connect_open(socket.clone(), path.clone(), "stall-owner")
         .await
         .unwrap();
+    assert_session_ready(&peer.handle, "stall-owner").await;
+    let refused = wait_for_runtime_state(&peer.handle, |state| {
+        state.kernel.lifecycle == runtime_doc::RuntimeLifecycle::Error
+    })
+    .await;
+    assert!(refused
+        .kernel
+        .error_details
+        .as_deref()
+        .is_some_and(|details| details.contains("Start it from the Environment menu")));
     let id = uuid::Uuid::parse_str(&peer.info.notebook_id).unwrap();
-    let (stream, _) = tokio::time::timeout(Duration::from_secs(12), listener.accept())
-        .await
-        .expect("installed child spawned")
-        .unwrap();
+    // The fixture uses `python -c`, so start it explicitly. Poll the RPC
+    // only until the child connects; its Jupyter handshake never completes.
+    let (stream, _) = {
+        let launch = peer.handle.send_request(NotebookRequest::LaunchKernel {
+            kernel_type: "auto".into(),
+            env_source: notebook_protocol::connection::LaunchSpec::Auto,
+            notebook_path: None,
+        });
+        tokio::pin!(launch);
+        tokio::select! {
+            response = &mut launch => panic!("stalled launch completed early: {response:?}"),
+            accepted = tokio::time::timeout(Duration::from_secs(12), listener.accept()) => {
+                accepted.expect("installed child spawned").unwrap()
+            }
+        }
+    };
     let mut stream = BufReader::new(stream);
     let mut ready = String::new();
     stream.read_line(&mut ready).await.unwrap();
@@ -1429,6 +1451,25 @@ wait"#;
         .await
         .unwrap();
     assert_session_ready(&peer.handle, "wrapper").await;
+    let refused = tokio::select! {
+        connection = listener.accept() => panic!("Python shell wrapper started automatically: {connection:?}"),
+        state = wait_for_runtime_state(&peer.handle, |state| {
+            state.kernel.lifecycle == runtime_doc::RuntimeLifecycle::Error
+        }) => state,
+    };
+    assert_eq!(
+        refused.kernel.lifecycle,
+        runtime_doc::RuntimeLifecycle::Error
+    );
+    assert_eq!(
+        refused.kernel.error_reason.as_deref(),
+        Some(runtime_doc::KernelErrorReason::EnvironmentPrepareFailed.as_str()),
+    );
+    assert!(refused
+        .kernel
+        .error_details
+        .as_deref()
+        .is_some_and(|details| details.contains("Start it from the Environment menu")));
     let launch = peer
         .handle
         .send_request(NotebookRequest::LaunchKernel {
@@ -1439,7 +1480,7 @@ wait"#;
         .await
         .unwrap();
     assert!(
-        matches!(&launch,NotebookResponse::KernelAlreadyRunning{launched_config,..}|NotebookResponse::KernelLaunched{launched_config,..} if launched_config.installed_kernelspec.as_ref().is_some_and(|s|s.name==name)),
+        matches!(&launch,NotebookResponse::KernelLaunched{launched_config,..} if launched_config.installed_kernelspec.as_ref().is_some_and(|s|s.name==name)),
         "{launch:?}"
     );
     let (mut descendant, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())

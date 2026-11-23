@@ -717,10 +717,18 @@ pub(crate) async fn apply(
 /// Retry against fresh reviewed heads without resolving, starting or replacing
 /// the kernel. The pending choice remains saveable even if the kernel stops.
 async fn retry_save(
-    room: &NotebookRoom,
+    room: &Arc<NotebookRoom>,
     snapshot: &EnvironmentSelectionSnapshot,
     observed_heads: &[String],
 ) -> NotebookResponse {
+    // Both paths can advance source generation. Claim before observing the
+    // path or durability state, and hold it through the ready transition.
+    let Some(_reconciliation) = room.try_claim_source_reconciliation() else {
+        return rejected(
+            "Notebook source reconciliation is already in progress; retry after it completes"
+                .into(),
+        );
+    };
     let path = room.file_binding.path().await;
     let mut doc = room.doc.write().await;
     room.commit_without_launch(|| {

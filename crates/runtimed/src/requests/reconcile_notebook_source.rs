@@ -30,6 +30,9 @@ pub(crate) async fn handle(
     operation: SourceReconciliation,
 ) -> NotebookResponse {
     let operation_name = operation.operation();
+    let Some(_claim) = room.try_claim_source_reconciliation() else {
+        return blocked(operation_name, SourceReconciliationBlockedReason::Busy);
+    };
     if !matches!(room.lifecycle.availability(), RoomAvailability::Degraded(_)) {
         return blocked(
             operation_name,
@@ -38,9 +41,6 @@ pub(crate) async fn handle(
             },
         );
     }
-    let Some(_claim) = room.try_claim_source_reconciliation() else {
-        return blocked(operation_name, SourceReconciliationBlockedReason::Busy);
-    };
     let source_generation = room.lifecycle.source_state().generation().saturating_add(1);
 
     match operation {

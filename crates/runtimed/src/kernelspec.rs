@@ -250,14 +250,10 @@ fn protected_python_module(spec: &KernelspecLaunch) -> Option<PythonModuleLaunch
     python_module_launch(&spec.args).filter(|_| is_direct_python(&spec.executable))
 }
 
-/// Wrapped Python module launches are not rewritten: wrapper arguments are
-/// wrapper-specific. Require an explicit launch when argv exposes such a command.
-pub(crate) fn requires_explicit_launch(spec: &KernelspecLaunch) -> bool {
-    !is_direct_python(&spec.executable)
-        && spec.args.iter().enumerate().any(|(index, arg)| {
-            is_python_executable(Path::new(arg))
-                && python_module_launch(&spec.args[index + 1..]).is_some()
-        })
+/// Automatically start a declared Python kernel only if `command` will
+/// launch it through the protected entry script. Other languages are unchanged.
+pub(crate) fn requires_explicit_launch(language: &str, spec: &KernelspecLaunch) -> bool {
+    language.eq_ignore_ascii_case("python") && protected_python_module(spec).is_none()
 }
 
 fn python_module_launch(args: &[String]) -> Option<PythonModuleLaunch<'_>> {
@@ -658,39 +654,66 @@ mod tests {
     }
 
     #[test]
-    fn wrapped_python_modules_require_explicit_launch() {
-        for (executable, args, required) in [
+    fn declared_python_requires_protected_entry_for_autostart() {
+        for (language, executable, args, required) in [
             (
+                "python",
                 "conda",
                 vec!["run", "-n", "x", "python", "-m", "ipykernel_launcher"],
                 true,
             ),
             (
+                "python",
                 "/usr/bin/env",
                 vec!["python3", "-W", "ignore", "-m", "entry"],
                 true,
             ),
             (
+                "python",
                 "uv",
                 vec!["run", "python", "-Xfrozen_modules=off", "-m", "entry"],
                 true,
             ),
             (
+                "python",
                 "pixi",
                 vec!["run", "{resource_dir}/bin/python3.12", "-Bumlauncher"],
                 true,
             ),
-            ("python", vec!["-m", "ipykernel_launcher"], false),
-            ("pythonw.exe", vec!["-x", "-m", "ipykernel_launcher"], false),
-            ("julia", vec!["--project=@.", "kernel.jl"], false),
-            ("ark", vec!["-m", "ark_launcher"], false),
             (
-                "conda",
-                vec!["run", "python", "script.py", "-m", "arg"],
+                "PyThOn",
+                "/bin/sh",
+                vec![
+                    "-c",
+                    "\"$1\" -m ipykernel_launcher -f \"$2\"; wait",
+                    "wrapper",
+                    "/env/bin/python",
+                    "{connection_file}",
+                ],
+                true,
+            ),
+            ("python", "python", vec!["-m", "ipykernel_launcher"], false),
+            (
+                "Python",
+                "pythonw.exe",
+                vec!["-x", "-m", "ipykernel_launcher"],
                 false,
             ),
-            ("env", vec!["python", "-c", "pass", "-m", "arg"], false),
-            ("env", vec!["python", "-W", "-m", "script.py"], false),
+            ("julia", "julia", vec!["--project=@.", "kernel.jl"], false),
+            ("R", "env", vec!["python", "-m", "some_bridge"], false),
+            (
+                "python",
+                "conda",
+                vec!["run", "python", "script.py", "-m", "arg"],
+                true,
+            ),
+            ("python", "python", vec!["-c", "pass", "-m", "arg"], true),
+            (
+                "python",
+                "env",
+                vec!["python", "-W", "-m", "script.py"],
+                true,
+            ),
         ] {
             let spec = KernelspecLaunch {
                 executable: PathBuf::from(executable),
@@ -700,7 +723,7 @@ mod tests {
                 interrupt_mode: InterruptMode::Signal,
             };
             assert_eq!(
-                requires_explicit_launch(&spec),
+                requires_explicit_launch(language, &spec),
                 required,
                 "{executable} {:?}",
                 spec.args
