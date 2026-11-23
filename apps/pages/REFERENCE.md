@@ -120,6 +120,19 @@ block ends in a code block, table, unknown block or image, ArrowDown on its last
 line, Mod-Enter, or a click below it adds an empty paragraph. That paragraph is
 an ordinary edit, so opening a Page writes nothing.
 
+"Continue writing", the blank space below the last block, puts the caret in an
+empty paragraph at the end of the last block, inside that block
+([viewer/writing-continuation.mjs](viewer/writing-continuation.mjs)). It adds
+that paragraph through the last block's editor, the same edit ArrowDown makes,
+unless the block already ends in an empty paragraph or is blank; then it writes
+nothing. Existing nodes keep their IDs and comment anchors. It merges as Enter
+does: text a peer types at the end of the last paragraph at the same moment is
+kept, and can land in the new paragraph. The browser makes a
+block in two cases only: a Page with no block gets its first one, and a last
+block nobody can write inside (a read-only editor, content this build draws
+lossily, or a block shown as a notice because drawing it threw) gets a new
+empty block after it.
+
 Agent Markdown writes (create, insert or replace Markdown, comments with
 `body_format: "markdown"`) refuse math and HTML other than highlight tags with
 `400 unsupported_markdown` and `unsupported: { construct, line, column, excerpt }`,
