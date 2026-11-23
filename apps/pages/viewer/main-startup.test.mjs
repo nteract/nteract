@@ -214,6 +214,14 @@ test("a signed-out visit to a Page link asks to sign in to that Page and returns
   try {
     await boot(() => Response.json({ error: "Sign in required" }, { status: 401 }));
     assert.equal(document.querySelector("h1")?.textContent, "Sign in to open this Page.");
+    // A reader that runs the script sees this view, not the shell's
+    // <noscript>, so the agent pointers are here in prose.
+    const agents = document.querySelector(".welcome-agents");
+    assert.match(agents?.textContent ?? "", /^Connecting an agent\?/);
+    assert.deepEqual(
+      [...agents.querySelectorAll("a")].map((link) => link.getAttribute("href")),
+      ["/llms.txt", "/connect"],
+    );
     const signIn = [...document.querySelectorAll("a")].find(
       (link) => link.textContent === "Sign in",
     );

@@ -502,6 +502,7 @@ import {
   linkUnavailable,
   readLinkRoute,
 } from "./link-previews.mjs";
+import { agentShellResponse } from "./agent-shell.mjs";
 import { pageShellSlug, slugShellResponse } from "./page-shell.mjs";
 import { SOCIAL_CARD_PATH } from "../shared/social-card.mjs";
 import { siteShellResponse, socialCard, socialCardResponse } from "./site-tags.mjs";
@@ -2142,8 +2143,14 @@ const gateway = {
       const publicPreview = /^\/p\/([^/]+)(?:\/(preview\.json|preview\.png))?\/?$/.exec(
         url.pathname,
       );
+      // Every app shell below passes through agentShellResponse
+      // (agent-shell.mjs), which adds the headers a reader that runs no
+      // script sees, and turns a missing file into a 404.
       if (publicPreview && validPageId(publicPreview[1]))
-        return await publicPreviewResponse(request, env, publicPreview[1], publicPreview[2]);
+        return agentShellResponse(
+          request,
+          await publicPreviewResponse(request, env, publicPreview[1], publicPreview[2]),
+        );
       if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/internal/"))
         return json({ error: "Not found" }, 404);
       // A chart Worker runs under the CSP delivered with its own script, so
@@ -2159,10 +2166,16 @@ const gateway = {
       const card = socialCard(env);
       const slug = pageShellSlug(request, url);
       if (slug)
-        return await publicPreviewResponse(request, env, url.pathname.split("/")[2], null, () =>
-          slugShellResponse(request, env.ASSETS, slug, publicOrigin, card),
+        return agentShellResponse(
+          request,
+          await publicPreviewResponse(request, env, url.pathname.split("/")[2], null, () =>
+            slugShellResponse(request, env.ASSETS, slug, publicOrigin, card),
+          ),
         );
-      return await siteShellResponse(request, env.ASSETS, publicOrigin, card);
+      return agentShellResponse(
+        request,
+        await siteShellResponse(request, env.ASSETS, publicOrigin, card),
+      );
     } catch (error) {
       // A browser opening a sign-in route while Pages starts gets a page
       // that loads it again, not the JSON refusal.
