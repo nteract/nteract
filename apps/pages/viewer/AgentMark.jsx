@@ -164,6 +164,18 @@ export function agentMarkFor(driver) {
   return null;
 }
 
+/** The mark for the maker of a reported model ("claude-opus-5.5", "gpt-5",
+ * "gemini-2.5-pro"…), or null. A model names who trained it, so a Codex
+ * model gets OpenAI's mark, not the Codex harness's. */
+export function modelMarkFor(model) {
+  const name = String(model ?? "").toLowerCase();
+  if (!name) return null;
+  if (/claude|anthropic|\b(?:opus|sonnet|haiku)\b/.test(name)) return "claude";
+  if (name.includes("gemini")) return "gemini";
+  if (/\bgpt|openai|codex|\bo[1-9]\b/.test(name)) return "openai";
+  return null;
+}
+
 /** Whether a mark draws its own tile (Codex, Kilo) or sits on one. */
 export const markHasTile = (mark) => (MARKS[mark] ? !MARKS[mark].tile : false);
 

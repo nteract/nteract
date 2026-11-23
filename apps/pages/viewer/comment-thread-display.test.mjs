@@ -281,6 +281,20 @@ test("an agent's own name leads the byline, with the harness after via", () => {
   );
 });
 
+test("an agent named for its own harness shows the name once", () => {
+  const base = { principal: "a:2", displayName: "Kyle Kelley", driver: "Kilo" };
+  for (const name of ["Kilo", "kilo", " KILO "]) {
+    const who = attribution({ ...base, agent: { name, model: "claude-opus-5.5" } });
+    assert.equal(who.via, null);
+    assert.equal(bylineText({ ...base, agent: { name } }), `${name.trim()} for Kyle`);
+    assert.equal(who.label, `${name.trim()} on behalf of Kyle Kelley`);
+  }
+  assert.equal(
+    bylineText({ ...base, agent: { name: "Kilo reviewer" } }),
+    "Kilo reviewer via Kilo for Kyle",
+  );
+});
+
 test("the model shows as a byline label only when the client asserted one", () => {
   const base = { principal: "a:2", displayName: "Kyle Kelley", driver: "Kilo" };
   assert.equal(

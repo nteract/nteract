@@ -24,7 +24,7 @@ const bundled = await build({
     },
   ],
 });
-const { AgentMark, agentMarkFor } = await import(
+const { AgentMark, agentMarkFor, modelMarkFor } = await import(
   `data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].contents).toString("base64")}`
 );
 const { createElement } = await import("react");
@@ -42,6 +42,16 @@ test("agentMarkFor recognizes the agents that comment", () => {
   assert.equal(agentMarkFor("Browser"), null);
   assert.equal(agentMarkFor("Some new agent"), null);
   assert.equal(agentMarkFor(undefined), null);
+});
+
+test("modelMarkFor names the maker of a reported model", () => {
+  for (const model of ["claude-opus-5.5", "Claude Sonnet 4", "anthropic/claude-3", "opus-4"])
+    assert.equal(modelMarkFor(model), "claude", model);
+  for (const model of ["gpt-5", "openai/gpt-4.1", "o3-mini", "gpt-5-codex"])
+    assert.equal(modelMarkFor(model), "openai", model);
+  assert.equal(modelMarkFor("gemini-2.5-pro"), "gemini");
+  for (const model of ["kilo", "llama-4", "mistral-large", "", undefined, "photo3"])
+    assert.equal(modelMarkFor(model), null, String(model));
 });
 
 test("marks render as decorative SVG with gradients scoped per instance", () => {

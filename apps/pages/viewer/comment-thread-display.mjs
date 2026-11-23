@@ -73,7 +73,8 @@ const label = (value) => (typeof value === "string" && value.trim() ? value.trim
  * participant's live caret.
  *
  * When the agent said its own name (`author.agent.name`), that name leads and
- * the driver follows as `via`. The model is shown as reported by the client.
+ * the driver follows as `via`, unless the two are the same name: "Kilo via
+ * Kilo" says nothing twice. The model is shown as reported by the client.
  */
 export function attribution(author) {
   const person = author?.displayName?.trim() || "Collaborator";
@@ -82,17 +83,16 @@ export function attribution(author) {
   const agentName = agent ? label(author?.agent?.name) : null;
   const model = agent ? label(author?.agent?.model) : null;
   const name = agentName ?? (agent ? driver : person);
+  const via = agentName && agentName.toLowerCase() !== driver.toLowerCase() ? driver : null;
   const { background, foreground } = presenceColor(author?.principal, driver);
   return {
     agent,
     name,
     person,
     onBehalfOf: agent ? firstName(person) : null,
-    via: agentName ? driver : null,
+    via,
     model,
-    label: agent
-      ? `${agentName ? `${agentName} via ${driver}` : driver} on behalf of ${person}`
-      : person,
+    label: agent ? `${via ? `${name} via ${via}` : name} on behalf of ${person}` : person,
     initials: initials(name),
     personInitials: initials(person),
     color: background,

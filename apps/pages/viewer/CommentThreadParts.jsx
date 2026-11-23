@@ -3,7 +3,7 @@
 import { useEffect, useId, useState } from "react";
 import { ChevronDown, ChevronUp, ListChecks, Table, Text, Unlink } from "lucide-react";
 import { CommentContent } from "./CommentRichText.jsx";
-import { AgentMark, agentMarkFor, markHasTile } from "./AgentMark.jsx";
+import { AgentMark, agentMarkFor, markHasTile, modelMarkFor } from "./AgentMark.jsx";
 import {
   attribution,
   fullTime,
@@ -24,9 +24,25 @@ export function useNow(intervalMs = 60_000) {
   return now;
 }
 
+/** The corner badge on an agent's avatar: the mark of the model it reported,
+ * or the person's initial when the model is unknown or its mark is already
+ * the avatar (Claude Code on a Claude model). The byline's "for Kyle" names
+ * the person either way. */
+function AvatarBadge({ who, mark }) {
+  const model = modelMarkFor(who.model);
+  if (model && model !== mark)
+    return (
+      <span className="comment-avatar-badge comment-avatar-badge-mark">
+        <AgentMark mark={model} size={9} />
+      </span>
+    );
+  return <span className="comment-avatar-badge">{who.personInitials.slice(0, 1)}</span>;
+}
+
 export function Avatar({ author, size = 24 }) {
   const who = attribution(author);
   const mark = who.agent ? agentMarkFor(author?.driver) : null;
+  const title = [who.label, modelNote(who)].filter(Boolean).join("\n");
   if (mark)
     return (
       <span
@@ -35,11 +51,11 @@ export function Avatar({ author, size = 24 }) {
           (markHasTile(mark) ? " comment-avatar-own-tile" : "")
         }
         style={{ "--avatar-size": `${size}px` }}
-        title={who.label}
+        title={title}
         aria-hidden="true"
       >
         <AgentMark mark={mark} size={Math.round(size * (markHasTile(mark) ? 1 : 0.62))} />
-        <span className="comment-avatar-badge">{who.personInitials.slice(0, 1)}</span>
+        <AvatarBadge who={who} mark={mark} />
       </span>
     );
   return (
@@ -50,11 +66,11 @@ export function Avatar({ author, size = 24 }) {
         "--avatar-color": who.color,
         "--avatar-foreground": who.foreground,
       }}
-      title={who.label}
+      title={title}
       aria-hidden="true"
     >
       {who.initials}
-      {who.agent && <span className="comment-avatar-badge">{who.personInitials.slice(0, 1)}</span>}
+      {who.agent && <AvatarBadge who={who} mark={null} />}
     </span>
   );
 }
