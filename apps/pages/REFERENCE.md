@@ -4265,9 +4265,10 @@ still replay the recorded receipt; these guards run only for new intents.
   and rolls back the batch. Blocks with newer-build content refuse with
   `newer_content`. Because each in-place insert reads its whole block back to
   check it, a batch caps the total length of the blocks it writes into at
-  `MAX_BATCH_IN_PLACE_UNITS` (3,000,000 UTF-16 units, checked upfront; about
-  15 inserts into a 200 KB block, or about 4 s on a laptop, more on the
-  Workers host).
+  `MAX_BATCH_IN_PLACE_UNITS` (3,000,000 UTF-16 units, checked upfront). On a
+  laptop a full budget is about 15 inserts into a 200 KB block in about
+  4 s, or 7 moves between two 200 KB blocks in about 5.5 to 6 s; the
+  Workers host is slower.
 - **Reads:** a batch reads each block once and keeps the read for its later
   operations on that block ([model/block-reads.mjs](model/block-reads.mjs)).
   An insert, move or node delete replaces the kept read with the read it

@@ -17,10 +17,13 @@
 // section's words tagged with its number so every match is unique.
 //   one block   the whole text in one block
 //   N blocks    one section per block
+//   two blocks  half the sections in each of two blocks, for moves between
+//               two large blocks only
 // Cases, each one batch, spread over the sections:
 //   20 format_match, 20 replace_match, 10 insert_markdown after a node,
-//   2 move_nodes, and 20 replace_match with conflict_scope target against
-//   the revision before a peer's edit at the end of the first block.
+//   2 move_nodes, 2 move_nodes between two blocks, and 20 replace_match with
+//   conflict_scope target against the revision before a peer's edit at the
+//   end of the first block.
 // Writes test-results/edit-batch-benchmark.json (every sample) and prints
 // median [min, max] milliseconds, or the refusal a batch met.
 import assert from "node:assert/strict";
@@ -75,21 +78,28 @@ function pageOf(parts) {
     },
   );
 }
+const half = Math.ceil(SECTIONS / 2);
 const fixtures = {
   "one block": pageOf([sections.join("\n\n")]),
   [`${SECTIONS} blocks`]: pageOf(sections),
+  "two blocks": pageOf([sections.slice(0, half).join("\n\n"), sections.slice(half).join("\n\n")]),
 };
+/** The block holding section `i` in `doc`, and the index of its first node
+ * there. */
+function sectionAt(doc, i) {
+  const keys = orderedBlockIds(doc);
+  const per = Math.ceil(SECTIONS / keys.length);
+  return { key: keys[Math.floor(i / per)], first: (i % per) * 10 };
+}
 
 /** Section `i`'s top-level node ids by kind, in the fixture `doc`: its
  * second paragraph, its code block and its table. */
 function sectionNodes(doc, i) {
-  const keys = orderedBlockIds(doc);
-  const key = keys.length === 1 ? keys[0] : keys[i];
+  const { key, first } = sectionAt(doc, i);
   const ids = nodeAddresses(doc, key);
   const nodes = nativeRead(doc.blocks[key], PAGE).nodes;
-  // The section's nodes, in order: heading, three paragraphs, three lists,
-  // a quote, a code block and a table.
-  const first = keys.length === 1 ? i * 10 : 0;
+  // The section's nodes, in order, from `first`: heading, three paragraphs,
+  // three lists, a quote, a code block and a table.
   const kinds = nodes.slice(first, first + 10).map(readKind);
   assert.deepEqual(
     kinds.slice(0, 4),
@@ -124,6 +134,17 @@ const cases = {
       after_node_id: sectionNodes(doc, i).paragraph,
       markdown: `An inserted paragraph after section ${tag(i)}.`,
     })),
+  // From each block to the other: each move counts both blocks.
+  "2 move_nodes between blocks": (doc) => {
+    const from = [sectionNodes(doc, 10), sectionNodes(doc, SECTIONS - 10)];
+    const to = [sectionNodes(doc, SECTIONS - 20), sectionNodes(doc, 20)];
+    return from.map((nodes, k) => ({
+      op: "move_nodes",
+      node_id: nodes.quote,
+      through_node_id: nodes.table,
+      after_node_id: to[k].paragraph,
+    }));
+  },
   "20 replace_match target scope": () =>
     spread(20).map((i) => ({
       op: "replace_match",
@@ -143,15 +164,16 @@ const cases = {
 };
 // A passage operation names the block its match is in.
 function addressed(doc, operations) {
-  const keys = orderedBlockIds(doc);
   return operations.map((op) => {
     if (op.op !== "format_match" && op.op !== "replace_match") return op;
     const i = Number(/s(\d{3})q/.exec(op.match_text)[1]);
-    return { ...op, node_id: A.getObjectId(doc.blocks[keys.length === 1 ? keys[0] : keys[i]]) };
+    return { ...op, node_id: A.getObjectId(doc.blocks[sectionAt(doc, i).key]) };
   });
 }
 
 const TARGET_SCOPE = new Set(["20 replace_match target scope"]);
+// The cases the two-block fixture is for; the other fixtures skip them.
+const TWO_BLOCKS = new Set(["2 move_nodes between blocks"]);
 // The current document a target-scoped batch meets: its base revision plus
 // a peer's sentence at the end of the first block, which the guard rebases
 // over.
@@ -205,6 +227,7 @@ console.log(JSON.stringify(report.fixtures));
 for (const [caseName, build] of Object.entries(cases)) {
   if (ONLY && !ONLY.includes(caseName)) continue;
   for (const [fixture, doc] of Object.entries(fixtures)) {
+    if (TWO_BLOCKS.has(caseName) !== (fixture === "two blocks")) continue;
     const operations = addressed(doc, build(doc));
     const target = TARGET_SCOPE.has(caseName);
     for (let i = 0; i < WARMUP; i++) run(doc, operations, target);

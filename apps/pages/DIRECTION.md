@@ -171,9 +171,12 @@ lists, images, views and dataframes in order. Blocks are a storage detail
      waits on a guard whose cost doesn't follow the whole document. A
      batch's in-place inserts and moves count up to 3,000,000 units of the
      blocks they write into
-     ([model/insert-in-place.mjs](model/insert-in-place.mjs)), about 4 s on
-     a laptop: each insert still reads its block back to check it, at
-     about 1.2 µs a unit (8 µs before the host read once per batch). One
+     ([model/insert-in-place.mjs](model/insert-in-place.mjs)). Each insert
+     still reads its block back to check it, at about 1.2 µs a unit (8 µs
+     before the host read once per batch), so a full budget of inserts
+     takes about 4 s on a laptop. Moves between two large blocks cost 1.8
+     to 2 µs for each unit they count, so a full budget of them takes about
+     5.5 to 6 s. One
      node from a newer build makes in-place inserts and Markdown rewrites
      of its block refuse with `newer_content`.
      In one flow each of these covers the whole Page: about 15 inserts
