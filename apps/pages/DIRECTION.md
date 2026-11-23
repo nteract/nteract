@@ -178,7 +178,22 @@ lists, images, views and dataframes in order. Blocks are a storage detail
      the host writes it in the same intent as the content change, not on
      any author's behalf. Moving an anchor to different text stays the
      author's alone.
-   - **Moving a section is open** (Not decided, below).
+   - **A section moves with a host move.** Automerge text has no move, so
+     `move_nodes` deletes a run of nodes and writes the same spans after
+     another node: characters, marks and attributes come back as stored, the
+     moved nodes get new ids, and the host re-anchors the comment threads on
+     the moved text. In an eval of 100 agent runs (five move tasks on
+     commented Pages, two models, a local celld and Pages), agents with it
+     kept every thread on the moved text. With today's tools they kept them
+     in 18 of 50 runs, and telling them to keep comments doubled their calls
+     and cost without closing the gap.
+     - The re-anchoring write and the Page change go in one journal entry,
+       so no restart leaves the threads detached.
+     - Text someone types into a moved node while the move lands is kept at
+       the end of the node before the run's old place, as for `delete_node`.
+       The eval had one writer; a concurrent-writer task is still to run.
+     - A thread that crosses the run's edge loses its anchor and is
+       reported. Whether a move should refuse instead is open.
 
 ## Order of work
 
@@ -225,7 +240,7 @@ lists, images, views and dataframes in order. Blocks are a storage detail
       blocks. The guides teach inserts by node only.
    4. The explicit join for multi-block Pages, with comment re-anchoring.
    5. Block ids leave the agent contract, together with node-scoped writes
-      (item 4) and the section move once it is decided.
+      (item 4) and `move_nodes`.
    `scripts/project-transfer.mjs` still splits a block around a dataframe
    on import; it moves to in-place insert with step 3.
 
@@ -347,16 +362,6 @@ records the node addresses agents use.
   admission checks and the Markdown and outline projections are the first
   candidates, because the host, the tools and a Rust client can then share
   one codec. Moving the editor's document into WASM is a larger step.
-- How an agent moves a section in one flow. Automerge text has no move, so
-  a move inside one block is a delete and an insert: comments on the moved
-  text detach, the moved nodes get new ids, and an edit in flight to them is
-  lost. The candidate: a host operation that moves a node range, refuses at
-  a stale revision, rewrites the comment anchors in the comments document it
-  owns, and returns the new ids. Today only agents move content (`move_block`);
-  the editor has no move. Decide with evals: agents with the candidate tools
-  and the local guides, against a local celld and Pages, on edit tasks that
-  include moves on commented Pages. Score whether the task landed, whether
-  every comment stayed attached, and the calls and tokens spent.
 - How marker nesting merges. Marker `parents` stays a list: a scalar parents
   value and one path scalar for type and parents each merged no better in a
   census of concurrent writers. As lists, two writers that change one marker's parents at once merge into
