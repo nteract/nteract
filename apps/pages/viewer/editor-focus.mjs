@@ -6,7 +6,8 @@
 //
 // Editors register their content element here when they mount
 // (WordgardEditor.jsx, CommentRichText.jsx). Wordgard has no public lookup
-// from a DOM node to its editor.
+// from a DOM node to its editor; "Continue writing" (main.jsx) finds the last
+// block's editor here too.
 const editors = new WeakMap();
 
 /** Register `editor` (a Wordgard view); returns the function that forgets it. */
@@ -17,6 +18,9 @@ export function registerEditor(editor) {
     if (editors.get(content) === editor) editors.delete(content);
   };
 }
+
+/** The editor registered for content element `content`, or null. */
+export const editorFor = (content) => (content && editors.get(content)) ?? null;
 
 /** Whether `element` takes focus itself: connected, not part of editable
  * content, and focusable (a link with an href, a control, or a tabindex). */

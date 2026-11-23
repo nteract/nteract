@@ -50,6 +50,7 @@ import { BootPreview, visiblePreview } from "./boot-preview.mjs";
 import { HeadingScroll } from "./heading-scroll.mjs";
 import { followTitleInAddress, sessionTitle } from "./address-slug.mjs";
 import { openPageWithRetry } from "./page-open.mjs";
+import { editorFor } from "./editor-focus.mjs";
 // app.css carries the editor's styles too, ahead of style.css so the cascade
 // matches the editor modules' own import order.
 import "./link-popover.css";
@@ -335,6 +336,9 @@ function App() {
     // What this render shows, for handlers bound at mount (popstate).
     screen = useRef(null),
     article = useRef(null),
+    // The block id when focusBlock came from "Continue writing": its caret
+    // goes at the end of the block (placeContinuationCaret), not at its start.
+    continuation = useRef(null),
     titleInput = useRef(null),
     // The title value this tab last showed and its selection as native
     // cursors, so a peer's edit can put the caret back on its side.
@@ -1182,7 +1186,15 @@ function App() {
         `[data-block-id="${CSS.escape(focusBlock)}"] wg-content`,
       );
       if (element) {
-        element.focus();
+        const view = continuation.current === focusBlock ? editorFor(element) : null;
+        continuation.current = null;
+        // Wordgard's focus() keeps the editor's selection, which
+        // placeContinuationCaret puts at the block's end; the element's own
+        // focus() leaves the caret wherever the browser puts it.
+        if (view) {
+          editor.module.placeContinuationCaret(view);
+          view.focus();
+        } else element.focus();
         element.scrollIntoView({ block: "nearest" });
         setFocusBlock(null);
       }
@@ -1598,9 +1610,15 @@ function App() {
   function continueWriting() {
     if (!session || host.current !== session) return;
     try {
-      const id = editor.module.writingContinuation(session);
+      const id = editor.module.writingContinuation(session, {
+        editorOf: (block) =>
+          editorFor(
+            article.current?.querySelector(`[data-block-id="${CSS.escape(block)}"] wg-content`),
+          ),
+      });
       if (!id || host.current !== session) return;
       activateBlock(id);
+      continuation.current = id;
       setFocusBlock(id);
     } catch (error) {
       showError(error);
@@ -2174,7 +2192,8 @@ function App() {
                   )}
                 />
                 {/* Blank space below the last block: a click there puts the
-                    caret in an empty paragraph at the end. Its label shows
+                    caret in an empty paragraph at the end of the last block,
+                    inside it (writing-continuation.mjs). Its label shows
                     only under keyboard focus, when the editor has no caret,
                     so it can't be mistaken for the caret's line. It stays in
                     the tab order for a last block that ArrowDown and

@@ -587,15 +587,22 @@ try {
   await owner.getByRole("button", { name: "Continue writing", exact: true }).click();
   const trailing = owner.locator("wg-content").last();
   await expect(trailing).toBeFocused();
-  await expect(owner.locator(".page-block")).toHaveCount(beforeContinuation + 1);
+  // The empty paragraph goes inside the last block: no new block.
+  await expect(owner.locator(".page-block")).toHaveCount(beforeContinuation);
   await owner.getByRole("button", { name: "Continue writing", exact: true }).click();
   await expect(trailing).toBeFocused();
-  await expect(owner.locator(".page-block")).toHaveCount(beforeContinuation + 1);
+  await expect(owner.locator(".page-block")).toHaveCount(beforeContinuation);
   await owner.keyboard.insertText("Writing continues naturally below the images.");
   for (const page of [owner, editor, viewer])
     await expect(page.locator("wg-content").last()).toContainText(
       "Writing continues naturally below the images.",
     );
+  // The caret was at the end of the last block, so the text ends it.
+  await expect
+    .poll(
+      async () => (await tool(owner, "read_page", { page_id: pageId })).body.blocks.at(-1).markdown,
+    )
+    .toMatch(/\n\nWriting continues naturally below the images\.$/);
   await expect(viewer.getByRole("button", { name: "Continue writing" })).toHaveCount(0);
   complete("Writing continues below images; repeated activation reuses the empty paragraph");
 
