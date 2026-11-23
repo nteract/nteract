@@ -687,13 +687,15 @@ test("mark reconciliation merges with a peer edit to untouched neighboring text"
   );
 });
 
-test("a passage edit searches a block longer than a match_text may be", () => {
-  const paragraphs = (count) =>
-    Array.from({ length: count }, (_, i) => `Paragraph p${i}q says what it says.`).join("\n\n");
-  // About 280,000 UTF-16 units: past the length of a match_text.
-  const { doc, id } = fixture(paragraphs(7500));
-  assert.ok(doc.blocks[id].richText.length > 262_144);
-  const { after } = replace(doc, id, { match_text: "p7499q", replacement: "last" });
-  assert.match(after.blocks[id].richText, /Paragraph last says/);
-  assert.ok(doc.blocks[id].richText.length < MAX_PASSAGE_BLOCK_LENGTH);
+test("a passage edit refuses a block longer than MAX_PASSAGE_BLOCK_LENGTH", () => {
+  const paragraphs = Array.from(
+    { length: 7500 },
+    (_, i) => `Paragraph p${i}q says what it says.`,
+  ).join("\n\n");
+  const { doc, id } = fixture(paragraphs);
+  assert.ok(doc.blocks[id].richText.length > MAX_PASSAGE_BLOCK_LENGTH);
+  assert.throws(
+    () => replace(doc, id, { match_text: "p7499q", replacement: "last" }),
+    /Block is too large for replace_match/,
+  );
 });

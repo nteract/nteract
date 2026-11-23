@@ -147,8 +147,10 @@ lists, images, views and dataframes in order. Blocks are a storage detail
      host reads each block once per batch
      ([model/block-reads.mjs](model/block-reads.mjs)). On one block of
      112 KB, a batch of 20 `format_match` takes 0.1 s (7.0 s before; 0.03 s
-     split across 85 blocks) and 20 `replace_match` 0.2 s (5.7 s before)
-     ([scripts/edit-batch-benchmark.mjs](scripts/edit-batch-benchmark.mjs)).
+     split across 85 blocks), 20 `replace_match` 0.2 s (5.7 s before), and
+     20 target-scoped `replace_match` 0.9 s (21.6 s before)
+     ([scripts/edit-batch-benchmark.mjs](scripts/edit-batch-benchmark.mjs),
+     on a laptop; the Workers host is slower).
      The editor still reads the whole block again for every structural or
      formatting write ([viewer/wordgard-binding.mjs](viewer/wordgard-binding.mjs)):
      one block of about 115 KB costs 199 ms per line break (17 ms at
@@ -159,19 +161,24 @@ lists, images, views and dataframes in order. Blocks are a storage detail
      text on its own, since a split detaches the comments on the moved tail
      and drops edits in flight to it.
    - **Per-block limits become per-Page limits.** Passage operations
-     search a block of up to 1,048,576 UTF-16 units
-     ([model/replace-match.mjs](model/replace-match.mjs)): 20
-     `replace_match` on a block that long take 2.3 s on the host, and 20
-     `format_match` 1 s. A batch's in-place inserts and moves count up to
-     3,000,000 units of the blocks they write into
-     ([model/insert-in-place.mjs](model/insert-in-place.mjs)), about 4 s of
-     host time: each insert still reads its block back to check it, at
+     search a block of up to 262,144 UTF-16 units
+     ([model/replace-match.mjs](model/replace-match.mjs)). Page scope could
+     take four times that (20 `replace_match` in 3.2 s at 1,035,285
+     units), but the target-scope guard
+     ([model/passage-edits.mjs](model/passage-edits.mjs)) takes 12.6 s
+     there: it views and clones the whole document and reads the block at
+     the base revision, the current one and a dry run. Raising the limit
+     waits on a guard whose cost doesn't follow the whole document. A
+     batch's in-place inserts and moves count up to 3,000,000 units of the
+     blocks they write into
+     ([model/insert-in-place.mjs](model/insert-in-place.mjs)), about 4 s on
+     a laptop: each insert still reads its block back to check it, at
      about 1.2 µs a unit (8 µs before the host read once per batch). One
      node from a newer build makes in-place inserts and Markdown rewrites
      of its block refuse with `newer_content`.
      In one flow each of these covers the whole Page: about 15 inserts
      into a 200 KB Page per batch, and no passage edit on a Page past
-     1,048,576 units.
+     262,144 units.
    - **A join costs what a split costs.** Writing later blocks into the
      first deletes their text objects, so an edit in flight to them is lost,
      a comment made offline on them detaches, and their nodes get new ids.

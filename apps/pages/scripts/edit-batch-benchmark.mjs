@@ -1,6 +1,9 @@
 // One edit_page batch through applyPageOperation (model/page.mjs), in Node:
 // the host's model work only, with no Durable Object, storage, sync or
-// receipt. Records timings; gates on nothing.
+// receipt. A target-scoped case runs guardPassageEdits
+// (model/passage-edits.mjs) first, as the host does for conflict_scope
+// target. Records timings on this machine, which is faster than the Workers
+// host; compare cases and revisions, not absolute times. Gates on nothing.
 //
 //   node scripts/edit-batch-benchmark.mjs
 // Options (environment):
@@ -16,7 +19,8 @@
 //   N blocks    one section per block
 // Cases, each one batch, spread over the sections:
 //   20 format_match, 20 replace_match, 10 insert_markdown after a node,
-//   2 move_nodes.
+//   2 move_nodes, and 20 replace_match with conflict_scope target against
+//   the revision before a peer's edit at the end of the first block.
 // Writes test-results/edit-batch-benchmark.json (every sample) and prints
 // median [min, max] milliseconds, or the refusal a batch met.
 import assert from "node:assert/strict";
@@ -29,6 +33,8 @@ import { applyPageOperation, createPageData, orderedBlockIds } from "../model/pa
 import { setRichMarkdown } from "../model/richtext-page.mjs";
 import { nodeAddresses } from "../model/addresses.mjs";
 import { nativeRead, readKind } from "../model/native-read.mjs";
+import { guardPassageEdits } from "../model/passage-edits.mjs";
+import { textPath } from "../model/richtext-format.mjs";
 
 const pages = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SAMPLES = Number(process.env.PAGES_EDIT_SAMPLES || 5);
@@ -118,6 +124,12 @@ const cases = {
       after_node_id: sectionNodes(doc, i).paragraph,
       markdown: `An inserted paragraph after section ${tag(i)}.`,
     })),
+  "20 replace_match target scope": () =>
+    spread(20).map((i) => ({
+      op: "replace_match",
+      match_text: `alpha ${tag(i)}`,
+      replacement: `omega ${tag(i)}`,
+    })),
   "2 move_nodes": (doc) => {
     const from = [sectionNodes(doc, 10), sectionNodes(doc, 60)];
     const to = [sectionNodes(doc, 40), sectionNodes(doc, 20)];
@@ -139,13 +151,28 @@ function addressed(doc, operations) {
   });
 }
 
-function run(base, operations) {
-  const doc = A.clone(base);
+const TARGET_SCOPE = new Set(["20 replace_match target scope"]);
+// The current document a target-scoped batch meets: its base revision plus
+// a peer's sentence at the end of the first block, which the guard rebases
+// over.
+function withPeerEdit(base) {
+  const key = orderedBlockIds(base)[0];
+  return A.change(A.clone(base, { actor: "02".repeat(16) }), (draft) =>
+    A.splice(draft, textPath(key), draft.blocks[key].richText.length, 0, " A peer's edit."),
+  );
+}
+
+function run(base, operations, target) {
+  const doc = target ? withPeerEdit(base) : A.clone(base);
   let result, error;
   const start = performance.now();
   try {
+    const guarded = target && guardPassageEdits(doc, A.getHeads(base), operations);
     A.change(doc, (draft) => {
-      result = applyPageOperation(draft, { operation: "edit_page", arguments: { operations } });
+      result = applyPageOperation(draft, {
+        operation: "edit_page",
+        arguments: { operations: guarded ? guarded.operations : operations },
+      });
     });
   } catch (caught) {
     error = caught;
@@ -179,15 +206,16 @@ for (const [caseName, build] of Object.entries(cases)) {
   if (ONLY && !ONLY.includes(caseName)) continue;
   for (const [fixture, doc] of Object.entries(fixtures)) {
     const operations = addressed(doc, build(doc));
-    for (let i = 0; i < WARMUP; i++) run(doc, operations);
+    const target = TARGET_SCOPE.has(caseName);
+    for (let i = 0; i < WARMUP; i++) run(doc, operations, target);
     const samples = [];
     let refusal;
     for (let i = 0; i < SAMPLES; i++) {
-      const { ms, error } = run(doc, operations);
+      const { ms, error } = run(doc, operations, target);
       samples.push(ms);
       if (error)
         refusal = {
-          reason: error.editReason ?? error.code,
+          reason: error.editReason ?? error.code ?? error.details?.conflicts?.[0]?.reason,
           edit_index: error.editAt?.index,
           message: error.message,
         };
@@ -204,7 +232,7 @@ for (const [caseName, build] of Object.entries(cases)) {
     report.results.push(row);
     const fmt = (ms) => ms.toFixed(1);
     console.log(
-      `${caseName.padEnd(32)} ${fixture.padEnd(10)} ${fmt(row.median).padStart(8)} ms [${fmt(row.min)}, ${fmt(row.max)}]${refusal ? `  refused: ${refusal.reason} at ${refusal.edit_index}` : ""}`,
+      `${caseName.padEnd(34)} ${fixture.padEnd(10)} ${fmt(row.median).padStart(8)} ms [${fmt(row.min)}, ${fmt(row.max)}]${refusal ? `  refused: ${refusal.reason} at ${refusal.edit_index}` : ""}`,
     );
   }
 }

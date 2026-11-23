@@ -12,6 +12,7 @@ import {
 import { nodeChange, setNode } from "./set-node.mjs";
 import { repairBlockMarkers } from "./richtext-page.mjs";
 import { addressIndex, resolveAddressFor } from "./addresses.mjs";
+import { blockReads } from "./block-reads.mjs";
 import { validateEditFields } from "./page.mjs";
 import { atOperation, refused, withRefusal } from "./edit-refusals.mjs";
 
@@ -71,8 +72,10 @@ const samePath = (a, b) => a.length === b.length && a.every((part, i) => part ==
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const lastWidth = (text) => (/^[\udc00-\udfff]$/.test(text.at(-1)) ? 2 : 1);
 
-function clippedMarks(doc, path, start, end) {
-  return A.marks(doc, path)
+/** The marks over `[start, end)` among a block's `marks` (A.marks), relative
+ * to `start`. */
+function clippedMarks(marks, start, end) {
+  return marks
     .filter((mark) => mark.start < end && mark.end > start)
     .map((mark) => ({
       name: mark.name,
@@ -83,10 +86,12 @@ function clippedMarks(doc, path, start, end) {
     .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 }
 
-function markerOffsets(doc, path) {
+/** The offsets of the node markers in `spans`: a block's stored spans or its
+ * text runs (model/block-reads.mjs). */
+function markerOffsets(spans) {
   const result = [];
   let offset = 0;
-  for (const span of A.spans(doc, path)) {
+  for (const span of spans) {
     if (span.type === "block") result.push(offset++);
     else offset += span.value.length;
   }
@@ -204,8 +209,12 @@ export function guardPassageEdits(current, baseHeads, operations) {
   try {
     const patches = A.diff(current, baseHeads, currentHeads);
     if (patches.length > 10000) conflict({ input: operations[0] }, "change_set_too_large");
-    const baseIndex = addressIndex(base);
-    const currentIndex = addressIndex(current);
+    // Each of the three documents the guard reads (the base revision, the
+    // current one, the dry run's draft) reads each block once.
+    const baseReads = blockReads(base);
+    const currentReads = blockReads(current);
+    const baseIndex = addressIndex(base, baseReads);
+    const currentIndex = addressIndex(current, currentReads);
     const targets = operations.map((input, i) => {
       let id;
       let range;
@@ -214,8 +223,8 @@ export function guardPassageEdits(current, baseHeads, operations) {
         validatePassage(input);
         const found = passageTarget(baseIndex, base, input);
         id = found.key;
-        range = findUniqueVisibleRange(base, id, found.scoped);
-        address = visibleRangeAddress(base, id, range.start, range.end);
+        range = findUniqueVisibleRange(base, id, found.scoped, baseReads);
+        address = visibleRangeAddress(base, id, range.start, range.end, baseReads);
       } catch (error) {
         // A refusal with its own code (unsupported_markdown from
         // replacement_markdown, wrong_address_kind) keeps it, as in page
@@ -230,7 +239,7 @@ export function guardPassageEdits(current, baseHeads, operations) {
         key: id,
         ...range,
         address,
-        markers: markerOffsets(base, range.path),
+        markers: markerOffsets(baseReads.runs(id)),
         first: A.getCursor(base, range.path, range.start),
         last: A.getCursor(base, range.path, range.end - lastWidth(input.match_text)),
       };
@@ -252,12 +261,12 @@ export function guardPassageEdits(current, baseHeads, operations) {
         current.blocks[id].richText.slice(start, end) !== input.match_text
       )
         conflict(target, "target_text_changed");
-      const now = visibleRangeAddress(current, id, start, end);
+      const now = visibleRangeAddress(current, id, start, end, currentReads);
       if (!equal(address.ancestry, now.ancestry)) conflict(target, "target_structure_changed");
       if (
         !equal(
-          clippedMarks(base, range.path, range.start, range.end),
-          clippedMarks(current, range.path, start, end),
+          clippedMarks(baseReads.marks(id), range.start, range.end),
+          clippedMarks(currentReads.marks(id), start, end),
         )
       )
         conflict(target, "target_formatting_changed");
@@ -271,7 +280,7 @@ export function guardPassageEdits(current, baseHeads, operations) {
       }
       let found;
       try {
-        found = findUniqueVisibleRange(current, id, scope.scoped);
+        found = findUniqueVisibleRange(current, id, scope.scoped, currentReads);
       } catch {
         conflict(target, "target_no_longer_unique");
       }
@@ -300,8 +309,10 @@ export function guardPassageEdits(current, baseHeads, operations) {
     try {
       checked = A.change(clone, (draft) => {
         // As the write itself does (applyPageOperation in page.mjs).
-        for (const target of targets) repairBlockMarkers(draft, target.key);
-        const index = addressIndex(draft);
+        const reads = blockReads(draft);
+        for (const target of targets)
+          if (repairBlockMarkers(draft, target.key, reads)) reads.forget(target.key);
+        const index = addressIndex(draft, reads);
         const budget = { writes: 0 };
         for (const [i, target] of targets.entries()) {
           // An occurrence names a match in the batch's starting snapshot, as
@@ -314,7 +325,7 @@ export function guardPassageEdits(current, baseHeads, operations) {
           let input;
           try {
             input = passageTarget(index, draft, target.input).scoped;
-            range = locateRange(draft, target.key, input, anchor);
+            range = locateRange(draft, target.key, input, anchor, reads);
           } catch {
             conflict(target, "batch_changes_target_resolution");
           }
@@ -325,13 +336,14 @@ export function guardPassageEdits(current, baseHeads, operations) {
           )
             conflict(target, "batch_changes_target_resolution");
           try {
-            applyPassage(draft, target.key, input, { anchor, budget });
+            applyPassage(draft, target.key, input, { anchor, budget, reads });
           } catch (error) {
             // A rule the operation enforces on the text it found, such as
             // format_match refusing code text: the caller's request, not a race.
             if (error.status) throw atOperation(error, i, target.input);
             throw atOperation(selectorRefusal(error), i, target.input);
           }
+          reads.settle([target.key]);
           index.forget(target.key);
         }
       });

@@ -4266,16 +4266,21 @@ still replay the recorded receipt; these guards run only for new intents.
   `newer_content`. Because each in-place insert reads its whole block back to
   check it, a batch caps the total length of the blocks it writes into at
   `MAX_BATCH_IN_PLACE_UNITS` (3,000,000 UTF-16 units, checked upfront; about
-  15 inserts into a 200 KB block, or about 4 s of host time).
+  15 inserts into a 200 KB block, or about 4 s on a laptop, more on the
+  Workers host).
 - **Reads:** a batch reads each block once and keeps the read for its later
   operations on that block ([model/block-reads.mjs](model/block-reads.mjs)).
   An insert, move or node delete replaces the kept read with the read it
   checks its write with; a mark keeps the block's text runs, and a
-  `replace_match` splice updates them. Passage operations search a block of
-  up to `MAX_PASSAGE_BLOCK_LENGTH` (1,048,576 UTF-16 units); `match_text`,
-  context and replacements are each up to 262,144.
-  `scripts/edit-batch-benchmark.mjs` times batches on one large block and
-  on the same text split into blocks.
+  `replace_match` splice updates them. A target-scoped batch's guard
+  ([model/passage-edits.mjs](model/passage-edits.mjs)) keeps one read per
+  block for each document it reads: the base revision, the current one and
+  its dry run. Passage operations search a block of up to
+  `MAX_PASSAGE_BLOCK_LENGTH` (262,144 UTF-16 units), set by the
+  target-scope guard, which views and clones the whole document and reads
+  the block three times; `match_text`, context and replacements are each up
+  to 262,144. `scripts/edit-batch-benchmark.mjs` times batches on one large
+  block and on the same text split into blocks, in page and target scope.
 - **Concurrency & receipts:** validation runs only on the write's own change, so
   two concurrent writers inserting same-kind lists after one node can merge into
   one list (no text is lost, though one receipt's node ID becomes obsolete).

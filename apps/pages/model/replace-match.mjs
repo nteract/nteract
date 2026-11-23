@@ -17,11 +17,14 @@ import { refused } from "./edit-refusals.mjs";
 
 /** The longest match_text, context or replacement, in UTF-16 units. */
 const MAX_TEXT_LENGTH = 262144;
-/** The longest block a passage operation searches, in UTF-16 units. A batch
- * reads a block once (model/block-reads.mjs) and then searches its text
- * runs per operation: 20 replace_match on a block this long take about 2.3 s
- * of host time, 20 format_match about 1 s (scripts/edit-batch-benchmark.mjs). */
-export const MAX_PASSAGE_BLOCK_LENGTH = 1_048_576;
+/** The longest block a passage operation searches, in UTF-16 units. The
+ * slower path is conflict_scope target: its guard reads the block at the
+ * base revision, the current one and a dry run (model/passage-edits.mjs),
+ * and views and clones the whole document. 20 target-scoped replace_match on
+ * a block this long take about 2.5 s on a laptop, and 12.6 s at four times
+ * the length, against 3.2 s in page scope (scripts/edit-batch-benchmark.mjs).
+ * The Workers host is slower. */
+export const MAX_PASSAGE_BLOCK_LENGTH = 262_144;
 const MAX_MATCHES = 10000;
 
 export function replacementLiteral(value, name, optional = false) {
@@ -51,9 +54,10 @@ export const withinNode = Symbol("withinNode");
 
 /** The top-level node holding the visible range `[start, end)`, its text
  * range, and the containers around its first and last characters, which a
- * target-scoped edit compares across revisions. */
-export function visibleRangeAddress(doc, id, start, end) {
-  const addresses = blockAddresses(A.spans(doc, textPath(id)));
+ * target-scoped edit compares across revisions. `reads`, when given, are the
+ * reads of `doc` (model/block-reads.mjs). */
+export function visibleRangeAddress(doc, id, start, end, reads) {
+  const addresses = reads ? reads.addresses(id) : blockAddresses(A.spans(doc, textPath(id)));
   const last = end - (/^[\udc00-\udfff]$/.test(doc.blocks[id].richText[end - 1]) ? 2 : 1);
   const nodeIndex = nodeIndexAt(addresses, start);
   if (nodeIndex !== nodeIndexAt(addresses, last))

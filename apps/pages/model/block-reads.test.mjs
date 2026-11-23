@@ -11,6 +11,7 @@ import { setRichMarkdown } from "./richtext-page.mjs";
 import { textPath } from "./richtext-format.mjs";
 import { blockAddress, nodeAddresses } from "./addresses.mjs";
 import { spliceRuns, textRuns } from "./block-reads.mjs";
+import { guardPassageEdits } from "./passage-edits.mjs";
 import { fuzzParameters as parameters } from "../test/fuzz-parameters.mjs";
 import { freeing } from "../test/free-docs.mjs";
 
@@ -312,5 +313,174 @@ test("a kept text read follows a splice as a fresh read sees it, or is dropped",
       }),
     ),
     { ...parameters, numRuns: Math.max(parameters.numRuns, 200) },
+  );
+});
+
+// Each kind of write, followed by an edit later in a block it wrote. A block
+// a write leaves out of `touched` keeps its old read, so the later edit
+// would find its match at the old offset, or move a node's old attributes.
+test("every operation's writes reach the next operation on the blocks it wrote", () => {
+  const image = {
+    op: "insert_image",
+    asset_id: "a".repeat(64),
+    alt: "A figure",
+    after_node_id: addresses[0].paragraph,
+  };
+  const rewrite = {
+    op: "replace_block_markdown",
+    node_id: addresses[4].block,
+    markdown: `A new lead paragraph.\n\n${section(4)}\n\n${section(5)}`,
+  };
+  // A move writes the marker attributes it read, so it shows a stale read
+  // of a retyped heading.
+  const moveHeading = {
+    op: "move_nodes",
+    node_id: addresses[1].heading,
+    through_node_id: addresses[1].paragraph,
+    after_node_id: addresses[3].paragraph,
+  };
+  const cases = [
+    ["insert_markdown after a node", [ops.insert(0), ops.replace(3, "block")]],
+    ["insert_image after a node", [image, ops.replace(3, "block")]],
+    ["replace_match", [ops.lengthen(0, "block"), ops.replace(3, "block")]],
+    ["format_match", [ops.bold(0, "block"), ops.replace(3, "block")]],
+    ["set_node", [ops.retitle(0), ops.replace(3, "block")]],
+    ["delete_node", [ops.deleteList(0), ops.replace(3, "block")]],
+    [
+      "move_nodes, both blocks",
+      [ops.move(4, null, 1), ops.replace(3, "block"), ops.replace(5, "block")],
+    ],
+    ["replace_block_markdown", [rewrite, ops.replace(5, "block")]],
+    ["set_node, then a move of its node", [ops.retitle(1), moveHeading]],
+  ];
+  for (const [name, operations] of cases)
+    freeing((keep) => assert.equal(assertSameAsOneEach(operations, keep), undefined, name));
+});
+
+// conflict_scope target: guardPassageEdits reads the base revision, the
+// current document and a dry run, each once per block, then the batch
+// applies. Against the same base, a batch on disjoint passages gives what
+// one target-scoped batch each gives, and is refused exactly when one of
+// them is refused, with that one's conflict.
+const PEER = "0d".repeat(16);
+const peerEdits = {
+  // Text before the target moves it.
+  prefix: (p) => ({
+    op: "replace_match",
+    node_id: addresses[p].block,
+    match_text: `Paragraph ${tag(p)} has`,
+    replacement: `Paragraph ${tag(p)} now opens with a peer's words and has`,
+  }),
+  retext: (p) => ({
+    op: "replace_match",
+    node_id: addresses[p].block,
+    match_text: `alpha ${tag(p)}`,
+    replacement: `alfa ${tag(p)}`,
+  }),
+  bold: (p) => ({
+    op: "format_match",
+    node_id: addresses[p].block,
+    match_text: `beta ${tag(p)}`,
+    add: { strong: true },
+  }),
+  paragraph: (p) => ({
+    op: "insert_markdown",
+    after_node_id: addresses[p].heading,
+    markdown: `A peer's paragraph under ${tag(p)}.`,
+  }),
+};
+/** One target-scoped batch against `baseHeads`: the guard, then the write. */
+function applyTargeted(doc, baseHeads, operations) {
+  try {
+    const guarded = guardPassageEdits(doc, baseHeads, operations);
+    const next = apply(doc, guarded.operations);
+    if (next.error) return { doc, error: next.error };
+    return next;
+  } catch (error) {
+    return {
+      doc,
+      error: {
+        status: error.status,
+        code: error.code,
+        conflicts: error.details?.conflicts,
+        reason: error.editReason,
+        op: error.editAt?.op,
+        message: error.message,
+      },
+    };
+  }
+}
+const TARGETED = [
+  "bold",
+  "unbold",
+  "replace",
+  "lengthen",
+  "replaceMarkdown",
+  "emphasizeQuote",
+  "renameQuote",
+  "retitle",
+  "codeLanguage",
+];
+test("a target-scoped batch gives what one target-scoped batch each gives, across a peer's edit", () => {
+  const peer = fc.record({
+    name: fc.constantFrom(...Object.keys(peerEdits)),
+    p: fc.nat(SECTIONS - 1),
+  });
+  const targeted = fc.uniqueArray(
+    fc.record({
+      name: fc.constantFrom(...TARGETED),
+      i: fc.nat(SECTIONS - 1),
+      scope: fc.constantFrom("block", "paragraph"),
+    }),
+    { minLength: 1, maxLength: 6, selector: ({ i }) => i },
+  );
+  fc.assert(
+    fc.property(fc.array(peer, { maxLength: 3 }), targeted, (changes, picks) =>
+      freeing((keep) => {
+        const baseHeads = A.getHeads(base);
+        // The current document: the base plus the peer's edits.
+        let current = A.clone(base, { actor: PEER });
+        for (const { name, p } of changes) {
+          const next = apply(current, [peerEdits[name](p)]);
+          current = next.doc;
+        }
+        keep(current);
+        const operations = picks.map(({ name, i, scope }) => ops[name](i, scope));
+        const alone = operations.map((op) => {
+          const one = applyTargeted(A.clone(current, { actor: ACTOR }), baseHeads, [op]);
+          keep(one.doc);
+          return one.error;
+        });
+        const batched = applyTargeted(A.clone(current, { actor: ACTOR }), baseHeads, operations);
+        keep(batched.doc);
+        if (batched.error) {
+          const { index: _batchIndex, ...error } = batched.error;
+          assert.ok(
+            alone.some((each) => {
+              if (!each) return false;
+              const { index: _index, ...own } = each;
+              return JSON.stringify(own) === JSON.stringify(error);
+            }),
+            `the batch's refusal is one operation's own: ${JSON.stringify(error)}`,
+          );
+          return;
+        }
+        assert.deepEqual(alone.filter(Boolean), [], "every operation passes alone");
+        // One batch each, in order, against the same base revision.
+        let doc = A.clone(current, { actor: ACTOR });
+        const edits = [];
+        for (const op of operations) {
+          const one = applyTargeted(doc, baseHeads, [op]);
+          assert.equal(one.error, undefined, JSON.stringify(one.error));
+          doc = one.doc;
+          edits.push(...(one.result.edits ?? []));
+        }
+        keep(doc);
+        assert.deepEqual(batched.result.edits, edits);
+        assert.deepEqual(content(batched.doc), content(doc));
+      }),
+    ),
+    // Each run guards and applies the batch and every operation alone.
+    { ...parameters, numRuns: Math.ceil(parameters.numRuns / 2) },
   );
 });

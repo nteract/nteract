@@ -35,11 +35,11 @@ const width = (span) => (span.type === "text" ? span.value.length : 1);
  * count. Each insert reads its whole block back after the write to check it,
  * so its cost follows the block's length, not the insert's: about 1.2 µs a
  * unit for an insert and 1.4 µs for each block a move counts, so a full
- * budget is about 4 s of host time (scripts/edit-batch-benchmark.mjs). That
- * is about 15 inserts into a 200 KB block; a batch's 100 operations bound
- * inserts into small blocks first. The unit is one block written in, not one
- * read: a move counts its source block and its destination block once each
- * (move-nodes.mjs). */
+ * budget is about 4 s on a laptop, more on the Workers host
+ * (scripts/edit-batch-benchmark.mjs). That is about 15 inserts into a 200 KB
+ * block; a batch's 100 operations bound inserts into small blocks first. The
+ * unit is one block written in, not one read: a move counts its source block
+ * and its destination block once each (move-nodes.mjs). */
 export const MAX_BATCH_IN_PLACE_UNITS = 3_000_000;
 const INSERT_BUDGET =
   "This batch inserts inside blocks too many times for their size. Send fewer inserts per request, or put several nodes in one insert_markdown.";

@@ -12,25 +12,40 @@
 // Two reads are kept per block, keyed by block:
 //
 // - `spans`: the block's spans as A.spans returns them, with what is derived
-//   from them (decode, the readable tree, node ids). Any write to the block
-//   drops them; the next read is fresh.
+//   from them (marks, decode, the readable tree, node addresses and ids).
+//   Any write to the block drops them; the next read is fresh.
 // - `runs`: the block's text runs and node markers without marks. A mark or
 //   unmark changes neither, so they survive formatting writes, and a text
 //   splice that stays inside text updates them in place. Passage operations
 //   find their match, its code-block context and its owning node from these.
 //
-// The cache lives inside one change. It is never stored, and nothing in it
-// reaches a receipt that a fresh read wouldn't give.
+// The cache lives inside one change, or over one unchanging document (the
+// target-scope guard's base and current revisions, model/passage-edits.mjs).
+// It is never stored, and nothing in it reaches a receipt that a fresh read
+// wouldn't give.
 //
-// An operation that writes a block tells this cache about the write
-// (`wrote`, `marked`, `spliced`), or the batch drops the block's reads after
-// the operation (`settle`). An operation that reports one of its writes to a
-// block reports every one, since the batch then trusts what is cached.
+// An operation that writes a block tells this cache about the write, or the
+// batch drops the block's reads after the operation (`settle`, with the
+// blocks the operation lists as touched). An operation that reports one of
+// its writes to a block reports every one, since the batch then trusts what
+// is cached. These report:
+//
+// - format_match: `marked` (model/replace-match.mjs).
+// - replace_match: `spliced` for each splice, then `marked`.
+// - in-place inserts and move_nodes: `wrote` before the read that checks
+//   the write (model/insert-in-place.mjs, model/move-nodes.mjs).
+// - delete_node: `wrote` before the read that checks the write
+//   (model/page.mjs).
+//
+// Every other write is dropped by `settle`: set_node, set_image, a dataframe
+// edit, replace_block_markdown, move_block, delete_block and a new block.
+// The batch's marker repair runs before any operation and calls `forget`.
 import * as A from "@automerge/automerge/slim";
 import { textPath } from "./richtext-format.mjs";
 import { decode } from "./wordgard-doc.mjs";
 import { nativeReadSpans } from "./native-read.mjs";
 import { spanNodeIds } from "./node-ids.mjs";
+import { blockAddresses } from "./node-addresses.mjs";
 
 const width = (span) => (span.type === "text" ? span.value.length : 1);
 
@@ -93,6 +108,11 @@ export function blockReads(doc) {
       const block = entry(key);
       return (block.spans ??= A.spans(doc, textPath(key)));
     },
+    /** A.marks of block `key`. */
+    marks(key) {
+      const block = entry(key);
+      return (block.marks ??= A.marks(doc, textPath(key)));
+    },
     /** decode of block `key`'s spans (model/wordgard-doc.mjs). */
     decoded(key) {
       const block = entry(key);
@@ -115,6 +135,12 @@ export function blockReads(doc) {
         }
       if (block.nodeIds.error) throw block.nodeIds.error;
       return block.nodeIds.ids;
+    },
+    /** blockAddresses of block `key`'s spans (model/node-addresses.mjs).
+     * Throws as blockAddresses does, and is read again after a throw. */
+    addresses(key) {
+      const block = entry(key);
+      return (block.addresses ??= blockAddresses(reads.spans(key)));
     },
     /** Block `key`'s text runs and markers, without marks (textRuns). */
     runs(key) {
