@@ -1716,7 +1716,7 @@ const gateway = {
         if ((error.status ?? 500) >= 500) logFailure(error, "gateway");
         return admissionErrorResponse(error, { stage: "gateway" });
       }
-      const oauth = await handleOAuth(request, env, ctx);
+      const oauth = await handleOAuth(request, env, ctx, () => kiloSessionProvider(env, request));
       if (oauth) return oauth;
       if (url.pathname === "/whoami") {
         if (request.method !== "GET") {

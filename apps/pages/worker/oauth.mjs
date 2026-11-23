@@ -258,9 +258,13 @@ function publicClient(params, request, env) {
     );
   return requestClient(single(params, "client_id"), env);
 }
-async function currentSession(request, env, ctx) {
+/** The browser session on a consent request, renewed first if its proof
+ * lapsed. `sessionProvider` returns the deployment's renewal provider, the
+ * one every browser-session renewal uses (custom-providers.mjs). */
+async function currentSession(request, env, ctx, sessionProvider) {
   const refreshed = await serverOidcSessionStatus(request, env, async () => {}, {
     ...browserSessionOptions,
+    provider: sessionProvider?.(),
     hold: (work) => holdUntilSettled(ctx, work),
   });
   await forgetServerAppSession(env, request);
@@ -319,7 +323,7 @@ function consentParties(client, redirectUri, origin) {
   );
   return parts.join("");
 }
-async function authorize(request, env, context, ctx) {
+async function authorize(request, env, context, ctx, sessionProvider) {
   if (!["GET", "POST"].includes(request.method)) return methodResponse("GET, POST");
   const origin = pagesPublicOrigin(env);
   // Consent is an authenticated browser action. Public OAuth client requests to
@@ -347,7 +351,7 @@ async function authorize(request, env, context, ctx) {
       // A stranger chose this URL, so Pages fetches a document only for a
       // signed-in person. Until
       // then the request is unchecked and names no client.
-      current = await currentSession(request, env, ctx);
+      current = await currentSession(request, env, ctx, sessionProvider);
       if (current.response) return current.response;
       context.cookie = current.cookie;
       if (!current.session) return signInPage(request, "an app");
@@ -355,7 +359,7 @@ async function authorize(request, env, context, ctx) {
     }
     auth = { client, request: authorizationRequest(params, env, context, client) };
   }
-  current ??= await currentSession(request, env, ctx);
+  current ??= await currentSession(request, env, ctx, sessionProvider);
   if (current.response) return current.response;
   context.cookie = current.cookie;
   if (!current.session) {
@@ -486,7 +490,10 @@ async function revoke(request, env) {
   return response(null);
 }
 
-export async function handleOAuth(request, env, ctx) {
+/** The OAuth routes, or null for another path. `sessionProvider` returns the
+ * renewal provider for this deployment's browser sessions, as the gateway's
+ * own session route uses. */
+export async function handleOAuth(request, env, ctx, sessionProvider) {
   const url = new URL(request.url);
   if (!OAUTH_ROUTES.has(url.pathname)) {
     return url.pathname.startsWith("/oauth/") || url.pathname.startsWith("/.well-known/oauth-")
@@ -508,7 +515,10 @@ export async function handleOAuth(request, env, ctx) {
       return request.method === "HEAD" ? new Response(null, result) : result;
     }
     if (url.pathname === "/oauth/authorize")
-      return withSessionCookie(await authorize(request, env, context, ctx), context.cookie);
+      return withSessionCookie(
+        await authorize(request, env, context, ctx, sessionProvider),
+        context.cookie,
+      );
     if (url.pathname === "/oauth/token") return await token(request, env, context);
     return await revoke(request, env);
   } catch (error) {
