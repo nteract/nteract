@@ -127,4 +127,49 @@ mod tests {
         assert!(details.contains("python3.14t"));
         assert!(details.contains("python3.14/site-packages"));
     }
+
+    /// LaunchKernel returns these details as its error. The desktop trust
+    /// flow matches these leading phrases in
+    /// `apps/notebook/src/lib/notebook-action-policy.ts`
+    /// (`isLaunchErrorHandledByRuntimeBanner`) so it leaves the failure to
+    /// the runtime banner. Change both together.
+    #[test]
+    fn classified_details_keep_phrases_the_runtime_banner_policy_matches() {
+        let python_path = PathBuf::from("/tmp/env/bin/python");
+        let purelib = PathBuf::from("/tmp/env/lib/python3.11/site-packages");
+        let cases = [
+            (
+                IpykernelDiagnostic::Missing {
+                    python_path: python_path.clone(),
+                    purelib: purelib.clone(),
+                    import_error: None,
+                },
+                "ipykernel is not importable from the prepared ",
+            ),
+            (
+                IpykernelDiagnostic::SitePackagesMismatch {
+                    python_path: python_path.clone(),
+                    purelib,
+                    import_error: None,
+                    candidates: vec![],
+                },
+                "ipykernel is installed outside the interpreter's importable site-packages",
+            ),
+            (
+                IpykernelDiagnostic::InterpreterProbeFailed {
+                    python_path,
+                    message: "interpreter probe timed out after 10s".to_string(),
+                },
+                "Could not inspect ipykernel in the prepared ",
+            ),
+        ];
+
+        for (diagnostic, phrase) in cases {
+            let (_, details) = classify_ipykernel_diagnostic(&diagnostic, "conda:inline");
+            assert!(
+                details.starts_with(phrase),
+                "{details:?} must start with {phrase:?}"
+            );
+        }
+    }
 }
