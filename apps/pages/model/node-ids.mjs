@@ -37,10 +37,11 @@ export const MAX_NODE_ID = 192;
  * paragraph of unmarked text. Addresses come from the stored spans (model/node-addresses.mjs). `tree` is the block's
  * richDoc, when the caller pairs the ids with its nodes; the ids line up with
  * them, or this throws. Also throws when the block holds a node this build
- * can't place where it was stored. */
-export function nodeIds(doc, blockId, tree) {
+ * can't place where it was stored. `ids` are spanNodeIds of the block's spans
+ * when the caller already has them. */
+export function nodeIds(doc, blockId, tree, ids) {
   const path = textPath(blockId);
-  const ids = spanNodeIds(doc, path, A.spans(doc, path));
+  ids ??= spanNodeIds(doc, path, A.spans(doc, path));
   // richDoc can read a node through notice text (a dataframe naming another
   // Page's asset), which changes its size but never the number of top-level
   // nodes.

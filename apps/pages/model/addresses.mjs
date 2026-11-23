@@ -40,13 +40,14 @@ export function blockAddress(doc, key) {
 /** The node and image addresses in block `key`: `{ nodes, byId }`, `nodes`
  * as nodeIds gives them (none for a block with a node this build can't
  * place), and `byId` each address's entry. Never throws for content a merge
- * or a newer build left. */
-function indexBlock(doc, key) {
+ * or a newer build left. `reads`, when given, are a batch's reads
+ * (model/block-reads.mjs). */
+function indexBlock(doc, key, reads) {
   const path = textPath(key);
-  const spans = A.spans(doc, path);
+  const spans = reads ? reads.spans(key) : A.spans(doc, path);
   let nodes;
   try {
-    nodes = spanNodeIds(doc, path, spans);
+    nodes = reads ? reads.nodeIds(key) : spanNodeIds(doc, path, spans);
   } catch {
     nodes = [];
   }
@@ -64,8 +65,11 @@ function indexBlock(doc, key) {
  * order, once per block, only as far as the address it is looking for.
  *
  * After a write to block `key` (or one that adds, deletes or moves it)
- * inside the same change, call `forget(key)` before the next lookup. */
-export function addressIndex(doc) {
+ * inside the same change, call `forget(key)` before the next lookup. Inside
+ * an edit_page batch, `reads` are the batch's block reads
+ * (model/block-reads.mjs), so a block the batch already read isn't read
+ * again. */
+export function addressIndex(doc, reads) {
   let blocks = null;
   const indexed = new Map();
   return {
@@ -85,7 +89,7 @@ export function addressIndex(doc) {
     find(address) {
       this.block(address);
       for (const key of blocks.order) {
-        if (!indexed.has(key)) indexed.set(key, indexBlock(doc, key));
+        if (!indexed.has(key)) indexed.set(key, indexBlock(doc, key, reads));
         const { byId, nodes } = indexed.get(key);
         const entry = byId.get(address);
         if (entry) return { key, entry, nodes };

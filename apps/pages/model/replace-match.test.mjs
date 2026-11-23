@@ -11,7 +11,7 @@ import {
 import { projectComments } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { richDoc, textPath } from "./richtext.mjs";
-import { textSplices } from "./replace-match.mjs";
+import { MAX_PASSAGE_BLOCK_LENGTH, textSplices } from "./replace-match.mjs";
 import { blockAddress } from "./addresses.mjs";
 
 function fixture(markdown) {
@@ -685,4 +685,15 @@ test("mark reconciliation merges with a peer edit to untouched neighboring text"
     A.getHeads(A.merge(A.clone(human), A.clone(tool))).sort(),
     A.getHeads(merged).sort(),
   );
+});
+
+test("a passage edit searches a block longer than a match_text may be", () => {
+  const paragraphs = (count) =>
+    Array.from({ length: count }, (_, i) => `Paragraph p${i}q says what it says.`).join("\n\n");
+  // About 280,000 UTF-16 units: past the length of a match_text.
+  const { doc, id } = fixture(paragraphs(7500));
+  assert.ok(doc.blocks[id].richText.length > 262_144);
+  const { after } = replace(doc, id, { match_text: "p7499q", replacement: "last" });
+  assert.match(after.blocks[id].richText, /Paragraph last says/);
+  assert.ok(doc.blocks[id].richText.length < MAX_PASSAGE_BLOCK_LENGTH);
 });

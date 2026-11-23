@@ -15,7 +15,13 @@ import { stampMarks } from "./schema-features.mjs";
 import { refuseUnreadableText } from "./richtext-spans.mjs";
 import { refused } from "./edit-refusals.mjs";
 
+/** The longest match_text, context or replacement, in UTF-16 units. */
 const MAX_TEXT_LENGTH = 262144;
+/** The longest block a passage operation searches, in UTF-16 units. A batch
+ * reads a block once (model/block-reads.mjs) and then searches its text
+ * runs per operation: 20 replace_match on a block this long take about 2.3 s
+ * of host time, 20 format_match about 1 s (scripts/edit-batch-benchmark.mjs). */
+export const MAX_PASSAGE_BLOCK_LENGTH = 1_048_576;
 const MAX_MATCHES = 10000;
 
 export function replacementLiteral(value, name, optional = false) {
@@ -64,14 +70,16 @@ export function visibleRangeAddress(doc, id, start, end) {
 // Mark boundaries do not interrupt visible text, but rich block/embed markers
 // do. Never expose their object-replacement characters to a literal text edit.
 // Each segment records whether a code block holds it: the nearest block
-// marker before it, as inCodeBlock decides.
-export function textSegments(block) {
-  if (block.richText.length > MAX_TEXT_LENGTH) throw Error("Block is too large for replace_match");
+// marker before it, as inCodeBlock decides. `spans` are the block's stored
+// spans, or its text runs (model/block-reads.mjs); marks don't matter here.
+export function textSegments(block, spans) {
+  if (block.richText.length > MAX_PASSAGE_BLOCK_LENGTH)
+    throw Error("Block is too large for replace_match");
   const segments = [];
   let offset = 0;
   let segment;
   let code = false;
-  for (const span of A.spans(block, ["richText"])) {
+  for (const span of spans ?? A.spans(block, ["richText"])) {
     if (span.type === "block") {
       code = markerType(span.value) === "code-block";
       segment = undefined;
@@ -123,11 +131,15 @@ export function occurrenceOf(input) {
   return input.occurrence;
 }
 
+/** Block `id`'s text runs from the batch's reads (model/block-reads.mjs),
+ * or its spans read now when there are none. */
+const runsOf = (doc, id, reads) => (reads ? reads.runs(id) : A.spans(doc, textPath(id)));
+
 /** Every visible occurrence of match_text in the block that its context and
  * node scope (withinNode) allow, in document order. Occurrences may overlap. Context is
  * searched between occurrences and cannot cross a paragraph or embedded-node
  * boundary. */
-function visibleMatches(doc, id, input) {
+function visibleMatches(doc, id, input, reads) {
   const match = replacementLiteral(input.match_text, "match_text");
   const before = replacementLiteral(input.context_before, "context_before", true);
   const after = replacementLiteral(input.context_after, "context_after", true);
@@ -135,7 +147,7 @@ function visibleMatches(doc, id, input) {
   if (!match) throw refused("field_invalid", "match_text must not be empty", "match_text");
   const matches = [];
   let candidates = 0;
-  for (const segment of textSegments(doc.blocks[id])) {
+  for (const segment of textSegments(doc.blocks[id], reads?.runs(id))) {
     const offsets = [];
     for (let at = segment.text.indexOf(match); at >= 0; at = segment.text.indexOf(match, at + 1)) {
       if (++candidates > MAX_MATCHES)
@@ -185,11 +197,11 @@ function matchRange(id, input, { at: start, segment, local }) {
 /** Resolve one visible range without changing the document: the only match,
  * or the one-based `occurrence` among the matches context and node scope
  * allow. */
-export function findUniqueVisibleRange(doc, id, input) {
+export function findUniqueVisibleRange(doc, id, input, reads) {
   const occurrence = occurrenceOf(input);
   const op = input.op ?? "replace_match";
   if (input.all !== undefined) throw refused("field_invalid", `${op} does not take all`, "all");
-  const matches = visibleMatches(doc, id, input);
+  const matches = visibleMatches(doc, id, input, reads);
   if (occurrence !== undefined) {
     if (occurrence > matches.length)
       throw refused(
@@ -211,13 +223,13 @@ export function findUniqueVisibleRange(doc, id, input) {
 /** Every non-overlapping match, in document order, for an operation with
  * `all: true`. A match that starts or ends inside a character is skipped. At
  * least one match is required. */
-export function findAllVisibleRanges(doc, id, input) {
+export function findAllVisibleRanges(doc, id, input, reads) {
   if (input.all !== true) throw refused("field_invalid", "all takes the value true", "all");
   if (input.occurrence !== undefined)
     throw refused("field_invalid", "Use occurrence or all, not both", "occurrence");
   const ranges = [];
   const length = input.match_text.length;
-  for (const match of visibleMatches(doc, id, input)) {
+  for (const match of visibleMatches(doc, id, input, reads)) {
     if (ranges.length && match.at < ranges.at(-1).end) continue;
     if (!graphemeBoundary(match.segment, match.local)) continue;
     if (!graphemeBoundary(match.segment, match.local + length)) continue;
@@ -238,8 +250,8 @@ const lastWidth = (text) => (/^[\udc00-\udfff]$/.test(text.at(-1)) ? 2 : 1);
  * batch's starting snapshot. Agents count occurrences from what they read, so
  * an earlier operation in the batch never shifts which match a later one
  * means. */
-export function anchorOccurrence(doc, id, input) {
-  const { path, start, end } = findUniqueVisibleRange(doc, id, input);
+export function anchorOccurrence(doc, id, input, reads) {
+  const { path, start, end } = findUniqueVisibleRange(doc, id, input, reads);
   return {
     path,
     first: A.getCursor(doc, path, start),
@@ -250,8 +262,8 @@ export function anchorOccurrence(doc, id, input) {
 /** The range an operation addresses now: its anchored occurrence when it has
  * one, otherwise its unique match. An anchored match an earlier operation in
  * the batch changed is refused rather than retargeted. */
-export function locateRange(doc, id, input, anchor) {
-  if (!anchor) return findUniqueVisibleRange(doc, id, input);
+export function locateRange(doc, id, input, anchor, reads) {
+  if (!anchor) return findUniqueVisibleRange(doc, id, input, reads);
   const { path } = anchor;
   const start = A.getCursorPosition(doc, path, anchor.first);
   const end = A.getCursorPosition(doc, path, anchor.last) + lastWidth(input.match_text);
@@ -462,11 +474,11 @@ function marksDroppedWarning(partial, start, end) {
  * inserted strictly inside one, continues the run; a partial mark none of
  * whose words changed still covers every character it did; neither is
  * reported. */
-export function replaceMatch(doc, id, input, trace, { anchor, budget } = {}) {
+export function replaceMatch(doc, id, input, trace, { anchor, budget, reads } = {}) {
   const { text: replacement, runs } = replacementOf(input);
-  const { path, start, end } = locateRange(doc, id, input, anchor);
-  refuseUnreadableText(A.spans(doc, path), start, "replace_match");
-  if (runs && inCodeBlock(doc, path, start))
+  const { path, start, end } = locateRange(doc, id, input, anchor, reads);
+  refuseUnreadableText(runsOf(doc, id, reads), start, "replace_match");
+  if (runs && inCodeBlock(doc, path, start, reads?.runs(id)))
     throw refused(
       "code_block",
       "replacement_markdown can't format text inside a code block; code text is unformatted. Use replacement.",
@@ -505,6 +517,7 @@ export function replaceMatch(doc, id, input, trace, { anchor, budget } = {}) {
   for (const splice of splices) {
     const at = start + splice.at + shift;
     A.splice(doc, path, at, splice.remove, splice.insert);
+    reads?.spliced(id, at, splice.remove, splice.insert);
     if (splice.insert.length)
       inserted.push({
         start: at,
@@ -539,6 +552,8 @@ export function replaceMatch(doc, id, input, trace, { anchor, budget } = {}) {
   if (inserted.length)
     stampMarks(doc, [...new Set(inserted.flatMap(({ keep }) => keep.map((mark) => mark.name)))]);
   if (runs) applyRuns(doc, path, start, runs, commonMarks, budget);
+  // The splices above stay inside the match's text, and the rest are marks.
+  reads?.marked(id);
   // The caret covers the words that changed; a replacement that changed
   // nothing shows the match it addressed.
   trace?.push({
@@ -646,15 +661,15 @@ export function formatChanges(input) {
  * Code text is unformatted. One addressed match inside a code block is
  * refused; with `all`, matches in code are left alone and counted in
  * `skipped_in_code`. */
-export function formatMatch(doc, id, input, trace, { anchor, budget } = {}) {
+export function formatMatch(doc, id, input, trace, { anchor, budget, reads } = {}) {
   const { add, remove } = formatChanges(input);
   const located = { ...input, op: "format_match" };
   const path = textPath(id);
   let ranges,
     skipped = 0;
   if (input.all === undefined) {
-    const range = locateRange(doc, id, located, anchor);
-    if (inCodeBlock(doc, path, range.start))
+    const range = locateRange(doc, id, located, anchor, reads);
+    if (inCodeBlock(doc, path, range.start, reads?.runs(id)))
       throw refused(
         "code_block",
         "format_match can't format text inside a code block; code text is unformatted.",
@@ -662,7 +677,7 @@ export function formatMatch(doc, id, input, trace, { anchor, budget } = {}) {
       );
     ranges = [range];
   } else {
-    const found = findAllVisibleRanges(doc, id, located);
+    const found = findAllVisibleRanges(doc, id, located, reads);
     if (found.length > MAX_ALL_RANGES)
       throw refused(
         "match_many",
@@ -677,7 +692,7 @@ export function formatMatch(doc, id, input, trace, { anchor, budget } = {}) {
         "match_text",
       );
   }
-  const spans = A.spans(doc, path);
+  const spans = runsOf(doc, id, reads);
   for (const range of ranges) refuseUnreadableText(spans, range.start, "format_match");
   spendMarkWrites(budget, ranges.length * (Object.keys(add).length + remove.length));
   for (const { start, end } of ranges) {
@@ -686,6 +701,7 @@ export function formatMatch(doc, id, input, trace, { anchor, budget } = {}) {
       A.mark(doc, path, { start, end, expand: markExpand(name) }, name, value);
   }
   stampMarks(doc, Object.keys(add));
+  reads?.marked(id);
   const { start, end } = ranges.at(-1);
   trace?.push({ type: "text", block_id: id, start, end });
   return {
@@ -696,11 +712,12 @@ export function formatMatch(doc, id, input, trace, { anchor, budget } = {}) {
 }
 
 // Whether native position `at` sits in a code block: the nearest block marker
-// before it is a code-block marker.
-export function inCodeBlock(doc, path, at) {
+// before it is a code-block marker. `spans` are the text's stored spans or
+// its text runs, when the caller has them.
+export function inCodeBlock(doc, path, at, spans) {
   let pos = 0,
     code = false;
-  for (const span of A.spans(doc, path)) {
+  for (const span of spans ?? A.spans(doc, path)) {
     if (pos > at) break;
     if (span.type === "block") {
       code = markerType(span.value) === "code-block";

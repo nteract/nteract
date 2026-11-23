@@ -16,11 +16,12 @@
 // counted as detached.
 import * as A from "@automerge/automerge/slim";
 import { textPath } from "./richtext-format.mjs";
-import { nativeRead, readKind } from "./native-read.mjs";
+import { readKind } from "./native-read.mjs";
 import { setRichEmpty } from "./richtext-page.mjs";
 import { insertInPlace, spendInPlaceRead } from "./insert-in-place.mjs";
 import { selectionContext } from "./comments.mjs";
 import { orderedBlockIds } from "./order.mjs";
+import { blockReads } from "./block-reads.mjs";
 
 const width = (span) => (span.type === "text" ? span.value.length : 1);
 
@@ -46,10 +47,10 @@ export function applyCommentRewrites(draft, rewrites) {
 /** The stored spans of block `key` from `start` to `end`. The caller repaired
  * the block's markers, so both ends fall on node markers and no text span
  * crosses them. */
-function sliceSpans(doc, key, start, end) {
+function sliceSpans(reads, key, start, end) {
   const slice = [];
   let at = 0;
-  for (const span of A.spans(doc, textPath(key))) {
+  for (const span of reads.spans(key)) {
     const next = at + width(span);
     if (at >= start && next <= end) slice.push(span);
     else if (at < end && next > start)
@@ -94,9 +95,12 @@ function selection(doc, key, from, to) {
  * later move in the same batch sees an earlier one's rewrites; `rewrites`
  * (a Map) collects each changed target; `detached` collects ids of threads
  * the move cut through.
+ *
+ * `context.reads` are the batch's reads (model/block-reads.mjs); the move
+ * leaves fresh reads of the blocks it wrote there.
  */
 export function moveNodes(doc, op, { first, last, anchor }, context) {
-  const { trace, touched, budget, comments } = context;
+  const { trace, touched, budget, comments, reads = blockReads(doc) } = context;
   if (op.after_node_id === undefined)
     throw refuse(
       "move_nodes needs after_node_id: the id of the node the run goes after, or null for the start of the Page",
@@ -126,8 +130,8 @@ export function moveNodes(doc, op, { first, last, anchor }, context) {
   const { start } = first;
   const { end } = last;
   const length = end - start;
-  const before = nativeRead(doc.blocks[src], doc.page_id);
-  const spans = sliceSpans(doc, src, start, end);
+  const before = reads.tree(src);
+  const spans = sliceSpans(reads, src, start, end);
 
   // Threads on this block's text: the ones wholly inside the run move with
   // it; the ones that cross its edge lose part of their text.
@@ -144,10 +148,11 @@ export function moveNodes(doc, op, { first, last, anchor }, context) {
     }
 
   A.splice(doc, textPath(src), start, length);
+  reads.wrote(src);
   const emptied = !doc.blocks[src].richText.length;
   if (emptied) setRichEmpty(doc, src);
   else {
-    const left = nativeRead(doc.blocks[src], doc.page_id);
+    const left = reads.tree(src);
     if (left.nodes.length < before.nodes.length - count) {
       const name = (index) => readKind(before.nodes[index]);
       throw refuse(
@@ -168,7 +173,7 @@ export function moveNodes(doc, op, { first, last, anchor }, context) {
       end: anchor.end - length,
     };
   else target = anchor;
-  const placed = insertInPlace(doc, target, spans, "move_nodes");
+  const placed = insertInPlace(doc, target, spans, "move_nodes", reads);
 
   // An emptied source block in another place than the destination holds only
   // the empty paragraph setRichEmpty wrote. It goes. Its whole-block
@@ -176,6 +181,7 @@ export function moveNodes(doc, op, { first, last, anchor }, context) {
   let removed = false;
   if (emptied && dst !== src) {
     delete doc.blocks[src];
+    reads.wrote(src);
     removed = true;
     if (comments)
       for (const [id, target] of Object.entries(comments.threads))

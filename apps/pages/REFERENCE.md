@@ -4263,10 +4263,19 @@ still replay the recorded receipt; these guards run only for new intents.
   all old nodes (with original IDs) around exactly the new ones; otherwise it
   refuses with `nodes_would_join` (for example, adjacent lists of the same kind)
   and rolls back the batch. Blocks with newer-build content refuse with
-  `newer_content`. Because each in-place insert decodes its whole block, a
-  batch caps total decoded block length at `MAX_BATCH_IN_PLACE_UNITS`
-  (1,000,000 UTF-16 units, checked upfront; about 100 inserts into a 10 KB block
-  or 4 into a 200 KB block).
+  `newer_content`. Because each in-place insert reads its whole block back to
+  check it, a batch caps the total length of the blocks it writes into at
+  `MAX_BATCH_IN_PLACE_UNITS` (3,000,000 UTF-16 units, checked upfront; about
+  15 inserts into a 200 KB block, or about 4 s of host time).
+- **Reads:** a batch reads each block once and keeps the read for its later
+  operations on that block ([model/block-reads.mjs](model/block-reads.mjs)).
+  An insert, move or node delete replaces the kept read with the read it
+  checks its write with; a mark keeps the block's text runs, and a
+  `replace_match` splice updates them. Passage operations search a block of
+  up to `MAX_PASSAGE_BLOCK_LENGTH` (1,048,576 UTF-16 units); `match_text`,
+  context and replacements are each up to 262,144.
+  `scripts/edit-batch-benchmark.mjs` times batches on one large block and
+  on the same text split into blocks.
 - **Concurrency & receipts:** validation runs only on the write's own change, so
   two concurrent writers inserting same-kind lists after one node can merge into
   one list (no text is lost, though one receipt's node ID becomes obsolete).

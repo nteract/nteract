@@ -182,9 +182,9 @@ const withAttrs = (span, attrs, type = span.value.type) => ({
 });
 
 /** Change the type or attributes of the node that holds match_text. */
-export function setNode(doc, id, input, trace, { anchor } = {}) {
+export function setNode(doc, id, input, trace, { anchor, reads } = {}) {
   const change = nodeChange(input);
-  const { path, start, end } = locateRange(doc, id, { ...input, op: "set_node" }, anchor);
+  const { path, start, end } = locateRange(doc, id, { ...input, op: "set_node" }, anchor, reads);
   const spans = A.spans(doc, textPath(id));
   refuseUnreadableText(spans, start, "set_node");
   const index = targetMarker(spans, governingMarker(spans, start));

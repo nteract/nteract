@@ -10,6 +10,7 @@ import { guardPassageEdits } from "./passage-edits.mjs";
 import { EDIT_REFUSAL_REASONS, refusalReason } from "./edit-refusals.mjs";
 import { MAX_ADDRESS } from "./address-shape.mjs";
 import { MAX_NODE_ID } from "./node-ids.mjs";
+import { MAX_BATCH_IN_PLACE_UNITS } from "./insert-in-place.mjs";
 
 const PAGE = "44444444-4444-4444-8444-444444444444";
 const KEY = "main";
@@ -105,7 +106,9 @@ test("each reason names the operation that refused, at its index in the batch", 
 });
 
 test("budget reasons name the operation that passes the bound", () => {
-  const big = page(`${"word ".repeat(60_000)}\n\nEnd`);
+  // A block whose length fits three in-place inserts into the batch's budget
+  // and not four.
+  const big = page(`${"word ".repeat(Math.floor(MAX_BATCH_IN_PLACE_UNITS / 18))}\n\nEnd`);
   const [anchor] = nodeAddresses(big, KEY);
   const insert = { op: "insert_markdown", markdown: "New", after_node_id: anchor };
   const inPlace = refusal(big, [insert, insert, insert, insert]);

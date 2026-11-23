@@ -23,21 +23,24 @@ import { textPath } from "./richtext-format.mjs";
 import { markExpand } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { newerContent } from "./richtext-spans.mjs";
-import { decode } from "./wordgard-doc.mjs";
-import { nativeRead, nativeReadSpans, readFingerprint, readKind } from "./native-read.mjs";
+import { nativeReadSpans, readFingerprint, readKind } from "./native-read.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import { blockAddress } from "./addresses.mjs";
 import { refused } from "./edit-refusals.mjs";
+import { blockReads } from "./block-reads.mjs";
 
 const width = (span) => (span.type === "text" ? span.value.length : 1);
 
 /** The most block text, in UTF-16 units, one batch's in-place writes may
- * count. Each insert decodes its whole block to place the new nodes and again
- * to check them, so its cost follows the block's length, not the insert's:
- * about 100 inserts into a 10 KB block, or 4 into a 200 KB one. The unit is
- * one block written in, not one decode: a move counts its source block and
- * its destination block once each (move-nodes.mjs). */
-export const MAX_BATCH_IN_PLACE_UNITS = 1_000_000;
+ * count. Each insert reads its whole block back after the write to check it,
+ * so its cost follows the block's length, not the insert's: about 1.2 µs a
+ * unit for an insert and 1.4 µs for each block a move counts, so a full
+ * budget is about 4 s of host time (scripts/edit-batch-benchmark.mjs). That
+ * is about 15 inserts into a 200 KB block; a batch's 100 operations bound
+ * inserts into small blocks first. The unit is one block written in, not one
+ * read: a move counts its source block and its destination block once each
+ * (move-nodes.mjs). */
+export const MAX_BATCH_IN_PLACE_UNITS = 3_000_000;
 const INSERT_BUDGET =
   "This batch inserts inside blocks too many times for their size. Send fewer inserts per request, or put several nodes in one insert_markdown.";
 /** Count block `key`'s length against the batch before an operation reads
@@ -66,12 +69,13 @@ const canonical = (value) =>
 const LISTS = new Set(["bullet-list", "ordered-list", "task-list"]);
 
 /** The top-level nodes of block `key` as the readers draw them, with their
- * ids. Throws node_not_found when the stored markers and the readable tree
- * disagree, as delete_node does: no id can then be checked. */
-function readBlock(doc, key, op) {
-  const tree = nativeRead(doc.blocks[key], doc.page_id);
+ * ids, from the batch's `reads`. Throws node_not_found when the stored
+ * markers and the readable tree disagree, as delete_node does: no id can
+ * then be checked. */
+function readBlock(key, op, doc, reads) {
+  const tree = reads.tree(key);
   try {
-    return { tree, ids: nodeIds(doc, key, tree).map(({ id }) => id) };
+    return { tree, ids: nodeIds(doc, key, tree, reads.nodeIds(key)).map(({ id }) => id) };
   } catch {
     throw Object.assign(
       Error(
@@ -92,18 +96,21 @@ function readBlock(doc, key, op) {
  * in order, and the text range they occupy. Throws `newer_content` for a
  * block holding content from a newer build, and `nodes_would_join` when a
  * new node would join the anchor or the node after it; a throw aborts the
- * whole change. */
-export function insertInPlace(doc, target, spans, op) {
+ * whole change.
+ *
+ * `reads` are the batch's reads (model/block-reads.mjs). The block is read
+ * from them before the write and read again after it, which leaves the
+ * fresh read there for the batch's next operation on the block. */
+export function insertInPlace(doc, target, spans, op, reads = blockReads(doc)) {
   const { key, index } = target;
   const path = textPath(key);
-  const stored = A.spans(doc, path);
-  const decoded = decode(stored);
+  const decoded = reads.decoded(key);
   if (decoded.lossy && decoded.newer)
     throw newerContent(
       `This block holds content from a newer version of Pages that this version can't read, so ${op} can't write inside it. Give after_node_id the block's id to insert after the block instead.`,
     );
   if (spans[0]?.type !== "block") throw Error("New content opens with a node marker");
-  const before = readBlock(doc, key, op);
+  const before = readBlock(key, op, doc, reads);
   const expected = nativeReadSpans(spans, doc.page_id);
   const added = expected.nodes.length;
 
@@ -142,10 +149,11 @@ export function insertInPlace(doc, target, spans, op) {
           run.marks[name],
         );
   stampSpans(doc, spans);
+  reads.wrote(key);
 
   // The old nodes, with their ids, around exactly the new ones; anything
   // else means a node joined a neighbour. Throwing aborts the whole change.
-  const after = readBlock(doc, key, op);
+  const after = readBlock(key, op, doc, reads);
   const fresh = after.ids.slice(index + 1, index + 1 + added);
   const kept =
     after.ids.length === before.ids.length + added &&
