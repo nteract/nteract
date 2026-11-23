@@ -18,6 +18,7 @@ import {
 } from "./organization-memberships.mjs";
 import { rememberedServerAppSession } from "./session-memo.mjs";
 import { timingFor } from "./server-timing.mjs";
+import { editRefusalFields } from "./edit-refusal.mjs";
 
 export class HttpError extends Error {
   constructor(status, message, code) {
@@ -730,6 +731,7 @@ export function errorResponse(error, stage = "request") {
       ...(coded && { code: error.code, retryable }),
       ...(retryAfterMs !== undefined && { retry_after_ms: retryAfterMs }),
       ...(CLIENT_ERROR_CODES.includes(error?.code) && { code: error.code }),
+      ...editRefusalFields(error),
       ...(error?.code === "unsupported_markdown" &&
         error.details?.unsupported && {
           unsupported: {

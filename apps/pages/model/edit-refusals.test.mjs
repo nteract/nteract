@@ -2,12 +2,14 @@
 // the reason, the operation it names, and a document left as it was.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import * as A from "@automerge/automerge";
 import { applyPageOperation, createPageData, initializePage } from "./page.mjs";
 import { blockAddress, nodeAddresses } from "./addresses.mjs";
 import { guardPassageEdits } from "./passage-edits.mjs";
 import { EDIT_REFUSAL_REASONS, refusalReason } from "./edit-refusals.mjs";
+import { MAX_ADDRESS } from "./address-shape.mjs";
+import { MAX_NODE_ID } from "./node-ids.mjs";
 
 const PAGE = "44444444-4444-4444-8444-444444444444";
 const KEY = "main";
@@ -207,6 +209,10 @@ test("target-scoped refusals carry their reason and operation", () => {
   }
 });
 
+test("the address shape's limit is the node id limit", () => {
+  assert.equal(MAX_ADDRESS, MAX_NODE_ID);
+});
+
 test("a refusal without a listed reason reads as other", () => {
   assert.equal(refusalReason(Error("anything")), "other");
   assert.equal(refusalReason({ editReason: "free text" }), "other");
@@ -214,19 +220,18 @@ test("a refusal without a listed reason reads as other", () => {
   assert.ok(EDIT_REFUSAL_REASONS.includes("other"));
 });
 
-// The modules whose refusals can reach edit_page's invalid_edit_selector
-// fallback. Each reason a throw site names is a listed one.
-const SOURCES = [
-  "./page.mjs",
-  "./replace-match.mjs",
-  "./set-node.mjs",
-  "./addresses.mjs",
-  "./insert-in-place.mjs",
-  "./passage-edits.mjs",
-  "./markdown-inline.mjs",
-  "../worker/mutations.mjs",
-  "../worker/index.mjs",
-];
+// Every module that can name a reason: one that imports edit-refusals.mjs or
+// sets editReason itself. Found by reading model/ and worker/, so a new module
+// is scanned without being added to a list here.
+const SOURCES = ["./", "../worker/"].flatMap((dir) =>
+  readdirSync(new URL(dir, import.meta.url))
+    .filter((name) => name.endsWith(".mjs") && !name.endsWith(".test.mjs"))
+    .map((name) => dir + name)
+    .filter((path) => path !== "./edit-refusals.mjs")
+    .filter((path) =>
+      /edit-refusals\.mjs"|editReason:/.test(readFileSync(new URL(path, import.meta.url), "utf8")),
+    ),
+);
 test("every reason a throw site names is listed", () => {
   const named = new Set();
   for (const path of SOURCES) {

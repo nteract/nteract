@@ -23,14 +23,14 @@
 import * as A from "@automerge/automerge/slim";
 import { textPath } from "./richtext-format.mjs";
 import { orderedBlockIds } from "./order.mjs";
-import { MAX_NODE_ID, spanNodeIds } from "./node-ids.mjs";
+import { spanNodeIds } from "./node-ids.mjs";
 import { spanImageIds } from "./image-ids.mjs";
 import { blockAddresses } from "./node-addresses.mjs";
 import { nativeRead, readKind } from "./native-read.mjs";
 import { refused } from "./edit-refusals.mjs";
+import { ADDRESS_PATTERN, MAX_ADDRESS } from "./address-shape.mjs";
 
-export const ADDRESS_PATTERN = /^[0-9]+@[0-9a-f]+$/;
-export const MAX_ADDRESS = MAX_NODE_ID;
+export { ADDRESS_PATTERN, MAX_ADDRESS };
 
 /** The address of block `key`: the id of its map object. */
 export function blockAddress(doc, key) {

@@ -25,7 +25,6 @@ import {
   orderedBlockIds,
 } from "../model/page.mjs";
 import { atOperation, refusingOperation, withRefusal } from "../model/edit-refusals.mjs";
-import { withEditRefusal } from "./edit-refusal.mjs";
 import { insertOperation } from "../model/node-registry.mjs";
 import {
   documentFeatures,
@@ -8234,10 +8233,7 @@ export class Page {
       // Before anything was journaled: the gateway copies, then sends the
       // batch again.
       if (error instanceof DatasetCopyRequired) return copyRequiredResponse(error);
-      if (!admissionRoute) {
-        const refusal = await this.agentRefusal(error);
-        return withEditRefusal(errorResponse(refusal, "page"), refusal);
-      }
+      if (!admissionRoute) return errorResponse(await this.agentRefusal(error), "page");
       if ((error.status ?? 500) >= 500) logFailure(error, "page");
       return admissionErrorResponse(error, { stage: "page", identity });
     } finally {

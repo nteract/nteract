@@ -721,7 +721,10 @@ test("rollup/purge are atomic, and an older invocation cannot undo a newer job",
   });
   const old = runUsageMaintenance({ PAGES_USAGE: db }, at + 2 * DAY);
   // The migration takes several awaits; wait until the older job is held.
-  while (!release) await tick();
+  for (let waited = 0; !release; waited++) {
+    assert.ok(waited < 1000, "the older job reaches its held batch");
+    await tick();
+  }
   await runUsageMaintenance({ PAGES_USAGE: db }, at + 101 * DAY);
   const after = db.rows("SELECT * FROM pages_usage_weekly");
   release();

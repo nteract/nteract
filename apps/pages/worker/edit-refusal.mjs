@@ -1,7 +1,7 @@
 // What an edit_page refusal adds to its answer: why it was refused and which
 // operation refused it (model/edit-refusals.mjs). errorResponse (auth.mjs)
-// writes the rest of the answer.
-import { ADDRESS_PATTERN, MAX_ADDRESS } from "../model/addresses.mjs";
+// spreads these fields into the answer it writes.
+import { ADDRESS_PATTERN, MAX_ADDRESS } from "../model/address-shape.mjs";
 import { refusalReason } from "../model/edit-refusals.mjs";
 
 /** Codes whose refusal names the operation it came from. */
@@ -37,15 +37,4 @@ export function editRefusalFields(error) {
       }),
   };
   return Object.keys(fields).length ? fields : null;
-}
-
-/** `response`, errorResponse's JSON answer to `error`, with
- * editRefusalFields added. Any other answer is returned as it is. */
-export async function withEditRefusal(response, error) {
-  const fields = editRefusalFields(error);
-  if (!fields || !(response.headers.get("content-type") ?? "").includes("json")) return response;
-  const body = await response.json();
-  const headers = new Headers(response.headers);
-  headers.delete("content-length");
-  return Response.json({ ...body, ...fields }, { status: response.status, headers });
 }

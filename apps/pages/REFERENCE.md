@@ -4114,8 +4114,9 @@ no reason of its own. An `invalid_edit_selector`, `node_not_found`,
 `edit_page` batch also names it: `edit_index` (zero-based in `operations`),
 `op`, and where known `field` and the operation's `node_id` (only an
 address-shaped id). A refusal of the batch as a whole names no operation.
-[worker/edit-refusal.mjs](worker/edit-refusal.mjs) adds these fields to the
-Page host's answer; MCP carries them in `structuredContent`.
+[worker/edit-refusal.mjs](worker/edit-refusal.mjs) lists these fields, and
+`errorResponse` writes them into the answer; MCP carries them in
+`structuredContent`.
 
 MCP vs. HTTP error mapping:
 
