@@ -171,23 +171,70 @@ test("two moves in one batch carry a thread through both", () => {
   assert.deepEqual(contexts(second.doc, second.comments), [{ status: "attached", text: "note" }]);
 });
 
-test("moving every node of a block into another removes the emptied block", () => {
-  let doc = page("First block.");
-  doc = A.change(doc, (draft) =>
+/** A Page of two blocks: KEY holds `first`, a second block holds `second`. */
+function twoBlocks(first, second) {
+  const doc = A.change(page(first), (draft) =>
     applyPageOperation(draft, {
       operation: "edit_page",
-      arguments: { operations: [{ op: "insert_markdown", markdown: "Second block.\n\nMore." }] },
+      arguments: { operations: [{ op: "insert_markdown", markdown: second }] },
     }),
   );
-  const [, second] = orderedBlockIds(doc);
+  return { doc, second: orderedBlockIds(doc)[1] };
+}
+
+test("moving every node of a block into another removes it; its block comment covers the moved text", () => {
+  const { doc, second } = twoBlocks("First block.", "Second block.\n\nMore.");
   const [secondFirst, secondLast] = nodeAddresses(doc, second);
   const [first] = ids(doc);
-  const { doc: after, result } = edit(doc, [
-    { op: "move_nodes", node_id: secondFirst, through_node_id: secondLast, after_node_id: first },
-  ]);
+  const { comments } = comment(doc, newCommentsDoc(), {
+    action: "add",
+    block_id: second,
+    body: "On the whole block",
+  });
+  const {
+    doc: after,
+    comments: nextComments,
+    result,
+  } = edit(
+    doc,
+    [{ op: "move_nodes", node_id: secondFirst, through_node_id: secondLast, after_node_id: first }],
+    comments,
+  );
   assert.deepEqual(orderedBlockIds(after), [KEY]);
   assert.equal(markdown(after), "First block.\n\nSecond block.\n\nMore.");
   assert.equal(result.edits[0].removed_block, true);
+  const [thread] = projectComments(after, nextComments);
+  assert.equal(thread.target.kind, "selection");
+  assert.equal(thread.selectionContext.status, "attached");
+  assert.match(thread.selectionContext.text, /^\n?Second block\.\nMore\.$/);
+});
+
+test("a null after_node_id moves the run to the start of the Page, not of its block", () => {
+  const { doc, second } = twoBlocks("First block.", "Second block.");
+  const [moved] = nodeAddresses(doc, second);
+  const { doc: after } = edit(doc, [{ op: "move_nodes", node_id: moved, after_node_id: null }]);
+  assert.deepEqual(orderedBlockIds(after), [KEY]);
+  assert.equal(markdown(after), "Second block.\n\nFirst block.");
+});
+
+test("move_nodes refuses an omitted after_node_id instead of guessing a place", () => {
+  const doc = page("Alpha\n\nBeta\n\nGamma");
+  const [, , gamma] = ids(doc);
+  refused(doc, [{ op: "move_nodes", node_id: gamma }], "invalid_move", /needs after_node_id/);
+});
+
+test("text a peer types into a moved node while it moves lands in the node before the run's old place", () => {
+  // The move deletes the run's characters and writes copies; a peer's
+  // concurrent splice at the end of the deleted node survives at the end of
+  // the node before it, as it does for delete_node. Nothing is lost.
+  const doc = page("Alpha\n\nBeta\n\nGamma");
+  const [, beta, gamma] = ids(doc);
+  const peer = A.change(A.clone(doc, { actor: "0d".repeat(16) }), (draft) => {
+    const at = draft.blocks[KEY].richText.indexOf("Beta") + 4;
+    A.splice(draft, ["blocks", KEY, "richText"], at, 0, " typed by a person");
+  });
+  const { doc: moved } = edit(doc, [{ op: "move_nodes", node_id: beta, after_node_id: gamma }]);
+  assert.equal(markdown(A.merge(moved, peer)), "Alpha typed by a person\n\nGamma\n\nBeta");
 });
 
 test("move_nodes refuses an anchor inside the run, a reversed run and a no-op", () => {

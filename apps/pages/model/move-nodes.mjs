@@ -19,6 +19,7 @@ import { nativeRead, readKind } from "./native-read.mjs";
 import { setRichEmpty } from "./richtext-page.mjs";
 import { insertInPlace, spendInPlaceRead } from "./insert-in-place.mjs";
 import { selectionContext } from "./comments.mjs";
+import { orderedBlockIds } from "./order.mjs";
 
 const width = (span) => (span.type === "text" ? span.value.length : 1);
 
@@ -69,10 +70,20 @@ function endpoint(doc, key, offset) {
 const refuse = (message, code = "invalid_move") =>
   Object.assign(Error(message), { status: 400, code });
 
+/** A selection target over `[from, to)` of block `key`: the anchor on the
+ * first character, the head on the last. */
+function selection(doc, key, from, to) {
+  const low = doc.blocks[key].richText.charCodeAt(to - 1);
+  const head = to - (low >= 0xdc00 && low <= 0xdfff ? 2 : 1);
+  return { kind: "selection", anchor: endpoint(doc, key, from), head: endpoint(doc, key, head) };
+}
+
 /**
  * Move the nodes `first` through `last` (resolved top-level nodes of one
  * block: `{ key, index, start, end }`) to directly after `anchor` (a resolved
- * top-level node), or to the start of the run's block when `anchor` is null.
+ * top-level node), or to the start of the Page when `op.after_node_id` is
+ * null. An omitted after_node_id is refused: for an insert it appends, and a
+ * move that guessed would reorder the Page.
  *
  * `comments`, when given, is `{ threads, rewrites, detached }`: `threads`
  * maps thread ids to their current targets and is updated in place, so a
@@ -82,6 +93,10 @@ const refuse = (message, code = "invalid_move") =>
  */
 export function moveNodes(doc, op, { first, last, anchor }, context) {
   const { trace, touched, budget, comments } = context;
+  if (op.after_node_id === undefined)
+    throw refuse(
+      "move_nodes needs after_node_id: the id of the node the run goes after, or null for the start of the Page",
+    );
   if (first.key !== last.key)
     throw refuse(
       "move_nodes moves nodes of one block: node_id and through_node_id name nodes in different blocks",
@@ -91,17 +106,22 @@ export function moveNodes(doc, op, { first, last, anchor }, context) {
   const src = first.key;
   if (anchor && anchor.key === src && anchor.index >= first.index && anchor.index <= last.index)
     throw refuse("after_node_id names a node inside the range move_nodes moves");
+  const top = orderedBlockIds(doc)[0];
+  if (!anchor && src === top && first.index === 0)
+    throw refuse("These nodes are already at the start of the Page; nothing to move");
+  if (anchor && anchor.key === src && anchor.index === first.index - 1)
+    throw refuse("These nodes already follow after_node_id; nothing to move");
+  const dst = anchor ? anchor.key : top;
+  // The move reads its block before and after the delete and slices its
+  // spans; insertInPlace decodes the destination block three times.
+  for (let i = 0; i < 3; i++) spendInPlaceRead(budget, doc, src);
+  for (let i = 0; i < 3; i++) spendInPlaceRead(budget, doc, dst);
+
   const count = last.index - first.index + 1;
   const { start } = first;
   const { end } = last;
   const length = end - start;
   const before = nativeRead(doc.blocks[src], doc.page_id);
-  if (!anchor && first.index === 0)
-    throw refuse("These nodes are already at the start of their block; nothing to move");
-  if (anchor && anchor.key === src && anchor.index === first.index - 1)
-    throw refuse("These nodes already follow after_node_id; nothing to move");
-
-  spendInPlaceRead(budget, doc, src);
   const spans = sliceSpans(doc, src, start, end);
 
   // Threads on this block's text: the ones wholly inside the run move with
@@ -134,7 +154,7 @@ export function moveNodes(doc, op, { first, last, anchor }, context) {
 
   // Where the anchor sits now that the run is gone from its block.
   let target;
-  if (!anchor) target = { key: src, index: -1, start: 0, end: 0 };
+  if (!anchor) target = { key: dst, index: -1, start: 0, end: 0 };
   else if (anchor.key === src && anchor.index > last.index)
     target = {
       ...anchor,
@@ -143,13 +163,11 @@ export function moveNodes(doc, op, { first, last, anchor }, context) {
       end: anchor.end - length,
     };
   else target = anchor;
-  const dst = target.key;
-  if (dst !== src) spendInPlaceRead(budget, doc, dst);
   const placed = insertInPlace(doc, target, spans, "move_nodes");
 
   // An emptied source block in another place than the destination holds only
-  // the empty paragraph setRichEmpty wrote. It goes, with its whole-block
-  // comments re-targeted to the destination block.
+  // the empty paragraph setRichEmpty wrote. It goes. Its whole-block
+  // comments named exactly the moved text, so they become selections over it.
   let removed = false;
   if (emptied && dst !== src) {
     delete doc.blocks[src];
@@ -157,7 +175,7 @@ export function moveNodes(doc, op, { first, last, anchor }, context) {
     if (comments)
       for (const [id, target] of Object.entries(comments.threads))
         if (target?.kind === "block" && target.blockId === src) {
-          const next = { kind: "block", blockId: dst };
+          const next = selection(doc, dst, placed.start, placed.end);
           comments.threads[id] = next;
           comments.rewrites.set(id, next);
         }
@@ -165,16 +183,7 @@ export function moveNodes(doc, op, { first, last, anchor }, context) {
 
   if (comments)
     for (const { id, from, to } of moving) {
-      const text = doc.blocks[dst].richText;
-      const newFrom = placed.start + from;
-      const newTo = placed.start + to;
-      const low = text.charCodeAt(newTo - 1);
-      const head = newTo - (low >= 0xdc00 && low <= 0xdfff ? 2 : 1);
-      const next = {
-        kind: "selection",
-        anchor: endpoint(doc, dst, newFrom),
-        head: endpoint(doc, dst, head),
-      };
+      const next = selection(doc, dst, placed.start + from, placed.start + to);
       comments.threads[id] = next;
       comments.rewrites.set(id, next);
     }

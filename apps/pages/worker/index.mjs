@@ -8095,11 +8095,14 @@ export class Page {
         let caret = null;
         let applied;
         // A move re-anchors the comment threads on the text it moves. The
-        // moves read and update this copy of the thread targets; the host
-        // writes the rewrites to the comments document after the Page edit
-        // lands, as a second journaled write in the comments lane under the
-        // same nonce. A restart between the two leaves those threads
-        // detached, never on other text.
+        // moves read and update this copy of the thread targets, and the
+        // planned rewrites are journaled inside the Page receipt
+        // (result.reanchor), so a replay knows them. The host then writes
+        // them to the comments document as a second journaled write in the
+        // comments lane under the same nonce: a first attempt and every
+        // retry, including one after a restart between the two writes, run
+        // it, and it applies once. A peer that moves its own thread's anchor
+        // between this read and the rewrite is overwritten.
         const moves = ops.some((op) => op?.op === "move_nodes")
           ? moveComments(this.commentsView())
           : null;
@@ -8182,6 +8185,11 @@ export class Page {
                 trace,
                 comments: moves,
               });
+              if (moves && (moves.rewrites.size || moves.detached.length))
+                result.reanchor = {
+                  rewrites: [...moves.rewrites],
+                  detached: [...new Set(moves.detached)],
+                };
               if (body.operation === "edit_page") {
                 try {
                   caret = writeTargets(doc, trace);
@@ -8206,9 +8214,12 @@ export class Page {
           onHeads: (heads) => (applied = heads),
         });
         let receipt = pageReceipt;
-        if (moves && (moves.rewrites.size || moves.detached.length)) {
+        const reanchor = pageReceipt.result?.reanchor;
+        if (reanchor) {
+          const { reanchor: _planned, ...result } = pageReceipt.result;
+          const rewrites = new Map(reanchor.rewrites);
           let reanchored;
-          if (moves.rewrites.size) {
+          if (rewrites.size) {
             let commentHeads;
             reanchored = await documentMutation({
               storage: this.ctx.storage,
@@ -8217,11 +8228,11 @@ export class Page {
               doc: COMMENTS_DOC,
               pageId: this.metadata.pageId,
               operation: "reanchor_comments",
-              args: { nonce: body.arguments.nonce, threads: [...moves.rewrites.keys()] },
+              args: { nonce: body.arguments.nonce, threads: [...rewrites.keys()] },
               identity,
               baseRevision: () => undefined,
               guard: (input) => input,
-              apply: (draft) => applyCommentRewrites(draft, moves.rewrites),
+              apply: (draft) => applyCommentRewrites(draft, rewrites),
               flush: () => this.flush(),
               onHeads: (heads) => (commentHeads = heads),
             });
@@ -8234,11 +8245,9 @@ export class Page {
           }
           receipt = {
             ...pageReceipt,
+            result,
             ...(reanchored?.comment_revision && { comment_revision: reanchored.comment_revision }),
-            comments: {
-              reanchored: [...moves.rewrites.keys()],
-              detached: [...new Set(moves.detached)],
-            },
+            comments: { reanchored: [...rewrites.keys()], detached: reanchor.detached },
           };
         }
         this.cacheTitle();

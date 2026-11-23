@@ -4213,6 +4213,44 @@ still replay the recorded receipt; these guards run only for new intents.
   and other receipt fields are captured at the operation's heads and replayed
   unchanged on retry.
 
+`move_nodes { node_id, through_node_id?, after_node_id }` moves a run of
+top-level nodes ([model/move-nodes.mjs](model/move-nodes.mjs)):
+
+- **Addresses:** `node_id` through `through_node_id` (omitted: `node_id`
+  alone) are top-level nodes of one block, in order. `after_node_id` is
+  required: a top-level node's id, in any block, or `null` for the start of
+  the Page. A run across blocks or out of order, an anchor inside the run, a
+  move that changes nothing and an omitted `after_node_id` refuse with
+  `400 invalid_move`.
+- **Write:** the run's stored spans are sliced, deleted and written after the
+  anchor with `insertInPlace`, so characters, marks and attributes come back
+  as stored. The moved nodes get new ids, which the edit's `nodes` lists in
+  order; every other node keeps its id. A delete that would join the lists
+  around the run refuses with `nodes_would_join`. A source block the move
+  empties, when the run lands in another block, is removed
+  (`removed_block: true`). A move needs the current revision, like every
+  structural edit; target conflict scope refuses it.
+- **Comments:** a selection thread wholly inside the run is re-anchored on
+  the same text at its new place, and a whole-block thread on a removed
+  source block becomes a selection over the moved text. A thread that crosses
+  the run's edge is not rewritten and reads as detached. The host computes
+  the rewrites in the Page change, journals them inside the Page receipt, and
+  writes them to the comments document as a second journaled write in the
+  comments lane under the request's nonce. The first attempt and every
+  retry run that write, and it applies once, so a retry after an interrupted
+  comments write re-anchors the threads. The host rewrite is not a peer's
+  anchor move: it keeps each anchor on the same text, so the author-only
+  `move_anchor` rule doesn't apply. A peer anchor move made between the
+  host's read of the threads and the rewrite is overwritten.
+- **Receipt:** the edit entry has `op`, `block`, `nodes`, `comments_moved` and
+  `removed_block` when it applies. When the batch rewrote or detached a
+  thread, the receipt adds `comment_revision` and `comments: { reanchored,
+  detached }`, thread ids each; a retry returns the same receipt.
+- **Concurrency:** text a peer types into a moved node while the move lands
+  is kept at the end of the node before the run's old place, as for
+  `delete_node`. A comment a client anchors on the moved text concurrently
+  names deleted characters and reads as detached.
+
 ### Trash and permanent deletion
 
 `delete_page` moves a Page to Trash; it does not delete the document. The Page

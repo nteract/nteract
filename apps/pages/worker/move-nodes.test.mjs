@@ -93,10 +93,11 @@ test("a section move keeps its comments attached; a retry replays the receipt", 
   assert.equal(thread.selectionContext.status, "attached");
   assert.equal(thread.selectionContext.text, "Second body");
 
-  // An exact retry returns the Page receipt and writes nothing again.
+  // An exact retry returns the first receipt, comment fields included, and
+  // writes nothing again.
   const retried = await call("edit_page", request);
-  assert.deepEqual(retried.result, moved.result);
-  assert.equal(retried.revision, moved.revision);
+  assert.deepEqual(retried, moved);
+  assert.equal(moved.result.reanchor, undefined);
   const again = await call("read_page", {});
   assert.equal(again.blocks[0].markdown, after.blocks[0].markdown);
 });
@@ -143,4 +144,56 @@ test("move_nodes needs the current revision and refuses target scope", async (t)
     { ok: false },
   );
   assert.equal(noop.code, "invalid_move");
+});
+
+test("a retry after the comments write failed re-anchors the threads", async (t) => {
+  const { f, call } = await session(t);
+  const read = await call("read_page", {});
+  const [block] = read.blocks;
+  const written = await call("edit_page", {
+    revision: read.revision,
+    nonce: nonce(),
+    operations: [
+      {
+        op: "replace_block_markdown",
+        node_id: block.node_id,
+        markdown: "Alpha\n\nBeta note\n\nGamma",
+      },
+    ],
+  });
+  const [, beta, gamma] = written.result.edits[0].nodes;
+  const commented = await call("manage_page_comment", {
+    nonce: nonce(),
+    action: "add",
+    node_id: block.node_id,
+    selected_text: "note",
+    revision: written.revision,
+    body: "Keep",
+  });
+  // The Page edit lands; the comments write fails once, as a restart between
+  // the two writes would leave it.
+  const update = f.page.commentsHandle.update.bind(f.page.commentsHandle);
+  let failures = 1;
+  f.page.commentsHandle.update = (...args) => {
+    if (failures-- > 0) throw new Error("comments write interrupted");
+    return update(...args);
+  };
+  const request = {
+    revision: written.revision,
+    nonce: nonce(),
+    operations: [{ op: "move_nodes", node_id: beta, after_node_id: gamma }],
+  };
+  await call("edit_page", request, { ok: false });
+  const detached = await call("list_page_comments", {});
+  const before = detached.comments.find((entry) => entry.id === commented.result.thread_id);
+  assert.equal(before.selectionContext.status, "detached");
+  const retried = await call("edit_page", request);
+  assert.deepEqual(retried.comments.reanchored, [commented.result.thread_id]);
+  assert.match(retried.comment_revision, /^c\d+$/);
+  const listed = await call("list_page_comments", {});
+  const thread = listed.comments.find((entry) => entry.id === commented.result.thread_id);
+  assert.equal(thread.selectionContext.status, "attached");
+  assert.equal(thread.selectionContext.text, "note");
+  const page = await call("read_page", {});
+  assert.equal(page.blocks[0].markdown, "Alpha\n\nGamma\n\nBeta note");
 });

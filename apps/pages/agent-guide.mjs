@@ -1283,16 +1283,19 @@ request needs no read.
 ### Move a section
 
 move_nodes moves a run of top-level nodes, node_id through through_node_id in
-one block, to directly after after_node_id, in the same block or another;
-after_node_id null moves the run to the start of its block. Use it to reorder
-sections: name a heading as node_id and the last node before the next heading
-of that level as through_node_id. Every character, mark and attribute moves
-as stored, and comment threads on the moved text stay attached. The moved
-nodes get new ids, which the result's nodes lists in order; every other node
-keeps its id. A thread that only partly overlaps the run loses its anchor and
-is listed in the receipt's comments.detached. Prefer move_nodes to deleting
-and inserting the same content again, which detaches every comment on it and
-can drop formatting a Markdown copy doesn't carry.
+one block, to directly after after_node_id, in the same block or another.
+after_node_id is required: a node's id, or null for the start of the Page.
+Use it to reorder sections: name a heading as node_id and the last node
+before the next heading of that level as through_node_id. Every character,
+mark and attribute moves as stored, and comment threads on the moved text
+stay attached. The moved nodes get new ids, which the result's nodes lists in
+order; every other node keeps its id. A thread that only partly overlaps the
+run loses its anchor and is listed in the receipt's comments.detached. Text
+someone types into a moved node while the move lands is kept, at the end of
+the node before the run's old place: on a Page someone has open, read the
+nodes back after the move. Prefer move_nodes to deleting and inserting the
+same content again, which detaches every comment on it and can drop
+formatting a Markdown copy doesn't carry.
 
 ### Read only what you need
 
