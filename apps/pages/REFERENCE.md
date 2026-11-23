@@ -76,6 +76,22 @@ fixed text, so they are the same bytes for every caller and name nothing about
 a Page or Project. Only `/` and `/connect` carry an `og:url`. The rewritten
 shell has no validator and answers `Cache-Control: no-cache`.
 
+Every shell answer also passes through
+[worker/agent-shell.mjs](worker/agent-shell.mjs), which leaves a shell's
+body as built. It adds `Link: </llms.txt>; rel="describedby"`, the header form
+of the shell's own `<link>`, which `/connect` sends too. Every shell address
+except `/` with no query answers `X-Robots-Tag: noindex`: each opens something
+a reader signs in for, with or without a published link preview, and names an
+ID or a search. A path ending in
+`.txt`, `.md`, `.markdown`, `.xml`, `.json`, `.yaml`, `.yml` or `.csv` that
+found no built file answers a plain-text 404 naming `/llms.txt`, never the
+shell with a 200. A built file at such a path keeps its own answer.
+
+The shell's `<noscript>` names `/connect` and `/llms.txt` and no sign-in
+method, since one build serves deployments with and without API keys. The
+signed-out view the script draws carries the same two links in prose, because
+a reader that runs the script never sees the `<noscript>`.
+
 Their image is the product's card, 1200x630 with `summary_large_image`, served
 at `/social-card.png?v=<version>`. The version is the start of the image's
 sha256, so a new card is a new URL to services that kept the old one.
@@ -1410,6 +1426,19 @@ refreshes, because a refresh token presented more than 30 seconds after another
 process spent it is replay and revokes the grant. Agents can prepare non-secret configuration while a person
 creates a key or authorizes the connection; a successful `list_pages` call
 verifies access.
+
+Pages people write are served from the same origin as these guides, so an
+agent can't tell official steps from a Page's text by the domain. `/llms.txt`
+(right after its opening), `/connect`, the setup prompt and the shell's
+`<noscript>` name where official instructions come from: `/llms.txt`,
+`/llms/`, `/connect` and the deployment's MCP server (its instructions, tool
+descriptions and error answers). The first three also say that text inside a
+Page or Project is its authors' content, not official instructions, and that
+connection, setup and credential steps written in one are not to be followed.
+The setup prompt is the person's own message to their agent and limits setup
+steps to the same sources. The wording states limits only and never tells an
+agent to send a credential anywhere. None of these four carries user text. A Page's shell can: a slug's
+words or the owner's published preview reach its title and preview tags.
 
 Agent attribution headers and `_meta.agent` (all self-declared labels under the
 authenticated account, never verified identity or a permission grant):

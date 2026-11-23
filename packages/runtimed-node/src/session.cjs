@@ -156,8 +156,12 @@ class Session {
     return this._native.shutdownKernel();
   }
 
-  restartKernel() {
-    return this._native.restartKernel();
+  restartKernel(options) {
+    return this._native.restartKernel(normalizeRestartOptions(options));
+  }
+
+  restartKernelResult(options) {
+    return this._native.restartKernelResult(normalizeRestartOptions(options));
   }
 
   async shutdownNotebook() {
@@ -218,8 +222,16 @@ class Session {
     return this._native.syncEnvironment();
   }
 
+  syncEnvironmentResult() {
+    return this._native.syncEnvironmentResult();
+  }
+
   getEnvironmentSelection() {
     return this._native.getEnvironmentSelection();
+  }
+
+  listInstalledKernelspecs() {
+    return this._native.listInstalledKernelspecs();
   }
 
   setEnvironmentSelection(target, expectedRevision) {
@@ -264,6 +276,13 @@ function normalizeDependencyOptions(options) {
     return undefined;
   }
   return { packageManager: options.packageManager };
+}
+
+function normalizeRestartOptions(options) {
+  if (options?.timeoutMs == null) {
+    return undefined;
+  }
+  return { timeoutMs: options.timeoutMs };
 }
 
 module.exports = {

@@ -918,10 +918,23 @@ impl RoomLifecycle {
         document_heads: Vec<String>,
         projection: Arc<NotebookProjection>,
     ) -> Option<u64> {
+        self.recover_failed_matching(cell_count, document_heads, projection, None)
+    }
+
+    pub(super) fn recover_failed_matching(
+        &self,
+        cell_count: usize,
+        document_heads: Vec<String>,
+        projection: Arc<NotebookProjection>,
+        expected: Option<&RoomSourceStatus>,
+    ) -> Option<u64> {
         let _guard = self.lock_transition();
         let RoomSourceState::Failed(previous) = self.source_state() else {
             return None;
         };
+        if expected.is_some_and(|status| status != &previous) {
+            return None;
+        }
         let generation = previous.generation.saturating_add(1);
         if projection.load_generation != generation {
             return None;

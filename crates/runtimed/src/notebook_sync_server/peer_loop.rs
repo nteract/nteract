@@ -474,7 +474,7 @@ where
             result = environment_selection_rx.changed(), if connection_identity.scope() == ConnectionScope::Owner => {
                 if result.is_err() { return Ok(()); }
                 let selection = environment_selection_rx.borrow_and_update().clone();
-                queue_environment_selection(&peer_writer, connection_identity.scope(), selection)?;
+                queue_environment_selection(&peer_writer, connection_identity.scope(), Box::new(selection))?;
             }
 
             // Older peers do not know the v4 hosted_bridge_status variant.

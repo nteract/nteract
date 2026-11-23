@@ -508,6 +508,7 @@ fn request_required_scope(
     match request {
         NotebookRequest::LaunchKernel { .. }
         | NotebookRequest::ListCondaEnvironments { .. }
+        | NotebookRequest::ListInstalledKernelspecs {}
         | NotebookRequest::ListInstalledCondaPackages { .. }
         | NotebookRequest::GetEnvironmentSelection {}
         | NotebookRequest::SetEnvironmentSelection { .. }
@@ -561,7 +562,7 @@ pub(super) fn queue_request_error(
 pub(super) fn queue_environment_selection(
     writer: &PeerWriter,
     scope: ConnectionScope,
-    selection: notebook_protocol::protocol::EnvironmentSelectionSnapshot,
+    selection: Box<notebook_protocol::protocol::EnvironmentSelectionSnapshot>,
 ) -> anyhow::Result<()> {
     if scope == ConnectionScope::Owner {
         writer.send_json(
@@ -1284,14 +1285,14 @@ mod tests {
             ConnectionScope::Owner,
         ] {
             let (writer, mut replies, mut broadcasts) = test_peer_writer_with_capacities(1, 1);
-            queue_environment_selection(&writer, scope, selection.clone()).unwrap();
+            queue_environment_selection(&writer, scope, Box::new(selection.clone())).unwrap();
             if scope == ConnectionScope::Owner {
                 let frame = broadcasts.try_recv().unwrap();
                 assert_eq!(frame.frame_type, NotebookFrameType::Broadcast);
                 let broadcast: notebook_protocol::protocol::NotebookBroadcast =
                     serde_json::from_slice(&frame.payload).unwrap();
                 assert!(
-                    matches!(broadcast, notebook_protocol::protocol::NotebookBroadcast::EnvironmentSelectionChanged { selection: actual } if actual == selection)
+                    matches!(broadcast, notebook_protocol::protocol::NotebookBroadcast::EnvironmentSelectionChanged { selection: actual } if *actual == selection)
                 );
             } else {
                 assert!(replies.try_recv().is_err());

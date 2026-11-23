@@ -8,7 +8,7 @@ use tracing::warn;
 
 use crate::notebook_sync_server::durability::commit_daemon_notebook_mutation;
 use crate::notebook_sync_server::{
-    detect_room_runtime, format_source, formatter_actor, NotebookRoom,
+    apply_formatted_sources, format_source, room_formatter, NotebookRoom,
 };
 use crate::protocol::NotebookResponse;
 use crate::requests::guarded;
@@ -110,12 +110,13 @@ async fn handle_inner(
             !has_runtime_agent && runtime_launch_in_progress(&lifecycle);
 
         if has_runtime_agent || queue_for_starting_kernel {
-            let (source, execution_id, format_heads) = match queue_cell_if_current(
+            let (source, execution_id, format_heads, formatter) = match queue_cell_if_current(
                 room,
                 &cell_id,
                 requested_execution_id.as_deref(),
                 observed_heads.as_deref(),
                 submitter_actor_label,
+                !disable_auto_format,
             )
             .await
             {
@@ -123,11 +124,12 @@ async fn handle_inner(
                     source,
                     execution_id,
                     format_heads,
+                    formatter,
                 } => {
                     if queue_for_starting_kernel {
                         publish_startup_queue_from_queued_executions(room);
                     }
-                    (source, execution_id, format_heads)
+                    (source, execution_id, format_heads, formatter)
                 }
                 QueueCellResult::AlreadyActive { execution_id } => {
                     if queue_for_starting_kernel {
@@ -141,46 +143,20 @@ async fn handle_inner(
                 QueueCellResult::Response(response) => return *response,
             };
 
-            if !disable_auto_format {
+            if let Some(runtime) = formatter {
                 let room_clone = Arc::clone(room);
                 let cell_id_clone = cell_id.clone();
-                let source_clone = source.clone();
                 spawn_best_effort("cell-formatter", async move {
-                    if let Some(runtime) = detect_room_runtime(&room_clone).await {
-                        if let Some(formatted) = format_source(&source_clone, &runtime).await {
-                            let mut doc = room_clone.doc.write().await;
-                            let rollback_actor = doc.get_actor_id();
-                            let rollback_snapshot = doc.save();
-                            let baseline_heads = doc.get_heads();
-                            match doc.transact_at_heads_recovering(
-                                &format_heads,
-                                Some(&formatter_actor(&runtime)),
-                                "format-transaction",
-                                |doc| {
-                                    let changed = doc.update_source(&cell_id_clone, &formatted)?;
-                                    Ok(changed)
-                                },
-                            ) {
-                                Ok(true) => {
-                                    match commit_daemon_notebook_mutation(
-                                        &room_clone,
-                                        &mut doc,
-                                        &baseline_heads,
-                                        &rollback_snapshot,
-                                        &rollback_actor,
-                                        "cell formatter",
-                                    ) {
-                                        Ok(()) => {
-                                            let _ = room_clone.broadcasts.changed_tx.send(());
-                                        }
-                                        Err(error) => warn!("[format] {error}"),
-                                    }
-                                }
-                                Ok(false) => {}
-                                Err(e) => {
-                                    warn!("[format] transaction failed: {}", e);
-                                }
-                            }
+                    if let Some(formatted) = format_source(&source, runtime).await {
+                        if let Err(e) = apply_formatted_sources(
+                            &room_clone,
+                            runtime,
+                            &format_heads,
+                            &[(cell_id_clone, formatted)],
+                        )
+                        .await
+                        {
+                            warn!("[format] {e}");
                         }
                     }
                 });
@@ -202,6 +178,7 @@ enum QueueCellResult {
         source: String,
         execution_id: String,
         format_heads: Vec<ChangeHash>,
+        formatter: Option<&'static str>,
     },
     AlreadyActive {
         execution_id: String,
@@ -215,6 +192,7 @@ async fn queue_cell_if_current(
     requested_execution_id: Option<&str>,
     observed_heads: Option<&[String]>,
     submitter_actor_label: Option<&str>,
+    format: bool,
 ) -> QueueCellResult {
     if let Some(execution_id) = requested_execution_id {
         if let Err(reason) = validate_requested_execution_id(execution_id, false) {
@@ -380,6 +358,11 @@ async fn queue_cell_if_current(
         source,
         execution_id,
         format_heads,
+        formatter: if format {
+            room_formatter(room, &doc)
+        } else {
+            None
+        },
     }
 }
 

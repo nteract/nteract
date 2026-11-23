@@ -373,6 +373,7 @@ async fn shutdown_then_launch_serialized() {
             },
             env_vars: Default::default(),
             redact_env_values_in_outputs: true,
+            kernelspec: None,
         },
     )
     .await;

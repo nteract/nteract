@@ -757,7 +757,7 @@ where
 
     // -- 4. Main event loop -------------------------------------------------
 
-    loop {
+    'session: loop {
         if session.kernel.is_none() {
             for (_, task) in session.extension_tasks.drain() {
                 task.abort();
@@ -939,13 +939,19 @@ where
                                     let is_command = envelope.request.is_command();
                                     let id = envelope.id.clone();
 
-                                    let (response, new_cmd_rx) = handle_runtime_agent_request(
+                                    let (response, new_cmd_rx) = tokio::select! {
+                                        Some(reason)=shutdown_rx.recv(), if is_launch_or_restart=>{
+                                            info!("[runtime-agent] Cancelling pending kernel launch: {reason}");
+                                            break 'session;
+                                        }
+                                        result=handle_runtime_agent_request(
                                         envelope.request,
                                         &ctx,
                                         &mut session.kernel,
                                         &mut session.kernel_state,
                                         &mut session.seen_execution_ids,
-                                    ).await;
+                                    )=>result,
+                                    };
 
                                     session.install_kernel_channels(new_cmd_rx);
                                     if should_clear_pending_initial_launch_after_rpc(
@@ -2055,6 +2061,7 @@ async fn handle_runtime_agent_request(
             notebook_path,
             launched_config,
             kernel_ports,
+            kernelspec,
             env_vars,
             redact_env_values_in_outputs,
         } => {
@@ -2103,6 +2110,7 @@ async fn handle_runtime_agent_request(
                 notebook_path: notebook_path.as_deref().map(PathBuf::from),
                 launched_config,
                 kernel_ports,
+                kernelspec,
                 env_vars: env_vars.into_iter().collect(),
                 redact_env_values_in_outputs,
                 pooled_env,
@@ -2180,6 +2188,7 @@ async fn handle_runtime_agent_request(
             notebook_path,
             launched_config,
             kernel_ports,
+            kernelspec,
             env_vars,
             redact_env_values_in_outputs,
         } => {
@@ -2200,7 +2209,14 @@ async fn handle_runtime_agent_request(
 
             // Shut down existing kernel
             if let Some(ref mut k) = kernel {
-                k.shutdown().await.ok();
+                if let Err(e) = k.shutdown().await {
+                    return (
+                        RuntimeAgentResponse::Error {
+                            error: format!("Cannot restart before kernel shutdown completes: {e}"),
+                        },
+                        None,
+                    );
+                }
             }
             *kernel = None;
 
@@ -2247,6 +2263,7 @@ async fn handle_runtime_agent_request(
                 notebook_path: notebook_path.as_deref().map(PathBuf::from),
                 launched_config,
                 kernel_ports,
+                kernelspec,
                 env_vars: env_vars.into_iter().collect(),
                 redact_env_values_in_outputs,
                 pooled_env,
@@ -2381,7 +2398,14 @@ async fn handle_runtime_agent_request(
         RuntimeAgentRequest::ShutdownKernel => {
             let shutdown_kernel_id = kernel.as_ref().map(|kernel| kernel.kernel_id().to_string());
             if let Some(ref mut k) = kernel {
-                k.shutdown().await.ok();
+                if let Err(e) = k.shutdown().await {
+                    return (
+                        RuntimeAgentResponse::Error {
+                            error: format!("Kernel shutdown failed: {e}"),
+                        },
+                        None,
+                    );
+                }
             }
             *kernel = None;
             let (interrupted, cleared) = state.shutdown();
@@ -4118,6 +4142,7 @@ pub(crate) mod tests {
             },
             env_vars: vec![],
             redact_env_values_in_outputs: false,
+            kernelspec: None,
             pooled_env: None,
             direct_python_path: None,
         }

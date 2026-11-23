@@ -3166,6 +3166,7 @@ pub(crate) async fn release_attempt_and_readmit_if_peer_waiting(
         drop(attempt);
         return None;
     }
+
     reset_starting_state(room, None).await;
     attempt.release_and_readmit_auto_if_peer_waiting()
 }
@@ -3217,8 +3218,7 @@ async fn bound_environment_for_auto_launch(
 
 /// One admitted auto-launch attempt, owned end to end.
 ///
-/// Resolves the metadata snapshot from the Automerge doc (if the first client
-/// has already synced) or falls back to reading the .ipynb from disk.
+/// Waits for the authoritative import before resolving environment intent.
 ///
 /// Token disposition: dropping `attempt` on any exit path that did not launch
 /// a kernel (and was not a benign abort) arms the failure cooldown, so error
@@ -3231,10 +3231,28 @@ async fn auto_launch_kernel_attempt(
     default_runtime: crate::runtime::Runtime,
     default_python_env: crate::settings_doc::PythonEnvType,
     daemon: std::sync::Arc<crate::daemon::Daemon>,
-    attempt: super::room::KernelLaunchAttempt,
+    mut attempt: super::room::KernelLaunchAttempt,
 ) -> Option<super::room::KernelLaunchAttempt> {
     if attempt.is_cancelled() {
         debug!("[notebook-sync] Auto-launch cancelled before environment resolution");
+        return None;
+    }
+
+    let ready = tokio::select! {
+        biased;
+        _ = super::room::wait_for_kernel_launch_cancellation(attempt.cancellation_receiver()) => return None,
+        ready = crate::requests::launch_kernel::wait_for_launch_metadata(room) => ready,
+    };
+    if let Err(error) = ready {
+        reset_starting_state_with_outcome(
+            room,
+            None,
+            ResetOutcome::Error {
+                reason: None,
+                details: &error.to_string(),
+            },
+        )
+        .await;
         return None;
     }
 
@@ -3329,6 +3347,48 @@ async fn auto_launch_kernel_attempt(
         }
     }
 
+    let selection = room.local_environment_selection.snapshot();
+    let mode = *room.identity.environment_mode.read().await;
+    let live_metadata = room.doc.read().await.get_metadata_snapshot();
+    if room.local_environment_selection.applied_automatic()
+        || selection.applied_kernelspec.is_some()
+        || (selection.applied.is_none()
+            && crate::requests::launch_kernel::imported_kernelspec_target(
+                room,
+                live_metadata.as_ref(),
+                mode,
+            )
+            .is_some())
+    {
+        if crate::requests::guarded::ensure_trusted(room)
+            .await
+            .is_err()
+        {
+            reset_auto_launch_error_with_trust_check(
+                room,
+                None,
+                None,
+                "Trust changed before the selected environment could launch",
+            )
+            .await;
+            return None;
+        }
+        if room.connections.active_peers.load(Ordering::Relaxed) == 0 {
+            return release_attempt_and_readmit_if_peer_waiting(room, attempt).await;
+        }
+        let _ = crate::requests::launch_kernel::handle_admitted(
+            room,
+            &daemon,
+            "auto".into(),
+            notebook_protocol::connection::LaunchSpec::Auto,
+            None,
+            attempt,
+            None,
+            None,
+        )
+        .await;
+        return None;
+    }
     let applied = if room
         .doc
         .read()
@@ -3780,8 +3840,15 @@ async fn auto_launch_kernel_attempt(
                 None
             }
             crate::project_trust::RoomProjectGate::Trusted(trusted) => Some(trusted),
-            crate::project_trust::RoomProjectGate::Parked
-            | crate::project_trust::RoomProjectGate::ContextChanged => return None,
+            // Requests that joined this generation return the same typed
+            // trust refusal as a manual owner.
+            crate::project_trust::RoomProjectGate::Parked => {
+                attempt.require_project_trust();
+                return None;
+            }
+            crate::project_trust::RoomProjectGate::ContextChanged
+            | crate::project_trust::RoomProjectGate::Cancelled
+            | crate::project_trust::RoomProjectGate::WriteFailed(_) => return None,
         };
 
     // For pixi:toml, verify ipykernel is in pixi.toml before launching.
@@ -4805,6 +4872,7 @@ async fn auto_launch_kernel_attempt(
                         kernel_ports,
                         env_vars: launch_env_vars.clone(),
                         redact_env_values_in_outputs,
+                        kernelspec: None,
                     },
                 )
                 .await
@@ -5696,38 +5764,66 @@ pub(crate) fn formatter_actor(runtime: &str) -> String {
     format!("runtimed:{tool}")
 }
 
-/// Detect the runtime from room metadata, returning "python", "deno", or None.
-pub(crate) async fn detect_room_runtime(room: &NotebookRoom) -> Option<String> {
-    let doc = room.doc.read().await;
-    doc.get_metadata_snapshot()
-        .and_then(|snapshot| snapshot.detect_runtime())
+/// Formatting is language-specific. Launch inference can use package metadata; an
+/// explicit but unsupported source language must never take that fallback.
+pub(crate) fn room_formatter(room: &NotebookRoom, doc: &NotebookDoc) -> Option<&'static str> {
+    room.state
+        .read(|sd| formatter_for_kernel(&sd.read_state().kernel, doc))
+        .ok()
+        .flatten()
+}
+
+fn formatter_for_kernel(
+    kernel: &runtime_doc::KernelState,
+    doc: &NotebookDoc,
+) -> Option<&'static str> {
+    fn for_language(language: &str) -> Option<&'static str> {
+        match language.trim().to_ascii_lowercase().as_str() {
+            "python" => Some("python"),
+            "typescript" | "javascript" | "deno" => Some("deno"),
+            _ => None,
+        }
+    }
+    if matches!(kernel.lifecycle, RuntimeLifecycle::Running(_)) {
+        return for_language(&kernel.language);
+    }
+    if kernel.lifecycle.is_starting_or_running() {
+        return None;
+    }
+    let metadata = doc.get_metadata_snapshot()?;
+    if let Some(spec) = &metadata.kernelspec {
+        if let Some(language) = &spec.language {
+            return for_language(language);
+        }
+        if crate::kernelspec::imported(Some(&metadata), Default::default()).is_some() {
+            return None;
+        }
+    }
+    if let Some(info) = &metadata.language_info {
+        return for_language(&info.name);
+    }
+    metadata.detect_runtime().as_deref().and_then(for_language)
 }
 
 /// Format all code cells in a notebook using ruff (Python) or deno fmt (Deno).
 ///
-/// Reads the runtime type from the notebook metadata and formats accordingly.
 /// Updates the Automerge doc with formatted sources and broadcasts changes.
 /// Formatting errors are logged but don't fail the operation (best-effort).
 pub(crate) async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, String> {
-    let runtime = match detect_room_runtime(room).await {
-        Some(rt) => rt,
-        None => {
-            info!("[format] Skipping format: unknown kernelspec (no formatter available)");
-            return Ok(0);
-        }
-    };
-
     // Capture the code cells and heads before formatting so the eventual
     // writes are applied as an isolated transaction at this baseline.
-    let (cells, baseline_heads) = {
+    let (runtime, cells, baseline_heads) = {
         let mut doc = room.doc.write().await;
+        let Some(runtime) = room_formatter(room, &doc) else {
+            return Ok(0);
+        };
         let cells: Vec<(String, String)> = doc
             .get_cells()
             .into_iter()
             .filter(|cell| cell.cell_type == "code" && !cell.source.trim().is_empty())
             .map(|cell| (cell.id, cell.source))
             .collect();
-        (cells, doc.get_heads())
+        (runtime, cells, doc.get_heads())
     };
 
     if cells.is_empty() {
@@ -5736,33 +5832,56 @@ pub(crate) async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, 
 
     let mut formatted_updates: Vec<(String, String)> = Vec::new();
     for (cell_id, source) in cells {
-        if let Some(fmt) = format_source(&source, &runtime).await {
+        if let Some(fmt) = format_source(&source, runtime).await {
             formatted_updates.push((cell_id, fmt));
         }
     }
 
+    apply_formatted_sources(room, runtime, &baseline_heads, &formatted_updates).await
+}
+
+pub(crate) async fn apply_formatted_sources(
+    room: &NotebookRoom,
+    runtime: &str,
+    baseline_heads: &[automerge::ChangeHash],
+    formatted_updates: &[(String, String)],
+) -> Result<usize, String> {
     let mut formatted_count = 0;
     if !formatted_updates.is_empty() {
         let mut doc = room.doc.write().await;
         let rollback_actor = doc.get_actor_id();
         let rollback_snapshot = doc.save();
         let durable_baseline_heads = doc.get_heads();
-        match doc.transact_at_heads_recovering(
-            &baseline_heads,
-            Some(&formatter_actor(&runtime)),
-            "save-format-transaction",
-            |doc| {
-                let mut applied = 0;
-                let mut changed = false;
-                for (cell_id, fmt) in &formatted_updates {
-                    if let Ok(cell_changed) = doc.update_source(cell_id, fmt) {
-                        applied += 1;
-                        changed |= cell_changed;
-                    }
+        // Hold both owners through the source transaction. Document heads alone
+        // do not fence a language switch in RuntimeStateDoc.
+        let transaction = room
+            .state
+            .read(|sd| {
+                if formatter_for_kernel(&sd.read_state().kernel, &doc) != Some(runtime) {
+                    return None;
                 }
-                Ok((applied, changed))
-            },
-        ) {
+                Some(doc.transact_at_heads_recovering(
+                    baseline_heads,
+                    Some(&formatter_actor(runtime)),
+                    "format-transaction",
+                    |doc| {
+                        let mut applied = 0;
+                        let mut changed = false;
+                        for (cell_id, fmt) in formatted_updates {
+                            if let Ok(cell_changed) = doc.update_source(cell_id, fmt) {
+                                applied += 1;
+                                changed |= cell_changed;
+                            }
+                        }
+                        Ok((applied, changed))
+                    },
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let Some(transaction) = transaction else {
+            return Ok(0);
+        };
+        match transaction {
             Ok((applied, changed)) => {
                 if changed {
                     super::durability::commit_daemon_notebook_mutation(
@@ -5771,7 +5890,7 @@ pub(crate) async fn format_notebook_cells(room: &NotebookRoom) -> Result<usize, 
                         &durable_baseline_heads,
                         &rollback_snapshot,
                         &rollback_actor,
-                        "save-time formatting",
+                        "cell formatting",
                     )?;
                     let _ = room.broadcasts.changed_tx.send(());
                 }

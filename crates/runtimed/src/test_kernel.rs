@@ -180,6 +180,7 @@ mod tests {
             },
             env_vars: vec![],
             redact_env_values_in_outputs: false,
+            kernelspec: None,
             pooled_env: None,
             direct_python_path: None,
         }

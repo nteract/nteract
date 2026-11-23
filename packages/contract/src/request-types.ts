@@ -16,6 +16,7 @@ export type EnvSource =
   | "pixi:toml"
   | "conda:env_yml"
   | "conda:existing:local"
+  | "kernelspec"
   | `${PackageManager}:pep723`
   | "deno"
   | (string & {});
@@ -59,13 +60,32 @@ export interface InstalledCondaPackageInventory {
   warnings: string[];
 }
 
-export type LocalEnvironmentTarget = { kind: "automatic" } | { kind: "conda"; prefix: string };
+export interface InstalledKernelspec {
+  name: string;
+  display_name: string;
+  language: string;
+}
+
+export interface KernelspecInventory {
+  kernelspecs: InstalledKernelspec[];
+  warnings: string[];
+  truncated: boolean;
+}
+
+export type LocalEnvironmentTarget =
+  | { kind: "automatic" }
+  | { kind: "conda"; prefix: string }
+  | { kind: "kernelspec"; name: string };
 
 export interface EnvironmentSelectionSnapshot {
   revision: number;
   selected: LocalCondaEnvironment | null;
   applied: LocalCondaEnvironment | null;
+  selected_kernelspec?: InstalledKernelspec;
+  applied_kernelspec?: InstalledKernelspec;
   applying: boolean;
+  /** The choice still needs to be saved, or a save-only retry is in progress. */
+  intent_persistence?: "unsaved" | "saving";
 }
 
 export interface LocalEnvironmentIdentity {
@@ -88,6 +108,7 @@ export interface LaunchedEnvConfig extends FeatureFlags {
   venv_path?: string | null;
   python_path?: string | null;
   local_environment?: LocalEnvironmentIdentity | null;
+  installed_kernelspec?: InstalledKernelspec;
   launch_id?: string | null;
   prewarmed_packages?: string[];
 }
@@ -154,6 +175,7 @@ export interface BlobUploadPart {
 
 export type NotebookRequest =
   | { type: "list_conda_environments"; refresh: boolean }
+  | { type: "list_installed_kernelspecs" }
   | { type: "list_installed_conda_packages"; refresh: boolean }
   | { type: "get_environment_selection" }
   | { type: "set_environment_selection"; target: LocalEnvironmentTarget; expected_revision: number }
@@ -250,6 +272,7 @@ export type ExecutionIdRejectionReason = "malformed" | "already_exists" | "dupli
 
 export type NotebookResponse =
   | { result: "conda_environments"; inventory: CondaEnvironmentInventory }
+  | { result: "installed_kernelspecs"; inventory: KernelspecInventory }
   | { result: "installed_conda_packages"; inventory: InstalledCondaPackageInventory }
   | { result: "environment_selection"; selection: EnvironmentSelectionSnapshot }
   | { result: "environment_selection_rejected"; error: string }

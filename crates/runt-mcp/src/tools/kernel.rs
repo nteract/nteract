@@ -10,6 +10,94 @@ use crate::NteractMcp;
 
 use super::{tool_error, tool_success};
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct InstalledKernelspecParams {
+    operation: KernelspecOperation,
+}
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+enum KernelspecOperation {
+    List,
+    Get,
+    StageAutomatic {
+        expected_revision: u64,
+    },
+    Stage {
+        name: String,
+        expected_revision: u64,
+    },
+    Apply {
+        expected_revision: u64,
+        observed_heads: Vec<String>,
+    },
+}
+
+pub async fn installed_kernelspec(
+    server: &NteractMcp,
+    request: &CallToolRequestParams,
+) -> Result<CallToolResult, McpError> {
+    let access = require_session_access!(server, KernelControl);
+    if access.is_hosted || !access.handle.supports_installed_kernelspecs() {
+        return tool_error("This notebook authority does not support installed kernelspecs");
+    }
+    let params: InstalledKernelspecParams = serde_json::from_value(serde_json::Value::Object(
+        request.arguments.clone().unwrap_or_default(),
+    ))
+    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+    use KernelspecOperation::*;
+    let (req, heads) = match params.operation {
+        List => (NotebookRequest::ListInstalledKernelspecs {}, vec![]),
+        Get => (NotebookRequest::GetEnvironmentSelection {}, vec![]),
+        StageAutomatic { expected_revision } => (
+            NotebookRequest::SetEnvironmentSelection {
+                target: notebook_protocol::protocol::LocalEnvironmentTarget::Automatic,
+                expected_revision,
+            },
+            vec![],
+        ),
+        Stage {
+            name,
+            expected_revision,
+        } => (
+            NotebookRequest::SetEnvironmentSelection {
+                target: notebook_protocol::protocol::LocalEnvironmentTarget::Kernelspec { name },
+                expected_revision,
+            },
+            vec![],
+        ),
+        Apply {
+            expected_revision,
+            observed_heads,
+        } => (
+            NotebookRequest::ApplyEnvironmentSelection {
+                expected_revision,
+                observed_heads: observed_heads.clone(),
+            },
+            observed_heads,
+        ),
+    };
+    let result = access.handle.send_request_after_heads(req, heads).await;
+    if let Err(e) = server.ensure_session_access_current(&access).await {
+        return super::session_access_error(e);
+    }
+    match result {
+        Ok(
+            r @ (NotebookResponse::InstalledKernelspecs { .. }
+            | NotebookResponse::EnvironmentSelection { .. }),
+        ) => tool_success(
+            &serde_json::to_string(&r)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+        ),
+        Ok(
+            NotebookResponse::Error { error }
+            | NotebookResponse::EnvironmentSelectionRejected { error }
+            | NotebookResponse::GuardRejected { reason: error },
+        ) => tool_error(&error),
+        Ok(other) => tool_error(&format!("Unexpected response {other:?}")),
+        Err(e) => tool_error(&e.to_string()),
+    }
+}
+
 #[derive(Debug)]
 enum RestartRetryAccessError {
     Disconnected,
@@ -344,6 +432,27 @@ pub(super) mod restart_fixture;
 mod tests {
     use super::*;
     use restart_fixture::{request, result_json, RestartFixture};
+
+    #[test]
+    fn schema_includes_revision_fenced_return_to_automatic() {
+        let schema =
+            serde_json::to_value(schemars::schema_for!(InstalledKernelspecParams)).unwrap();
+        assert!(schema.to_string().contains("stage_automatic"));
+        let parse = |operation| {
+            serde_json::from_value::<InstalledKernelspecParams>(
+                serde_json::json!({"operation":operation}),
+            )
+        };
+        assert!(matches!(
+            parse(serde_json::json!({"action":"stage_automatic","expected_revision":7}))
+                .unwrap()
+                .operation,
+            KernelspecOperation::StageAutomatic {
+                expected_revision: 7
+            }
+        ));
+        assert!(parse(serde_json::json!({"action":"stage_automatic"})).is_err());
+    }
 
     #[tokio::test]
     async fn restart_reports_environment_selection_rejection() {

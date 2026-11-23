@@ -1,3 +1,4 @@
+# Python's -x skips this line when the kernelspec supplies it.
 """Start a kernel launcher module the way ``python -m`` would.
 
 The daemon runs kernels as::

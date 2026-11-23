@@ -133,7 +133,20 @@ export interface CreateNotebookOptions {
 
 export type EnvironmentSelectionTarget =
   | { kind: "automatic"; prefix?: undefined }
-  | { kind: "conda"; prefix: string };
+  | { kind: "conda"; prefix: string }
+  | { kind: "kernelspec"; name: string };
+
+export interface InstalledKernelspec {
+  name: string;
+  displayName: string;
+  language: string;
+}
+
+export interface KernelspecInventory {
+  kernelspecs: InstalledKernelspec[];
+  warnings: string[];
+  truncated: boolean;
+}
 
 export interface LocalCondaEnvironmentInfo {
   id: string;
@@ -145,6 +158,8 @@ export interface LocalCondaEnvironmentInfo {
 
 /** Daemon-session environment intent, separate from the running kernel. */
 export interface EnvironmentSelection {
+  selectedKernelspec?: InstalledKernelspec;
+  appliedKernelspec?: InstalledKernelspec;
   /** Pass back as `expectedRevision` to set or apply. */
   revision: number;
   /** Staged target. Absent means Automatic. */
@@ -152,6 +167,8 @@ export interface EnvironmentSelection {
   /** Target the running kernel was applied with. Absent means Automatic. */
   applied?: LocalCondaEnvironmentInfo;
   applying: boolean;
+  /** The choice still needs to be saved, or a save-only retry is in progress. */
+  intentPersistence?: "unsaved" | "saving";
 }
 
 export interface OpenNotebookOptions {
@@ -292,8 +309,12 @@ export interface RuntimeStatus {
   startingPhase: string;
   name: string;
   language: string;
+  /** Active identity fields are empty unless lifecycle is "Running". */
   envSource: string;
   runtimeAgentId: string;
+  environmentId: string;
+  environmentName: string;
+  pythonVersion: string;
   errorReason?: string;
   errorDetails?: string;
   projectTrust: ProjectTrustStatus;
@@ -319,6 +340,86 @@ export interface DependencyStatus {
   fingerprint?: string;
   trust?: unknown;
   projectTrust: ProjectTrustStatus;
+}
+
+export type EnvironmentSyncStatus = "applied" | "restart_required" | "failed";
+export type EnvironmentSyncNextAction = "none" | "restart" | "inspect";
+
+/**
+ * Daemon verdict for `syncEnvironmentResult()`.
+ *
+ * - `applied`: the daemon completed its sync request. `syncedPackages` names the
+ *   packages it reports installing; an empty list can mean no applicable changes.
+ *   `needsRestart` false, `nextAction` `"none"`.
+ * - `restart_required`: the daemon cannot hot-apply this change (removals, channel or
+ *   package-manager changes, project file updates). Call
+ *   `restartKernel()` when discarding in-memory state is acceptable.
+ *   `needsRestart` true, `nextAction` `"restart"`.
+ * - `failed`: sync did not complete (trust not approved, borrowed environment,
+ *   install error). Inspect the error; it does not establish that no side effects
+ *   occurred. `needsRestart` false, `nextAction` `"inspect"`.
+ *
+ * Notebook dependency metadata is the saved spec. It is not proof of the running environment.
+ * Sync does not select a package manager or environment. In particular, a new
+ * Conda declaration can be outside a running UV kernel's sync scope. Check the
+ * requested manager against RuntimeStatus and use explicit environment selection.
+ */
+export interface EnvironmentSyncResult {
+  status: EnvironmentSyncStatus;
+  /** Packages the daemon installed into the running kernel. */
+  syncedPackages: string[];
+  needsRestart: boolean;
+  /** Daemon error text; present unless `status` is `"applied"`. */
+  error?: string;
+  nextAction: EnvironmentSyncNextAction;
+}
+
+export interface RestartKernelOptions {
+  /**
+   * Bound in milliseconds for each client-side wait: the old kernel observed stopped,
+   * then a matching kernel observed running. Default 30000. The daemon's launch request
+   * (environment preparation) keeps its own deadline.
+   */
+  timeoutMs?: number;
+}
+
+export type KernelRestartOutcome =
+  | "running"
+  | "trust_required"
+  | "launch_rejected"
+  | "failed"
+  | "stopped"
+  | "timed_out";
+
+/**
+ * How `restartKernelResult()` ended.
+ *
+ * - `running`: this client's RuntimeStateDoc showed the old kernel stop, then a kernel
+ *   Running with `launchedEnvSource` and the accepted local environment id, when supplied.
+ * - `trust_required`: the daemon refused the launch until an approval is given: notebook
+ *   dependencies, or the project folder whose project file would drive the environment.
+ *   `error` holds the daemon's reason. Approve with `approveTrust()`, `approveProjectTrust()`,
+ *   or `declineProjectTrust()` to use the notebook environment, then restart again.
+ * - `launch_rejected`: the daemon refused or failed the launch (`error` explains). Older
+ *   daemons report an untrusted project folder here as a generic error.
+ * - `failed` / `stopped`: the daemon accepted the launch, then the kernel errored or stopped.
+ * - `timed_out`: a client wait expired. The kernel may still come up; `status` is not authoritative.
+ *
+ * The protocol has no launch generation. If another peer restarts the kernel with the
+ * same environment during this call, `running` cannot tell which launch it observed.
+ */
+export interface KernelRestartResult {
+  outcome: KernelRestartOutcome;
+  /** Present unless `outcome` is `"running"`. */
+  error?: string;
+  /** envSource the daemon reported for the accepted launch. */
+  launchedEnvSource?: string;
+  /**
+   * This client's runtime view when the call finished. Observed Running after stop with matching
+   * launch source/identity only for `"running"`. A refused launch returns on the daemon's reply,
+   * so this view may not yet show the matching state, such as `AwaitingProjectTrust`.
+   */
+  status: RuntimeStatus;
 }
 
 export class Session {
@@ -355,7 +456,16 @@ export class Session {
   showNotebook(): Promise<unknown>;
   interruptKernel(): Promise<void>;
   shutdownKernel(): Promise<void>;
-  restartKernel(): Promise<void>;
+  /**
+   * Restart the kernel; in-memory state is lost. Resolves only after a stopped state followed by a matching kernel
+   * observed Running (outcome `"running"` of `restartKernelResult()`); rejects with
+   * the outcome's error otherwise. The match uses the accepted environment source
+   * and local identity when supplied, not a launch generation; same-target peer
+   * restarts cannot be distinguished.
+   */
+  restartKernel(options?: RestartKernelOptions): Promise<void>;
+  /** Restart the kernel and return how it ended. Rejects on session close or connection loss. */
+  restartKernelResult(options?: RestartKernelOptions): Promise<KernelRestartResult>;
   shutdownNotebook(): Promise<boolean>;
   addDependency(pkg: string, options?: DependencyEditOptions): Promise<void>;
   addDependencies(packages: string[], options?: DependencyEditOptions): Promise<void>;
@@ -381,14 +491,26 @@ export class Session {
    * machine; otherwise it lasts for this room. Launch afterwards.
    */
   declineProjectTrust(directory: string, remember?: boolean): Promise<void>;
+  /**
+   * Hot-install pending dependency changes into the running kernel. Starts a kernel
+   * first only when none is running. Resolves for `applied`; rejects with the daemon's
+   * error otherwise.
+   */
   syncEnvironment(): Promise<void>;
+  /**
+   * Same request as `syncEnvironment()`, with the daemon's verdict returned as a value.
+   * Never restarts a running kernel. Rejects on session close, connection loss, or an
+   * unexpected daemon response; the daemon-side effect is then unknown.
+   */
+  syncEnvironmentResult(): Promise<EnvironmentSyncResult>;
   getEnvironmentSelection(): Promise<EnvironmentSelection>;
+  listInstalledKernelspecs(): Promise<KernelspecInventory>;
   /** Stage a target without touching the running kernel. */
   setEnvironmentSelection(
     target: EnvironmentSelectionTarget,
     expectedRevision: number,
   ): Promise<EnvironmentSelection>;
-  /** Launch with the staged target. `observedHeads` defaults to current heads. */
+  /** Apply the staged target or retry saving it without restart. `observedHeads` defaults to current heads. */
   applyEnvironmentSelection(
     expectedRevision: number,
     observedHeads?: string[],

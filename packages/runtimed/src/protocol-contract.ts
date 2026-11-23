@@ -17,6 +17,7 @@ type MissingUnionMember<Union extends string, Values extends readonly string[]> 
 
 export const NOTEBOOK_REQUEST_TYPES = [
   "list_conda_environments",
+  "list_installed_kernelspecs",
   "list_installed_conda_packages",
   "get_environment_selection",
   "set_environment_selection",
@@ -60,6 +61,7 @@ export const NOTEBOOK_REQUEST_TYPES_EXHAUSTIVE: MissingUnionMember<
 
 export const NOTEBOOK_RESPONSE_RESULTS = [
   "conda_environments",
+  "installed_kernelspecs",
   "installed_conda_packages",
   "environment_selection",
   "environment_selection_rejected",

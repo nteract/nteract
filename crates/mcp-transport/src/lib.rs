@@ -406,6 +406,7 @@ pub fn notebook_scoped_tool(name: &str) -> bool {
             | "get_cell"
             | "get_all_cells"
             | "inspect_notebook"
+            | "installed_kernelspec"
             | "create_cell"
             | "set_cell"
             | "delete_cell"

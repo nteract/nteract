@@ -86,33 +86,70 @@ async fn wait_for_joined_launch(
     }
 }
 
+/// Map a joined generation's completion to the joiner's reply. `None` means
+/// the owner released the gate without a result and the joiner retries
+/// admission.
+async fn joined_launch_response(
+    room: &NotebookRoom,
+    completion: Result<KernelLaunchCompletion, ()>,
+) -> Option<NotebookResponse> {
+    match completion {
+        Ok(KernelLaunchCompletion::Succeeded) => Some(
+            existing_kernel_response(room)
+                .await
+                .unwrap_or_else(|| NotebookResponse::Error {
+                    error: "Kernel launch completed without an active launch identity".to_string(),
+                }),
+        ),
+        Ok(KernelLaunchCompletion::Released) => None,
+        Ok(KernelLaunchCompletion::Cancelled) => Some(NotebookResponse::Error {
+            error: "Kernel launch was cancelled by shutdown".to_string(),
+        }),
+        Ok(KernelLaunchCompletion::ProjectTrustRequired) => Some(project_trust_refusal()),
+        Ok(KernelLaunchCompletion::Failed) | Err(_) => Some(NotebookResponse::Error {
+            error: "Kernel launch timed out or failed".to_string(),
+        }),
+    }
+}
+
+fn project_trust_refusal() -> NotebookResponse {
+    NotebookResponse::GuardRejected {
+        reason: crate::project_trust::LAUNCH_REFUSAL_REASON.to_string(),
+    }
+}
+
+/// Owner reply after the gate committed a project trust park. The generation
+/// records the refusal so joined requests return the same typed reply.
+fn refuse_for_project_trust(launch_attempt: &mut Option<KernelLaunchAttempt>) -> NotebookResponse {
+    if let Some(attempt) = launch_attempt.as_mut() {
+        attempt.require_project_trust();
+    }
+    project_trust_refusal()
+}
+
 fn commit_apply_delivery(
     room: &NotebookRoom,
+    doc: &notebook_doc::NotebookDoc,
     lease: &super::local_environment_selection::EnvironmentApply<'_>,
     attempt: &mut KernelLaunchAttempt,
     expected_runtime: &str,
     deliver: impl FnOnce(),
 ) -> anyhow::Result<()> {
-    let doc = room
-        .doc
-        .try_read()
-        .map_err(|_| anyhow::anyhow!("Notebook changed during environment preflight; try again"))?;
     if let Some(heads) = lease.observed_heads() {
-        guarded::validate_dependencies_unchanged_since_observed(&doc, &heads).map_err(|_| {
+        guarded::validate_dependencies_unchanged_since_observed(doc, &heads).map_err(|_| {
             anyhow::anyhow!("Notebook dependencies changed during environment preflight")
         })?;
     }
+    guarded::ensure_trusted_for_doc(room, doc)?;
     if let Some(metadata) = doc.get_metadata_snapshot() {
-        if metadata.detect_runtime().unwrap_or_else(|| "python".into()) != expected_runtime {
+        if room
+            .local_environment_selection
+            .snapshot()
+            .selected_kernelspec
+            .is_none()
+            && metadata.detect_runtime().unwrap_or_else(|| "python".into()) != expected_runtime
+        {
             anyhow::bail!("Notebook runtime changed during environment preflight");
-        }
-        let trust =
-            crate::notebook_sync_server::verify_trust_from_doc(&doc, &room.trusted_packages);
-        if !matches!(
-            trust.status,
-            runt_trust::TrustStatus::Trusted | runt_trust::TrustStatus::NoDependencies
-        ) {
-            anyhow::bail!("Notebook trust changed during environment preflight");
         }
     }
     attempt.commit_kernel_replacement(|| {
@@ -126,6 +163,278 @@ fn commit_apply_delivery(
         deliver();
         Ok(())
     })
+}
+
+/// A non-Apply launch can also reuse an applied session choice. Fence the
+/// notebook-derived intent in either case, without making an unsaved session
+/// choice masquerade as notebook metadata.
+struct InstalledKernelDelivery {
+    resolved_name: String,
+    imported_name: Option<String>,
+}
+
+pub(crate) fn imported_kernelspec_target(
+    room: &NotebookRoom,
+    metadata: Option<&notebook_doc::metadata::NotebookMetadataSnapshot>,
+    mode: notebook_protocol::connection::CreateNotebookEnvironmentMode,
+) -> Option<String> {
+    if room.local_environment_selection.applied_automatic()
+        || matches!(
+            room.bound_environment.snapshot(),
+            super::bound_environment::BoundEnvironmentState::Bound(_)
+        )
+    {
+        return None;
+    }
+    crate::kernelspec::imported(metadata, mode).map(|name| name.to_ascii_lowercase())
+}
+
+async fn send_installed_kernel_request(
+    room: &NotebookRoom,
+    delivery: &InstalledKernelDelivery,
+    build_request: impl FnMut(
+        notebook_protocol::protocol::KernelPorts,
+    ) -> notebook_protocol::protocol::RuntimeAgentRequest,
+) -> anyhow::Result<notebook_protocol::protocol::RuntimeAgentResponse> {
+    use crate::notebook_sync_server::send_runtime_agent_request_with_kernel_ports_on_delivery;
+    let stale_intent = || guarded::rejected("Notebook kernelspec changed; review before launching");
+    send_runtime_agent_request_with_kernel_ports_on_delivery(
+        room,
+        build_request,
+        Some(&room.doc),
+        |doc, message, permit| {
+            // Same doc -> launch gate ordering as Apply. No asynchronous work
+            // between reading the notebook and committing the queue send.
+            let doc = doc
+                .ok_or_else(|| anyhow::anyhow!("Missing notebook document at guarded delivery"))?;
+            if !matches!(
+                room.initial_load.state(),
+                crate::notebook_sync_server::RoomInitialLoadState::Ready { .. }
+                    | crate::notebook_sync_server::RoomInitialLoadState::NotNeeded { .. }
+            ) {
+                return Err(stale_intent().into());
+            }
+            let mode = room
+                .identity
+                .environment_mode
+                .try_read()
+                .map_err(|_| stale_intent())?;
+            guarded::ensure_trusted_for_doc(room, doc)?;
+            let metadata = doc.get_metadata_snapshot();
+            let imported = imported_kernelspec_target(room, metadata.as_ref(), *mode);
+            let applied = room
+                .local_environment_selection
+                .snapshot()
+                .applied_kernelspec;
+            let current = applied
+                .as_ref()
+                .map(|spec| spec.name.as_str())
+                .or(imported.as_deref());
+            if imported != delivery.imported_name
+                || current != Some(delivery.resolved_name.as_str())
+            {
+                return Err(stale_intent().into());
+            }
+            room.commit_unless_launch_cancelled(|| permit.send(message))
+                .ok_or_else(|| anyhow::anyhow!("Kernel launch was cancelled"))?;
+            Ok(())
+        },
+    )
+    .await
+}
+
+pub(crate) async fn wait_for_launch_metadata(room: &NotebookRoom) -> anyhow::Result<()> {
+    use crate::notebook_sync_server::RoomInitialLoadState;
+
+    match room.initial_load.wait_until_settled().await {
+        RoomInitialLoadState::Ready { .. } | RoomInitialLoadState::NotNeeded { .. } => Ok(()),
+        RoomInitialLoadState::Loading { .. } => {
+            anyhow::bail!("Notebook is still loading; try again")
+        }
+        RoomInitialLoadState::Failed { reason, .. } => {
+            anyhow::bail!("Notebook could not be loaded: {reason}")
+        }
+    }
+}
+
+fn installed_kernel_requires_user_start(
+    attempt: Option<&KernelLaunchAttempt>,
+    language: &str,
+    spec: &notebook_protocol::protocol::KernelspecLaunch,
+) -> bool {
+    attempt.is_some_and(KernelLaunchAttempt::is_automatic)
+        && crate::kernelspec::requires_explicit_launch(language, spec)
+}
+
+#[cfg(test)]
+mod installed_delivery_tests {
+    use super::*;
+    use crate::notebook_sync_server::{AutoLaunchAdmission, RuntimeAgentMessage};
+    use std::future::Future;
+
+    #[tokio::test]
+    async fn wrapper_policy_blocks_only_daemon_initiated_launches() {
+        let (_tmp, room) = super::tests::test_room();
+        let wrapped = notebook_protocol::protocol::KernelspecLaunch {
+            executable: "/bin/sh".into(),
+            args: [
+                "-c",
+                "\"$1\" -m ipykernel_launcher -f \"$2\"; wait",
+                "wrapper",
+                "/opt/env/bin/python",
+                "{connection_file}",
+            ]
+            .map(String::from)
+            .to_vec(),
+            resource_dir: Default::default(),
+            env: Default::default(),
+            interrupt_mode: Default::default(),
+        };
+        let AutoLaunchAdmission::Admitted(auto) = room.try_begin_auto_launch() else {
+            panic!("auto admission")
+        };
+        assert!(installed_kernel_requires_user_start(
+            Some(&auto),
+            "PyThOn",
+            &wrapped
+        ));
+        assert!(!installed_kernel_requires_user_start(
+            Some(&auto),
+            "julia",
+            &wrapped
+        ));
+        auto.release_without_cooldown();
+        let ManualLaunchAdmission::Admitted(manual) = room.try_begin_manual_launch() else {
+            panic!("explicit admission")
+        };
+        assert!(!installed_kernel_requires_user_start(
+            Some(&manual),
+            "python",
+            &wrapped
+        ));
+        manual.release_without_cooldown();
+    }
+
+    #[tokio::test]
+    async fn applied_automatic_blocks_notebook_kernelspec_import_until_reset() {
+        let (_tmp, room) = super::tests::test_room();
+        let metadata = notebook_doc::metadata::NotebookMetadataSnapshot {
+            kernelspec: Some(notebook_doc::metadata::KernelspecSnapshot {
+                name: "julia".into(),
+                display_name: "Julia".into(),
+                language: Some("julia".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let selected = || imported_kernelspec_target(&room, Some(&metadata), Default::default());
+        assert_eq!(selected().as_deref(), Some("julia"));
+        let selection = &room.local_environment_selection;
+        selection
+            .begin_apply(0)
+            .unwrap()
+            .commit(None, Some("python".into()));
+        assert_eq!(selected(), None, "old metadata must not win on restart");
+        assert_eq!(
+            selection.snapshot().intent_persistence,
+            notebook_protocol::protocol::EnvironmentIntentPersistence::Unsaved
+        );
+        selection.reset();
+        assert_eq!(selected().as_deref(), Some("julia"));
+    }
+
+    #[tokio::test]
+    async fn environment_save_retry_does_not_clear_source_conflict() {
+        let (_tmp, room) = super::tests::test_room();
+        let mut doc = room.doc.write().await;
+        let heads = doc.get_heads_hex();
+        room.lifecycle
+            .mark_source_conflict("external edit".into(), heads.clone());
+        let availability = room.lifecycle.availability();
+        let error = room
+            .retry_kernelspec_persistence(&mut doc, None, None, "python")
+            .unwrap_err();
+        assert!(error.to_string().contains("Reconcile the notebook source"));
+        assert_eq!(room.lifecycle.availability(), availability);
+        assert_eq!(doc.get_heads_hex(), heads);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn launch_waits_for_import_and_delivery_waits_for_doc_writer() {
+        let (tmp, room) = super::tests::test_room();
+        let path = tmp.path().join("import.ipynb");
+        std::fs::write(&path, serde_json::json!({"nbformat":4,"nbformat_minor":5,"cells":[],"metadata":{"kernelspec":{"name":"julia","language":"julia","display_name":"Julia"}}}).to_string()).unwrap();
+        let claim = crate::notebook_sync_server::claim_room_initial_load(&room, path).unwrap();
+        let prepare = wait_for_launch_metadata(&room);
+        tokio::pin!(prepare);
+        assert!(matches!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(prepare.as_mut().poll(cx))).await,
+            std::task::Poll::Pending
+        ));
+        crate::notebook_sync_server::spawn_claimed_room_initial_load(
+            claim,
+            tmp.path().join("executions"),
+        );
+        prepare.await.unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (dummy_reply, _) = oneshot::channel();
+        assert!(tx
+            .try_send(RuntimeAgentMessage::Query(
+                notebook_protocol::protocol::RuntimeAgentRequestEnvelope {
+                    id: "fill-queue".into(),
+                    request: notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel,
+                },
+                dummy_reply,
+            ))
+            .is_ok());
+        *room.runtime_agent_request_tx.lock().await = Some(tx);
+        let delivery = InstalledKernelDelivery {
+            resolved_name: "julia".into(),
+            imported_name: Some("julia".into()),
+        };
+        let (built, request_built) = oneshot::channel();
+        let mut built = Some(built);
+        let send = send_installed_kernel_request(&room, &delivery, |_| {
+            built.take().unwrap().send(()).unwrap();
+            notebook_protocol::protocol::RuntimeAgentRequest::ShutdownKernel
+        });
+        tokio::pin!(send);
+        tokio::select! {
+            biased;
+            response = &mut send => panic!("delivery must wait for capacity: {response:?}"),
+            built = request_built => built.unwrap(),
+        }
+        {
+            let writer = room.doc.write().await;
+            assert!(rx.try_recv().is_ok());
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(send.as_mut().poll(&mut context).is_pending());
+            assert!(rx.try_recv().is_err());
+            assert!(writer.get_metadata_snapshot().is_some());
+        }
+        tokio::select! {
+            response = &mut send => panic!("unexpected premature result: {response:?}"),
+            message = rx.recv() => {
+                let Some(RuntimeAgentMessage::Query(_, reply)) = message else { panic!("expected launch query") };
+                reply.send(notebook_protocol::protocol::RuntimeAgentResponse::Ok).unwrap();
+            }
+        }
+        assert!(send.await.is_ok());
+    }
+}
+
+async fn launch_delivery_refusal(
+    room: &NotebookRoom,
+    agent_id: Option<&str>,
+    error: &anyhow::Error,
+) -> Option<NotebookResponse> {
+    let rejection = error.downcast_ref::<guarded::GuardRejection>()?;
+    // Refresh the trust dialog as well as returning the typed refusal. Do not
+    // leave an auto-launch parked in a starting phase if there is no caller.
+    reset_starting_state(room, agent_id).await;
+    crate::notebook_sync_server::check_and_update_trust_state(room).await;
+    Some(rejection.into_response())
 }
 
 async fn existing_kernel_response(room: &NotebookRoom) -> Option<NotebookResponse> {
@@ -183,8 +492,16 @@ async fn complete_manual_launch(
         });
     };
     let env_source_label = env_source.as_str().to_string();
+    let mut persistence = Ok(());
     let commit_result = {
-        let (mut config, mut presence_state) = tokio::join!(
+        let (mut doc, mut config, mut presence_state) = tokio::join!(
+            async {
+                if apply.is_some() {
+                    Some(room.doc.write().await)
+                } else {
+                    None
+                }
+            },
             room.runtime_agent_launched_config.write(),
             room.broadcasts.presence.write()
         );
@@ -198,7 +515,11 @@ async fn complete_manual_launch(
             );
             if let Err(e) = room.state.with_doc(|sd| {
                 sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
-                sd.set_kernel_info(kernel_type, kernel_type, &env_source_label)?;
+                let name = launched_config
+                    .installed_kernelspec
+                    .as_ref()
+                    .map_or(kernel_type, |s| s.name.as_str());
+                sd.set_kernel_info(name, kernel_type, &env_source_label)?;
                 let identity = launched_config.local_environment.as_ref();
                 sd.set_local_environment_identity(
                     identity.map_or("", |e| e.id.as_str()),
@@ -221,7 +542,28 @@ async fn complete_manual_launch(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = None;
             if let Some((lease, binding)) = apply {
-                lease.commit(binding);
+                if let Some(doc) = doc.as_deref_mut() {
+                    persistence = match lease.observed_heads().map(|heads| {
+                        guarded::validate_dependencies_unchanged_since_observed(doc, &heads)
+                    }) {
+                        Some(Err(_)) => Err(anyhow::anyhow!(
+                            "Kernel started but notebook metadata changed; selection not saved"
+                        )),
+                        _ => crate::kernelspec::persist(
+                            room,
+                            doc,
+                            launched_config.installed_kernelspec.as_ref(),
+                            kernel_type,
+                        ),
+                    };
+                }
+                lease.commit(
+                    binding,
+                    persistence.is_err().then(|| kernel_type.to_string()),
+                );
+            } else {
+                room.local_environment_selection
+                    .record_launch(launched_config.installed_kernelspec.as_ref());
             }
         })
     };
@@ -229,7 +571,9 @@ async fn complete_manual_launch(
     match commit_result {
         Ok(()) => {
             check_and_broadcast_sync_state(room).await;
-            Ok(())
+            persistence.map_err(|e| NotebookResponse::Error {
+                error: format!("{e:#}"),
+            })
         }
         Err((cancelled_attempt, KernelLaunchCommitRejection::Cancelled)) => {
             // Shutdown won the gate before success was linearized. Keep the
@@ -267,6 +611,11 @@ pub(crate) async fn handle(
     env_source: LaunchSpec,
     notebook_path: Option<String>,
 ) -> NotebookResponse {
+    if let Err(error) = wait_for_launch_metadata(room).await {
+        return NotebookResponse::Error {
+            error: error.to_string(),
+        };
+    }
     if let Err(rejection) = guarded::ensure_trusted(room).await {
         return rejection.into_response();
     }
@@ -288,26 +637,9 @@ pub(crate) async fn handle(
                 cancel_rx,
             } => {
                 let completion = wait_for_joined_launch(room, generation, cancel_rx).await;
-                match completion {
-                    Ok(KernelLaunchCompletion::Succeeded) => {
-                        return existing_kernel_response(room).await.unwrap_or_else(|| {
-                            NotebookResponse::Error {
-                                error: "Kernel launch completed without an active launch identity"
-                                    .to_string(),
-                            }
-                        });
-                    }
-                    Ok(KernelLaunchCompletion::Released) => continue,
-                    Ok(KernelLaunchCompletion::Cancelled) => {
-                        return NotebookResponse::Error {
-                            error: "Kernel launch was cancelled by shutdown".to_string(),
-                        };
-                    }
-                    Ok(KernelLaunchCompletion::Failed) | Err(_) => {
-                        return NotebookResponse::Error {
-                            error: "Kernel launch timed out or failed".to_string(),
-                        };
-                    }
+                match joined_launch_response(room, completion).await {
+                    Some(response) => return response,
+                    None => continue,
                 }
             }
         }
@@ -442,7 +774,9 @@ pub(crate) async fn handle_admitted(
                         })
                     });
                 }
-                attempt.release_without_cooldown();
+                // Keeps a committed trust refusal as the generation result
+                // without running cleanup against the prior kernel's agent.
+                attempt.release_to_prior_kernel();
             }
         }
     }
@@ -517,10 +851,121 @@ async fn handle_attempt(
     };
 
     // Resolve metadata snapshot from Automerge doc (preferred) or disk
-    let mut metadata_snapshot = resolve_metadata_snapshot(room, notebook_path.as_deref()).await;
+    let initialization_fence = room.local_environment_selection.initialization_fence();
+    let live_metadata = room.doc.read().await.get_metadata_snapshot();
+
+    let selection = room.local_environment_selection.snapshot();
+    let mode = *room.identity.environment_mode.read().await;
+    let imported_name = imported_kernelspec_target(room, live_metadata.as_ref(), mode);
+    let mut metadata_snapshot = match live_metadata {
+        Some(metadata) => Some(metadata),
+        None => resolve_metadata_snapshot(room, notebook_path.as_deref()).await,
+    };
+    let installed_name = if apply.is_some() {
+        selection.selected_kernelspec.map(|s| s.name)
+    } else if local_environment.is_none()
+        && matches!(
+            env_source,
+            LaunchSpec::Auto | LaunchSpec::Concrete(EnvSource::Kernelspec)
+        )
+    {
+        selection
+            .applied_kernelspec
+            .map(|s| s.name)
+            .or_else(|| imported_name.clone())
+    } else {
+        None
+    };
+    let inherited = if daemon.import_shell_environment().await {
+        overlay_env_vars(&daemon.shell_env_overlay())
+    } else {
+        Default::default()
+    };
+    let (installed, kernelspec) = if let Some(name) = installed_name {
+        if room.is_hosted() {
+            return NotebookResponse::EnvironmentSelectionRejected {
+                error: "Installed kernelspecs require a local notebook".into(),
+            };
+        }
+        if let (None, Some(fence)) = (apply, initialization_fence) {
+            if let Some(intent) = metadata_snapshot
+                .as_ref()
+                .and_then(|metadata| metadata.kernelspec.as_ref())
+                .filter(|intent| intent.name.eq_ignore_ascii_case(&name))
+            {
+                room.local_environment_selection.adopt_imported_kernelspec(
+                    notebook_protocol::protocol::InstalledKernelspec {
+                        name: name.to_ascii_lowercase(),
+                        display_name: intent.display_name.clone(),
+                        language: intent.language.clone().unwrap_or_default(),
+                    },
+                    fence,
+                );
+            }
+        }
+        if let Err(rejection) = guarded::ensure_trusted(room).await {
+            return rejection.into_response();
+        }
+        match crate::kernelspec::resolve(name.clone())
+            .await
+            .and_then(|spec| Ok((spec.info(&name), spec.prepare(&inherited)?)))
+        {
+            Ok((info, spec)) => {
+                if installed_kernel_requires_user_start(
+                    launch_attempt.as_ref(),
+                    &info.language,
+                    &spec,
+                ) {
+                    let message = "This Python kernel does not use nteract's protected launch path. Start it from the Environment menu.";
+                    reset_starting_state_with_outcome(
+                        room,
+                        None,
+                        ResetOutcome::Error {
+                            reason: Some(KernelErrorReason::EnvironmentPrepareFailed),
+                            details: message,
+                        },
+                    )
+                    .await;
+                    return guarded::rejected(message).into_response();
+                }
+                (Some(info), Some(spec))
+            }
+            Err(e) => {
+                let error = format!("{e:#}");
+                if apply.is_none() {
+                    reset_starting_state_with_outcome(
+                        room,
+                        None,
+                        ResetOutcome::Error {
+                            reason: None,
+                            details: &error,
+                        },
+                    )
+                    .await;
+                }
+                return NotebookResponse::EnvironmentSelectionRejected { error };
+            }
+        }
+    } else if env_source == LaunchSpec::Concrete(EnvSource::Kernelspec) {
+        return NotebookResponse::EnvironmentSelectionRejected {
+            error: "No installed kernelspec selected".into(),
+        };
+    } else {
+        (None, None)
+    };
+    let installed_delivery =
+        installed
+            .as_ref()
+            .filter(|_| apply.is_none())
+            .map(|spec| InstalledKernelDelivery {
+                resolved_name: spec.name.clone(),
+                imported_name,
+            });
 
     // Auto-detect kernel type if "auto" or empty
-    let resolved_kernel_type = if kernel_type == "auto" || kernel_type.is_empty() {
+    let resolved_kernel_type = if let Some(spec) = installed.as_ref() {
+        spec.language.clone()
+    } else if kernel_type == "auto" || kernel_type.is_empty() {
         metadata_snapshot
             .as_ref()
             .and_then(|s| s.detect_runtime())
@@ -557,7 +1002,9 @@ async fn handle_attempt(
     // Set when auto selection lands on the prewarmed fallback, the only slot
     // a host-bound environment may fill.
     let mut bound_environment_eligible = false;
-    let resolved_env_source = if resolved_kernel_type == "deno" {
+    let resolved_env_source = if installed.is_some() {
+        EnvSource::Kernelspec
+    } else if resolved_kernel_type == "deno" {
         match &launch_spec {
             LaunchSpec::Auto | LaunchSpec::AutoScoped(_) => {
                 info!("[notebook-sync] Deno kernel detected, using 'deno' env_source");
@@ -847,11 +1294,26 @@ async fn handle_attempt(
             );
             return NotebookResponse::Error { error };
         }
+        // The gate committed `AwaitingProjectTrust` and the prompt. The reply
+        // is the typed approval refusal, so clients classify it without
+        // reading RuntimeStateDoc or the text. The generation records the same
+        // refusal for requests that joined it.
         crate::project_trust::RoomProjectGate::Parked => {
+            return refuse_for_project_trust(launch_attempt);
+        }
+        // Shutdown or agent disconnect already committed the terminal
+        // projection. Dropping the cancelled token records `Cancelled`.
+        crate::project_trust::RoomProjectGate::Cancelled => {
             return NotebookResponse::Error {
-                error: "The project folder is not trusted on this machine. \
-                            Trust it or use the notebook environment to launch."
-                    .to_string(),
+                error: "Kernel launch was cancelled by shutdown".to_string(),
+            };
+        }
+        // This launch published no prompt. Dropping the token records
+        // `Failed` and projects the generic launch error over the unfinished
+        // lifecycle.
+        crate::project_trust::RoomProjectGate::WriteFailed(error) => {
+            return NotebookResponse::Error {
+                error: format!("Could not record the project trust prompt: {error}"),
             };
         }
     };
@@ -1004,7 +1466,7 @@ async fn handle_attempt(
     } else {
         // Python kernels require pooled environment
         match resolved_env_source.as_str() {
-            "conda:existing:local" => None,
+            "conda:existing:local" | "kernelspec" => None,
             "uv:prewarmed" | "conda:prewarmed" => {
                 // Route through the capture-aware acquirer so:
                 //  - Reopen path: if metadata has env_id + captured
@@ -1973,6 +2435,19 @@ async fn handle_attempt(
         // Borrowed prefixes must never enter the daemon-owned cleanup slot.
         *room.runtime_agent_env_path.write().await = None;
     }
+    if let Some(spec) = installed {
+        launched_config = notebook_protocol::protocol::LaunchedEnvConfig {
+            launch_id: launched_config.launch_id,
+            local_environment: Some(notebook_protocol::protocol::LocalEnvironmentIdentity {
+                id: format!("kernelspec:{}", spec.name),
+                name: spec.display_name.clone(),
+                python_version: None,
+            }),
+            installed_kernelspec: Some(spec),
+            ..Default::default()
+        };
+        *room.runtime_agent_env_path.write().await = None;
+    }
 
     if launch_attempt
         .as_ref()
@@ -2018,8 +2493,6 @@ async fn handle_attempt(
         }
     }
     let redact_env_values_in_outputs = daemon.redact_env_values_in_outputs().await;
-    let import_shell_environment = daemon.import_shell_environment().await;
-    let shell_overlay = daemon.shell_env_overlay();
 
     // If runtime agent is already connected, restart kernel in-place
     // (handles the shutdown → launch sequence without subprocess respawn).
@@ -2032,12 +2505,7 @@ async fn handle_attempt(
             info!("[notebook-sync] Agent connected — sending RestartKernel");
             // Precedence: overlay (lowest) → uv → pixi (highest), so daemon-required
             // vars always win over imported shell values.
-            let mut restart_env_vars: std::collections::HashMap<String, String> =
-                if import_shell_environment {
-                    overlay_env_vars(&shell_overlay)
-                } else {
-                    std::collections::HashMap::new()
-                };
+            let mut restart_env_vars: std::collections::HashMap<String, String> = inherited.clone();
             restart_env_vars.extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
             restart_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
             let build_request =
@@ -2050,13 +2518,17 @@ async fn handle_attempt(
                     launched_config: launched_config.clone(),
                     kernel_ports,
                     env_vars: restart_env_vars.clone(),
+                    kernelspec: kernelspec.clone(),
                     redact_env_values_in_outputs,
                 };
             let response = if let Some(lease) = apply {
-                crate::notebook_sync_server::send_runtime_agent_request_with_kernel_ports_on_delivery(room, build_request, |message, permit| {
+                crate::notebook_sync_server::send_runtime_agent_request_with_kernel_ports_on_delivery(room, build_request, Some(&room.doc), |doc, message, permit| {
+                    let doc = doc.ok_or_else(|| anyhow::anyhow!("Missing notebook document at Apply delivery"))?;
                     let attempt = launch_attempt.as_mut().ok_or_else(|| anyhow::anyhow!("Kernel launch ownership ended before delivery"))?;
-                    commit_apply_delivery(room, lease, attempt, &resolved_kernel_type, || { permit.send(message); })
+                    commit_apply_delivery(room, doc, lease, attempt, &resolved_kernel_type, || { permit.send(message); })
                 }).await
+            } else if let Some(delivery) = &installed_delivery {
+                send_installed_kernel_request(room, delivery, build_request).await
             } else {
                 send_runtime_agent_request_with_captured_env_repair(
                     room,
@@ -2148,6 +2620,12 @@ async fn handle_attempt(
                     };
                 }
                 Err(e) => {
+                    if let Some(response) =
+                        launch_delivery_refusal(room, existing_runtime_agent_id.as_deref(), &e)
+                            .await
+                    {
+                        return response;
+                    }
                     if apply.is_some() || local_environment.is_some() {
                         let details = format!("Agent restart failed: {e}");
                         reset_starting_state_with_outcome(
@@ -2340,12 +2818,7 @@ async fn handle_attempt(
 
                 // Send LaunchKernel RPC. Same precedence as the restart path
                 // above: overlay (lowest) → uv → pixi (highest).
-                let mut launch_env_vars: std::collections::HashMap<String, String> =
-                    if import_shell_environment {
-                        overlay_env_vars(&shell_overlay)
-                    } else {
-                        std::collections::HashMap::new()
-                    };
+                let mut launch_env_vars: std::collections::HashMap<String, String> = inherited;
                 launch_env_vars
                     .extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
                 launch_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
@@ -2359,13 +2832,17 @@ async fn handle_attempt(
                         launched_config: launched_config.clone(),
                         kernel_ports,
                         env_vars: launch_env_vars.clone(),
+                        kernelspec: kernelspec.clone(),
                         redact_env_values_in_outputs,
                     };
                 let response = if let Some(lease) = apply {
-                    crate::notebook_sync_server::send_runtime_agent_request_with_kernel_ports_on_delivery(room, build_request, |message, permit| {
+                    crate::notebook_sync_server::send_runtime_agent_request_with_kernel_ports_on_delivery(room, build_request, Some(&room.doc), |doc, message, permit| {
+                        let doc = doc.ok_or_else(|| anyhow::anyhow!("Missing notebook document at Apply delivery"))?;
                         let attempt = launch_attempt.as_mut().ok_or_else(|| anyhow::anyhow!("Kernel launch ownership ended before delivery"))?;
-                        commit_apply_delivery(room, lease, attempt, &resolved_kernel_type, || { permit.send(message); })
+                        commit_apply_delivery(room, doc, lease, attempt, &resolved_kernel_type, || { permit.send(message); })
                     }).await
+                } else if let Some(delivery) = &installed_delivery {
+                    send_installed_kernel_request(room, delivery, build_request).await
                 } else {
                     send_runtime_agent_request_with_captured_env_repair(
                         room,
@@ -2452,6 +2929,11 @@ async fn handle_attempt(
                         }
                     }
                     Err(e) => {
+                        if let Some(response) =
+                            launch_delivery_refusal(room, Some(&runtime_agent_id), &e).await
+                        {
+                            return response;
+                        }
                         let details = format!("Agent communication error: {e}");
                         reset_starting_state_with_outcome(
                             room,
@@ -2489,7 +2971,7 @@ mod tests {
     use crate::blob_store::BlobStore;
     use crate::notebook_sync_server::{AutoLaunchAdmission, ManualLaunchAdmission, NotebookRoom};
 
-    fn test_room() -> (tempfile::TempDir, Arc<NotebookRoom>) {
+    pub(super) fn test_room() -> (tempfile::TempDir, Arc<NotebookRoom>) {
         let tmp = tempfile::TempDir::new().unwrap();
         let room = Arc::new(NotebookRoom::new_fresh(
             uuid::Uuid::new_v4(),
@@ -2499,6 +2981,276 @@ mod tests {
             false,
         ));
         (tmp, room)
+    }
+
+    #[tokio::test]
+    async fn apply_metadata_failure_keeps_kernel_running_and_can_retry_save() {
+        let (tmp, room) = test_room();
+        let observed_heads = {
+            let mut doc = room.doc.write().await;
+            doc.set_metadata_value(
+                "kernelspec",
+                &serde_json::json!({"name":"python3","language":"python","display_name":"Python"}),
+            )
+            .unwrap();
+            doc.get_heads_hex()
+        };
+        let spec = notebook_protocol::protocol::InstalledKernelspec {
+            name: "julia".into(),
+            display_name: "Julia".into(),
+            language: "julia".into(),
+        };
+        assert!(room
+            .local_environment_selection
+            .adopt_imported_kernelspec(spec.clone(), 0));
+        let lease = room.local_environment_selection.begin_apply(1).unwrap();
+        lease.set_observed_heads(observed_heads.clone());
+        let mut attempt = match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::Admitted(attempt) => attempt,
+            _ => panic!("admission"),
+        };
+        *room.current_runtime_agent_id.write().await = Some("agent-1".into());
+        assert!(attempt.expect_runtime_agent("agent-1"));
+        assert!(room.mark_runtime_agent_connected("agent-1"));
+        {
+            let doc = room.doc.read().await;
+            commit_apply_delivery(&room, &doc, &lease, &mut attempt, "julia", || {}).unwrap();
+        }
+        room.doc
+            .write()
+            .await
+            .set_metadata_value(
+                "kernelspec",
+                &serde_json::json!({"name":"ir","language":"R","display_name":"R"}),
+            )
+            .unwrap();
+        let (request_tx, mut request_rx) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(request_tx);
+        let launched_config = notebook_protocol::protocol::LaunchedEnvConfig {
+            launch_id: Some("launch-1".into()),
+            installed_kernelspec: Some(spec),
+            ..Default::default()
+        };
+        let error = complete_manual_launch(
+            &room,
+            &mut Some(attempt),
+            "agent-1",
+            "julia",
+            &EnvSource::Kernelspec,
+            &launched_config,
+            Some((&lease, None)),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(error, NotebookResponse::Error { error } if error.contains("selection not saved"))
+        );
+        assert_eq!(
+            room.doc
+                .read()
+                .await
+                .get_metadata_snapshot()
+                .unwrap()
+                .kernelspec
+                .unwrap()
+                .name,
+            "ir"
+        );
+        let selection = room.local_environment_selection.snapshot();
+        assert_eq!(selection.applied_kernelspec, selection.selected_kernelspec);
+        assert_eq!(
+            room.state
+                .read(|sd| sd.read_state().kernel.lifecycle)
+                .unwrap(),
+            RuntimeLifecycle::Running(KernelActivity::Idle),
+        );
+        use notebook_protocol::protocol::EnvironmentIntentPersistence::{Current, Unsaved};
+        assert_eq!(selection.intent_persistence, Unsaved);
+        let daemon = Daemon::new_for_test(crate::daemon::DaemonConfig {
+            socket_path: tmp.path().join("daemon.sock"),
+            cache_dir: tmp.path().join("envs"),
+            blob_store_dir: tmp.path().join("daemon-blobs"),
+            execution_store_dir: tmp.path().join("executions"),
+            notebook_docs_dir: tmp.path().join("daemon-notebooks"),
+            trusted_packages_db_path: tmp.path().join("trusted-packages.sqlite"),
+            notebook_registry_db_path: tmp.path().join("notebooks.sqlite"),
+            use_preferred_blob_port: false,
+            lock_dir: Some(tmp.path().to_path_buf()),
+            settings_json_path: Some(tmp.path().join("settings.json")),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(matches!(
+            super::super::local_environment_selection::apply(&room, &daemon, selection.revision, observed_heads).await,
+            NotebookResponse::GuardRejected { reason } if reason.contains("kernelspec changed"),
+        ));
+        assert_eq!(room.local_environment_selection.snapshot(), selection);
+
+        let fresh_heads = room.doc.write().await.get_heads_hex();
+        // Force an actual journal I/O error at the save-only boundary as
+        // well: it must leave the kernel and pending choice intact.
+        let journal = room.durability.journal().unwrap();
+        std::fs::create_dir(journal.path()).unwrap();
+        assert!(matches!(
+            super::super::local_environment_selection::apply(&room, &daemon, selection.revision, fresh_heads.clone()).await,
+            NotebookResponse::Error { error } if error.contains("journal commit failed"),
+        ));
+        std::fs::remove_dir(journal.path()).unwrap();
+        let selection = room.local_environment_selection.snapshot();
+        assert_eq!(selection.intent_persistence, Unsaved);
+        assert_eq!(room.doc.write().await.get_heads_hex(), fresh_heads);
+        // Model reconciliation paused after it computes its next generation.
+        // Retry must not publish that same generation while the claim is held.
+        let reconciliation = room.try_claim_source_reconciliation().unwrap();
+        let source_before = room.lifecycle.source_state();
+        let next_generation = source_before.generation().saturating_add(1);
+        assert!(matches!(
+            super::super::local_environment_selection::apply(&room, &daemon, selection.revision, fresh_heads.clone()).await,
+            NotebookResponse::EnvironmentSelectionRejected { error } if error.contains("reconciliation is already in progress"),
+        ));
+        assert_eq!(room.lifecycle.source_state(), source_before);
+        assert_eq!(room.local_environment_selection.snapshot(), selection);
+        assert_eq!(room.doc.write().await.get_heads_hex(), fresh_heads);
+        drop(reconciliation);
+        let response = super::super::local_environment_selection::apply(
+            &room,
+            &daemon,
+            selection.revision,
+            fresh_heads,
+        )
+        .await;
+        assert!(
+            matches!(response, NotebookResponse::EnvironmentSelection { selection } if selection.intent_persistence == Current && !selection.applying)
+        );
+        assert_eq!(room.lifecycle.source_state().generation(), next_generation);
+        let metadata = room.doc.read().await.get_metadata_snapshot().unwrap();
+        assert_eq!(metadata.kernelspec.unwrap().name, "julia");
+        assert_eq!(metadata.runt.extra["installed_kernelspec"], "julia");
+        assert_eq!(
+            room.state
+                .read(|sd| sd.read_state().kernel.lifecycle)
+                .unwrap(),
+            RuntimeLifecycle::Running(KernelActivity::Idle),
+        );
+        assert_eq!(
+            room.runtime_agent_launched_config.read().await.as_ref(),
+            Some(&launched_config)
+        );
+        assert!(matches!(
+            request_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            room.lifecycle.availability(),
+            crate::notebook_sync_server::RoomAvailability::Interactive(_)
+        ));
+        assert!(room
+            .state
+            .read(|sd| sd.read_state().file_checkpoint.source_issue)
+            .unwrap()
+            .is_none());
+        let path = tmp.path().join("export.ipynb");
+        crate::notebook_sync_server::save_notebook_to_disk(&room, path.to_str())
+            .await
+            .expect("ordinary save must work after the journal recovers");
+        let exported: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(exported["metadata"]["kernelspec"]["name"], "julia");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn non_apply_kernelspec_delivery_rechecks_intent_and_trust() {
+        use notebook_protocol::protocol::RuntimeAgentRequest;
+
+        for trust_changed in [false, true] {
+            let (_tmp, room) = test_room();
+            let mut metadata = notebook_doc::metadata::NotebookMetadataSnapshot::default();
+            metadata.kernelspec = Some(notebook_doc::metadata::KernelspecSnapshot {
+                name: "julia".into(),
+                display_name: "Julia".into(),
+                language: Some("julia".into()),
+                ..Default::default()
+            });
+            room.doc
+                .write()
+                .await
+                .set_metadata_snapshot(&metadata)
+                .unwrap();
+            let resolved =
+                crate::kernelspec::imported(Some(&metadata), Default::default()).unwrap();
+            guarded::ensure_trusted(&room).await.unwrap();
+
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            let (dummy_reply, _) = oneshot::channel();
+            assert!(tx
+                .try_send(crate::notebook_sync_server::RuntimeAgentMessage::Query(
+                    notebook_protocol::protocol::RuntimeAgentRequestEnvelope {
+                        id: "fill-queue".into(),
+                        request: RuntimeAgentRequest::ShutdownKernel,
+                    },
+                    dummy_reply,
+                ))
+                .is_ok());
+            *room.runtime_agent_request_tx.lock().await = Some(tx);
+            let delivery = InstalledKernelDelivery {
+                imported_name: Some(resolved.clone()),
+                resolved_name: resolved.clone(),
+            };
+            let (built_tx, mut built_rx) = oneshot::channel();
+            let mut built_tx = Some(built_tx);
+            let send = send_installed_kernel_request(&room, &delivery, |kernel_ports| {
+                let _ = built_tx.take().unwrap().send(());
+                RuntimeAgentRequest::LaunchKernel {
+                    kernel_type: "julia".into(),
+                    env_source: EnvSource::Kernelspec,
+                    notebook_path: None,
+                    launched_config: Default::default(),
+                    kernelspec: None,
+                    kernel_ports,
+                    env_vars: Default::default(),
+                    redact_env_values_in_outputs: false,
+                }
+            });
+            tokio::pin!(send);
+            tokio::select! {
+                result = &mut send => panic!("launch completed despite full queue: {result:?}"),
+                built = &mut built_rx => built.unwrap(),
+            }
+            // Update the notebook after request preparation, while delivery is
+            // blocked on the runtime agent's queue reservation.
+            if trust_changed {
+                metadata.add_uv_dependency("not-approved-for-kernelspec-test");
+            } else {
+                metadata.kernelspec.as_mut().unwrap().name = "ir".into();
+            }
+            room.doc
+                .write()
+                .await
+                .set_metadata_snapshot(&metadata)
+                .unwrap();
+            assert!(rx.try_recv().is_ok());
+            let error = tokio::select! {
+                result = &mut send => result.unwrap_err(),
+                _ = rx.recv() => panic!("stale kernelspec {resolved} reached the runtime agent"),
+            };
+            assert!(matches!(
+                error
+                    .downcast_ref::<guarded::GuardRejection>()
+                    .unwrap()
+                    .into_response(),
+                NotebookResponse::GuardRejected { .. }
+            ));
+            let error = error.to_string();
+            assert!(
+                error.contains(if trust_changed {
+                    "Trust changed"
+                } else {
+                    "kernelspec changed"
+                }),
+                "{error}"
+            );
+            assert!(rx.try_recv().is_err());
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -2526,10 +3278,13 @@ mod tests {
             ManualLaunchAdmission::Admitted(attempt) => attempt,
             _ => panic!("admission"),
         };
-        let error = commit_apply_delivery(&room, &lease, &mut attempt, "python", || {
-            panic!("must not deliver")
-        })
-        .unwrap_err();
+        let error = {
+            let doc = room.doc.read().await;
+            commit_apply_delivery(&room, &doc, &lease, &mut attempt, "python", || {
+                panic!("must not deliver")
+            })
+            .unwrap_err()
+        };
         assert!(error.to_string().contains("runtime changed"));
         assert_eq!(
             room.state.read(|sd| sd.read_state().kernel).unwrap(),
@@ -2555,7 +3310,7 @@ mod tests {
         room.local_environment_selection
             .begin_apply(1)
             .unwrap()
-            .commit(Some(environment));
+            .commit(Some(environment), None);
         room.state
             .with_doc(|sd| {
                 sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle))?;
@@ -3082,5 +3837,66 @@ mod tests {
             KernelLaunchCompletion::Failed
         );
         assert!(existing_kernel_response(&room).await.is_none());
+    }
+
+    /// An Apply that parks at the project trust gate restores the kernel it
+    /// preserved. The generation still reports the trust refusal to joiners,
+    /// not the old kernel as a launch success, and the old kernel's agent
+    /// slots survive.
+    #[tokio::test]
+    async fn apply_trust_refusal_keeps_prior_kernel_and_reports_refusal() {
+        let (_tmp, room) = test_room();
+        *room.current_runtime_agent_id.write().await = Some("old-agent".to_string());
+        assert!(
+            room.record_active_kernel_launch_if_current(
+                "old-agent".to_string(),
+                "python".to_string(),
+                EnvSource::Prewarmed(PackageManager::Uv),
+            )
+            .await
+        );
+        let (request_tx, _request_rx) = tokio::sync::mpsc::channel(1);
+        *room.runtime_agent_request_tx.lock().await = Some(request_tx);
+        room.state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::Running(KernelActivity::Idle)))
+            .unwrap();
+
+        let mut attempt = match room.try_begin_manual_launch() {
+            ManualLaunchAdmission::Admitted(attempt) => attempt,
+            ManualLaunchAdmission::InFlight { .. } => panic!("launch should be admitted"),
+        };
+        attempt.preserve_kernel_during_preparation();
+        room.state
+            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::AwaitingProjectTrust))
+            .unwrap();
+        let mut launch_attempt = Some(attempt);
+        let response = refuse_for_project_trust(&mut launch_attempt);
+        launch_attempt.unwrap().release_to_prior_kernel();
+        tokio::task::yield_now().await;
+
+        assert!(matches!(response, NotebookResponse::GuardRejected { .. }));
+        assert_eq!(
+            room.launch_completion(1),
+            Some(KernelLaunchCompletion::ProjectTrustRequired)
+        );
+        assert_eq!(
+            room.current_runtime_agent_id.read().await.as_deref(),
+            Some("old-agent")
+        );
+        assert!(room.runtime_agent_request_tx.lock().await.is_some());
+        assert!(room.active_kernel_launch().is_some());
+        assert_eq!(
+            room.state
+                .read(|sd| sd.read_state().kernel.lifecycle)
+                .unwrap(),
+            RuntimeLifecycle::Running(KernelActivity::Idle)
+        );
+        match joined_launch_response(&room, Ok(KernelLaunchCompletion::ProjectTrustRequired)).await
+        {
+            Some(NotebookResponse::GuardRejected { reason }) => {
+                assert_eq!(reason, crate::project_trust::LAUNCH_REFUSAL_REASON)
+            }
+            other => panic!("joiner must get the trust refusal, got {other:?}"),
+        }
     }
 }
