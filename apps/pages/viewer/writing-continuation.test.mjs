@@ -174,6 +174,24 @@ test("a read-only editor on the last block gets a new block after it instead", (
   assert.equal(markdownOf(current.doc, id), "Before");
 });
 
+test("a last block the Page shows as a notice gets a new block after it instead", () => {
+  const current = session("Before"),
+    id = orderedBlockIds(current.doc)[0];
+  const next = writingContinuation(current, {
+    editorOf: () => null,
+    failed: (block) => block === id,
+  });
+  assert.notEqual(next, id);
+  assert.deepEqual(orderedBlockIds(current.doc), [id, next]);
+  assert.equal(markdownOf(current.doc, id), "Before", "the failed block is not written to");
+  assert.equal(
+    writingContinuation(current, { editorOf: () => null, failed: (block) => block === id }),
+    next,
+    "the new block is reused",
+  );
+  assert.equal(current.changes, 1);
+});
+
 test("a Page with no block gets its first block", () => {
   const current = session("Before"),
     id = orderedBlockIds(current.doc)[0];

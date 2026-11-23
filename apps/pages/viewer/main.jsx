@@ -1610,11 +1610,12 @@ function App() {
   function continueWriting() {
     if (!session || host.current !== session) return;
     try {
+      const within = (block, selector) =>
+        article.current?.querySelector(`[data-block-id="${CSS.escape(block)}"] ${selector}`);
       const id = editor.module.writingContinuation(session, {
-        editorOf: (block) =>
-          editorFor(
-            article.current?.querySelector(`[data-block-id="${CSS.escape(block)}"] wg-content`),
-          ),
+        editorOf: (block) => editorFor(within(block, "wg-content")),
+        // BlockBoundary's notice for a block that threw while drawing.
+        failed: (block) => !!within(block, "[data-block-error]"),
       });
       if (!id || host.current !== session) return;
       activateBlock(id);

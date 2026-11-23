@@ -127,8 +127,9 @@ that paragraph through the last block's editor, the same edit ArrowDown makes,
 unless the block already ends in an empty paragraph or is blank; then it writes
 nothing. Existing nodes keep their IDs and comment anchors. The browser makes a
 block in two cases only: a Page with no block gets its first one, and a last
-block nobody can write inside (a read-only editor, or content this build draws
-lossily) gets a new empty block after it.
+block nobody can write inside (a read-only editor, content this build draws
+lossily, or a block shown as a notice because drawing it threw) gets a new
+empty block after it.
 
 Agent Markdown writes (create, insert or replace Markdown, comments with
 `body_format: "markdown"`) refuse math and HTML other than highlight tags with

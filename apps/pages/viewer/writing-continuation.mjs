@@ -30,9 +30,15 @@ function newBlock(session) {
 /** Write continueAtEnd into block `id` with no editor on screen: the same
  * edit, committed through a binding as the block's editor would commit it.
  * Returns false for a block the editor would draw read-only (lossy: content
- * from a newer build, or a tree that differs from what is stored). */
+ * from a newer build, or a tree that differs from what is stored), and for
+ * one this build can't decode at all, which the Page draws as a notice. */
 function continueInBlock(session, id, blank) {
-  const binding = createWordgardBinding(session, id);
+  let binding;
+  try {
+    binding = createWordgardBinding(session, id);
+  } catch {
+    return false;
+  }
   try {
     const projection = binding.current;
     if (projection.lossy) return false;
@@ -66,14 +72,16 @@ function continueInBlock(session, id, blank) {
  * selection is left in the paragraph. Without one, the same edit is committed
  * through a binding of the block.
  *
- * A last block nobody can write inside (its editor is read-only, or it holds
- * content this build draws lossily) gets a new empty block after it, so a
- * person can still add to the Page.
+ * A last block nobody can write inside gets a new empty block after it, so a
+ * person can still add to the Page: its editor is read-only, it holds content
+ * this build draws lossily or can't decode, or `failed(id)` says the Page
+ * shows a notice in its place because drawing it threw. A paragraph written
+ * into a block with no editor on screen would have no caret to take.
  */
-export function writingContinuation(session, { editorOf } = {}) {
+export function writingContinuation(session, { editorOf, failed } = {}) {
   if (!session?.alive || !session.canWrite) return null;
   const id = orderedBlockIds(session.doc).at(-1);
-  if (!id) return newBlock(session);
+  if (!id || failed?.(id)) return newBlock(session);
   const blank = isBlankBlock(session.doc.blocks[id]);
   const view = editorOf?.(id);
   if (view && !view.state.readOnly) {
