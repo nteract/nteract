@@ -16,6 +16,7 @@ import { writeTargets } from "./agent-presence.mjs";
 import { projectComments } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { imageAssetUrl } from "../shared/image-assets.mjs";
+import { MAX_BATCH_IN_PLACE_UNITS } from "./insert-in-place.mjs";
 
 const PAGE = "44444444-4444-4444-8444-444444444444";
 const KEY = "main";
@@ -259,7 +260,8 @@ test("text spliced at the end of a new node stays out of the anchor's mark", () 
 });
 
 test("a batch's in-place inserts are bounded by the block text they read", () => {
-  const big = page(`${"word ".repeat(60_000)}\n\nEnd`);
+  // Three inserts into this block read under the bound and a fourth passes it.
+  const big = page(`${"word ".repeat(Math.floor(MAX_BATCH_IN_PLACE_UNITS / 18))}\n\nEnd`);
   const [anchor] = ids(big);
   const op = { op: "insert_markdown", markdown: "New", after_node_id: anchor };
   // Three inserts read under the bound; a fourth passes it and nothing is written.

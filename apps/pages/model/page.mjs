@@ -2,7 +2,7 @@ import * as A from "@automerge/automerge/slim";
 import { textPath, updateSpansExactly } from "./richtext-format.mjs";
 import { quotableNodeType } from "./richtext-notices.mjs";
 import { markdownlessNode, newerContent, readableMarker } from "./richtext-spans.mjs";
-import { nativeRead, readKind } from "./native-read.mjs";
+import { readKind } from "./native-read.mjs";
 import {
   repairBlockMarkers,
   setRichEmpty,
@@ -18,8 +18,9 @@ import {
 import { insertInPlace, spendInPlaceRead } from "./insert-in-place.mjs";
 import { moveNodes } from "./move-nodes.mjs";
 import { nodeIds } from "./node-ids.mjs";
-import { imageIds } from "./image-ids.mjs";
+import { imageIds, spanImageIds } from "./image-ids.mjs";
 import { addressIndex, blockAddress, nodeAddresses, resolveAddressFor } from "./addresses.mjs";
+import { blockReads } from "./block-reads.mjs";
 import { updateSpansConfig } from "./marks.mjs";
 import { stampSpans } from "./schema-features.mjs";
 import { imageAssetUrl, validAssetId } from "../shared/image-assets.mjs";
@@ -369,9 +370,9 @@ const afterKey = (anchor) => (anchor && typeof anchor === "object" ? anchor.key 
 const inPlace = (anchor) => anchor?.kind === "node";
 /** Write `spans` into `anchor`'s block directly after it, recording the
  * block as touched and the inserted text range for agent presence. */
-function writeInPlace(doc, anchor, spans, op, { trace, touched, budget }) {
+function writeInPlace(doc, anchor, spans, op, { trace, touched, budget, reads }) {
   spendInPlaceRead(budget, doc, anchor.key);
-  const placed = insertInPlace(doc, anchor, spans, op);
+  const placed = insertInPlace(doc, anchor, spans, op, reads);
   touched.push(anchor.key);
   trace?.push({ type: "text", block_id: anchor.key, start: placed.start, end: placed.end });
   return placed;
@@ -424,6 +425,7 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
         trace,
         touched,
         budget: context.budget,
+        reads: context.reads,
       });
       return withListWarning({ op: "insert_markdown", block, nodes }, op.markdown);
     }
@@ -446,9 +448,10 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
         at.after_node_id,
         imageSpans(image),
         op.op,
-        { trace, touched, budget: context.budget },
+        { trace, touched, budget: context.budget, reads: context.reads },
       );
-      const id = imageIds(doc, at.after_node_id.key).find(
+      const key = at.after_node_id.key;
+      const id = spanImageIds(doc, textPath(key), context.reads.spans(key)).find(
         (entry) => entry.at >= start && entry.at < end,
       ).id;
       placed = { op: "insert_image", block, nodes, image: id };
@@ -479,6 +482,7 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
         trace,
         touched,
         budget: context.budget,
+        reads: context.reads,
       });
       placed = { op: "insert_node", block, nodes };
     } else {
@@ -625,7 +629,7 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
     delete doc.blocks[id];
     return;
   }
-  if (op.op === "delete_node") return deleteNode(doc, op, target, trace);
+  if (op.op === "delete_node") return deleteNode(doc, op, target, trace, context.reads);
   if (op.op === "move_nodes")
     return moveNodes(
       doc,
@@ -644,12 +648,12 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
  * has, with a marker of its own, and keeps the block: removing the block's
  * map entry would discard what a peer writes into it concurrently. An agent
  * that wants the block gone uses delete_block. */
-function deleteNode(doc, op, { key: id, index, start, end }, trace) {
-  const tree = nativeRead(doc.blocks[id], doc.page_id);
+function deleteNode(doc, op, { key: id, index, start, end }, trace, reads) {
+  const tree = reads.tree(id);
   // The node's type comes from the readable tree, which must name the same
   // nodes as the stored markers.
   try {
-    nodeIds(doc, id, tree);
+    nodeIds(doc, id, tree, reads.nodeIds(id));
   } catch {
     throw Object.assign(
       Error(
@@ -661,9 +665,10 @@ function deleteNode(doc, op, { key: id, index, start, end }, trace) {
   const type = readKind(tree.nodes[index]);
   A.splice(doc, textPath(id), start, end - start);
   if (!doc.blocks[id].richText.length) setRichEmpty(doc, id);
+  reads.wrote(id);
   // Removing whole top-level nodes keeps the tree valid; check it anyway, so
   // a malformed result can never be committed.
-  const result = nativeRead(doc.blocks[id], doc.page_id);
+  const result = reads.tree(id);
   if (result.nodes.length < tree.nodes.length - 1) {
     const name = (offset) => readKind(tree.nodes[index + offset]);
     // Throwing aborts the whole change, the splice included.
@@ -704,7 +709,10 @@ function applyOperation(doc, { operation, arguments: args = {}, trace, comments 
     throw refused("batch_invalid", "Each operation is an object with an op");
   const { operations } = args;
   for (const [i, op] of operations.entries()) forOperation(i, op, () => validateEditFields(op));
-  const index = addressIndex(doc);
+  // Each block is read once and kept for the batch's later operations on it
+  // (model/block-reads.mjs).
+  const reads = blockReads(doc);
+  const index = addressIndex(doc, reads);
   // Every block the batch edits has its markers repaired first, in this
   // change: nodes stored under parents no writer wrote get the parents they
   // are drawn with, and unmarked text gets its marker, so every node an
@@ -732,7 +740,7 @@ function applyOperation(doc, { operation, arguments: args = {}, trace, comments 
         : [key];
     for (const each of new Set(keys)) {
       if (each === undefined) continue;
-      repairBlockMarkers(doc, each);
+      if (repairBlockMarkers(doc, each, reads)) reads.forget(each);
       index.forget(each);
     }
   }
@@ -755,7 +763,7 @@ function applyOperation(doc, { operation, arguments: args = {}, trace, comments 
   const anchors = operations.map((op, i) => {
     if (!PASSAGE_OPS.has(op.op) || op.occurrence === undefined) return undefined;
     const target = starts[i].node_id;
-    return forOperation(i, op, () => anchorOccurrence(doc, target.key, scoped(op, target)));
+    return forOperation(i, op, () => anchorOccurrence(doc, target.key, scoped(op, target), reads));
   });
   const budget = { writes: 0 };
   const edits = [];
@@ -770,8 +778,10 @@ function applyOperation(doc, { operation, arguments: args = {}, trace, comments 
         anchor: anchors[i],
         budget,
         comments,
+        reads,
       }),
     );
+    reads.settle(touched);
     for (const key of touched) index.forget(key);
     if (edit) edits.push(edit);
   }

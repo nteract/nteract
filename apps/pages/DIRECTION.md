@@ -143,30 +143,45 @@ lists, images, views and dataframes in order. Blocks are a storage detail
      ([viewer/writing-continuation.mjs](viewer/writing-continuation.mjs)),
      not an empty block. It still makes one when the Page has no block or
      this build can't write the last one.
-   - **Large Pages are fixed in the decoder, not with more blocks.** One
-     block of about 115 KB costs 199 ms per line break in the editor
-     (17 ms at 16 KB), and a batch of 20 `format_match` takes 4.4 s on the
-     host (0.14 s split across 85 blocks). Both costs come from reading the
-     whole block again: the editor decodes it for every structural or
-     formatting write ([viewer/wordgard-binding.mjs](viewer/wordgard-binding.mjs)),
-     and the host reads the block's spans several times per operation
-     ([model/replace-match.mjs](model/replace-match.mjs)). Read once per
-     batch on the host, and carry the editor's tree through structural and
-     formatting writes as it already does for typing. If a measured Page
+   - **Large Pages are fixed in the decoder, not with more blocks.** The
+     host reads each block once per batch
+     ([model/block-reads.mjs](model/block-reads.mjs)). On one block of
+     112 KB, a batch of 20 `format_match` takes 0.1 s (7.0 s before; 0.03 s
+     split across 85 blocks), 20 `replace_match` 0.2 s (5.7 s before), and
+     20 target-scoped `replace_match` 0.9 s (21.6 s before)
+     ([scripts/edit-batch-benchmark.mjs](scripts/edit-batch-benchmark.mjs),
+     on a laptop; the Workers host is slower).
+     The editor still reads the whole block again for every structural or
+     formatting write ([viewer/wordgard-binding.mjs](viewer/wordgard-binding.mjs)):
+     one block of about 115 KB costs 199 ms per line break (17 ms at
+     16 KB). Carry the editor's tree through structural and formatting
+     writes as it already does for typing. If a measured Page
      still needs it after that, the host starts a new block when the last
      one passes a size, on append only. The host never splits existing
      text on its own, since a split detaches the comments on the moved tail
      and drops edits in flight to it.
-   - **Per-block limits become per-Page limits.** `replace_match` refuses a
-     block over 262,144 UTF-16 units
-     ([model/replace-match.mjs](model/replace-match.mjs)), a batch's
-     in-place inserts are bounded by the length of the blocks they read
-     ([model/insert-in-place.mjs](model/insert-in-place.mjs)), and one node
-     from a newer build makes in-place inserts and Markdown rewrites of its
-     block refuse with `newer_content`.
-     In one flow each of these covers the whole Page. Inserts stop making
-     blocks only after the host reads once per batch, and each limit is
-     restated for a Page before that change.
+   - **Per-block limits become per-Page limits.** Passage operations
+     search a block of up to 262,144 UTF-16 units
+     ([model/replace-match.mjs](model/replace-match.mjs)). Page scope could
+     take four times that (20 `replace_match` in 3.2 s at 1,035,285
+     units), but the target-scope guard
+     ([model/passage-edits.mjs](model/passage-edits.mjs)) takes 12.6 s
+     there: it views and clones the whole document and reads the block at
+     the base revision, the current one and a dry run. Raising the limit
+     waits on a guard whose cost doesn't follow the whole document. A
+     batch's in-place inserts and moves count up to 3,000,000 units of the
+     blocks they write into
+     ([model/insert-in-place.mjs](model/insert-in-place.mjs)). Each insert
+     still reads its block back to check it, at about 1.2 µs a unit (8 µs
+     before the host read once per batch), so a full budget of inserts
+     takes about 4 s on a laptop. Moves between two large blocks cost 1.8
+     to 2 µs for each unit they count, so a full budget of them takes about
+     5.5 to 6 s. One
+     node from a newer build makes in-place inserts and Markdown rewrites
+     of its block refuse with `newer_content`.
+     In one flow each of these covers the whole Page: about 15 inserts
+     into a 200 KB Page per batch, and no passage edit on a Page past
+     262,144 units.
    - **A join costs what a split costs.** Writing later blocks into the
      first deletes their text objects, so an edit in flight to them is lost,
      a comment made offline on them detaches, and their nodes get new ids.
@@ -247,6 +262,11 @@ lists, images, views and dataframes in order. Blocks are a storage detail
    1. The host reads each block once per batch, and the editor carries its
       tree through structural and formatting writes. Measure the 115 KB
       case again after, and restate the per-block limits for a Page.
+      Done on the host, with the limits restated above. Left: the editor.
+      `A.spans` alone costs about 80 ms on a 100,000-unit block, and a
+      structural write in the editor calls it twice (in
+      `updateSpansExactly` and in the read that checks the write) after a
+      whole-block `updateSpans`.
    2. Omitted and `null` `after_node_id` write into the last and first
       blocks. The guides teach inserts by node only.
    3. The explicit join for multi-block Pages, with comment re-anchoring.

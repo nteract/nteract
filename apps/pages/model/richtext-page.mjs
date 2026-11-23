@@ -120,11 +120,12 @@ export function nodeSpans({ type, attrs }) {
  * merge deleted (decode's `rebuilt`) is left as it is too: every reader
  * draws it from its surviving child's parents and names it by that child's
  * marker, so restoring its marker would only move its node id. Returns
- * whether it wrote. */
-export function repairBlockMarkers(doc, id) {
+ * whether it wrote. `reads`, a batch's reads (model/block-reads.mjs),
+ * supplies the block's spans; the caller drops them when this writes. */
+export function repairBlockMarkers(doc, id, reads) {
   const path = textPath(id);
-  let spans = A.spans(doc, path);
-  let decoded = decode(spans);
+  let spans = reads ? reads.spans(id) : A.spans(doc, path);
+  let decoded = reads ? reads.decoded(id) : decode(spans);
   if (decoded.lossy && decoded.newer) return false;
   let wrote = false;
   if (decoded.moved.length) {

@@ -9,6 +9,7 @@ import { blockAddress, nodeAddresses } from "./addresses.mjs";
 import { projectComments } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { applyCommentRewrites, moveComments } from "./move-nodes.mjs";
+import { MAX_BATCH_IN_PLACE_UNITS } from "./insert-in-place.mjs";
 
 const PAGE = "55555555-5555-4555-8555-555555555555";
 const KEY = "main";
@@ -261,12 +262,17 @@ test("a block comment on a moved run keeps an opening rule, image or list inside
 });
 
 test("a move inside a large block fits the batch; too many are refused as moves", () => {
-  // One block of about 240,000 UTF-16 units, the size one flow makes of a
-  // long Page. A move counts its block twice, so one batch takes two moves.
+  // One block of about a fifth of the batch's in-place budget, the size one
+  // flow makes of a long Page. A move counts its block twice, so one batch
+  // takes two moves and not three.
   const paragraph = "word ".repeat(400).trim();
-  const doc = page(Array.from({ length: 120 }, (_, i) => `${i} ${paragraph}`).join("\n\n"));
+  const count = Math.ceil(MAX_BATCH_IN_PLACE_UNITS / 5 / 2004);
+  const doc = page(Array.from({ length: count }, (_, i) => `${i} ${paragraph}`).join("\n\n"));
   const { length } = doc.blocks[KEY].richText;
-  assert.ok(length > 235_000 && length < 250_000, String(length));
+  assert.ok(
+    4 * length <= MAX_BATCH_IN_PLACE_UNITS && 6 * length > MAX_BATCH_IN_PLACE_UNITS,
+    String(length),
+  );
   const all = ids(doc);
   const { doc: after } = edit(
     doc,

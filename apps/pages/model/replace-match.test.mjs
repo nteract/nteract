@@ -11,7 +11,7 @@ import {
 import { projectComments } from "./comments.mjs";
 import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { richDoc, textPath } from "./richtext.mjs";
-import { textSplices } from "./replace-match.mjs";
+import { MAX_PASSAGE_BLOCK_LENGTH, textSplices } from "./replace-match.mjs";
 import { blockAddress } from "./addresses.mjs";
 
 function fixture(markdown) {
@@ -684,5 +684,18 @@ test("mark reconciliation merges with a peer edit to untouched neighboring text"
   assert.deepEqual(
     A.getHeads(A.merge(A.clone(human), A.clone(tool))).sort(),
     A.getHeads(merged).sort(),
+  );
+});
+
+test("a passage edit refuses a block longer than MAX_PASSAGE_BLOCK_LENGTH", () => {
+  const paragraphs = Array.from(
+    { length: 7500 },
+    (_, i) => `Paragraph p${i}q says what it says.`,
+  ).join("\n\n");
+  const { doc, id } = fixture(paragraphs);
+  assert.ok(doc.blocks[id].richText.length > MAX_PASSAGE_BLOCK_LENGTH);
+  assert.throws(
+    () => replace(doc, id, { match_text: "p7499q", replacement: "last" }),
+    /Block is too large for replace_match/,
   );
 });
