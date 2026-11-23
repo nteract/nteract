@@ -31,22 +31,23 @@ import { refused } from "./edit-refusals.mjs";
 
 const width = (span) => (span.type === "text" ? span.value.length : 1);
 
-/** The most block text, in UTF-16 units, one batch's in-place inserts may
- * read. Each insert decodes its whole block to place the new nodes and again
+/** The most block text, in UTF-16 units, one batch's in-place writes may
+ * count. Each insert decodes its whole block to place the new nodes and again
  * to check them, so its cost follows the block's length, not the insert's:
- * about 100 inserts into a 10 KB block, or 4 into a 200 KB one. */
+ * about 100 inserts into a 10 KB block, or 4 into a 200 KB one. The unit is
+ * one block written in, not one decode: a move counts its source block and
+ * its destination block once each (move-nodes.mjs). */
 export const MAX_BATCH_IN_PLACE_UNITS = 1_000_000;
-/** Count block `key`'s length against the batch before an insert reads it,
- * refusing before anything is written. */
-export function spendInPlaceRead(budget, doc, key) {
+const INSERT_BUDGET =
+  "This batch inserts inside blocks too many times for their size. Send fewer inserts per request, or put several nodes in one insert_markdown.";
+/** Count block `key`'s length against the batch before an operation reads
+ * it, refusing before anything is written. `message` is the refusal for an
+ * operation other than an insert. */
+export function spendInPlaceRead(budget, doc, key, message = INSERT_BUDGET) {
   if (!budget) return;
   budget.inPlace = (budget.inPlace ?? 0) + doc.blocks[key].richText.length;
   if (budget.inPlace > MAX_BATCH_IN_PLACE_UNITS)
-    throw refused(
-      "in_place_budget",
-      "This batch inserts inside blocks too many times for their size. Send fewer inserts per request, or put several nodes in one insert_markdown.",
-      "after_node_id",
-    );
+    throw refused("in_place_budget", message, "after_node_id");
 }
 const article = (kind) => `${/^[aeiou]/.test(kind) ? "an" : "a"} ${kind}`;
 // Stored attrs come back in whatever key order Automerge keeps.

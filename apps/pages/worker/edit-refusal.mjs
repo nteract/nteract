@@ -10,6 +10,7 @@ export const OPERATION_REFUSAL_CODES = Object.freeze([
   "node_not_found",
   "wrong_address_kind",
   "nodes_would_join",
+  "invalid_move",
 ]);
 
 const TOKEN = /^[a-z][a-z0-9_]{0,63}$/;

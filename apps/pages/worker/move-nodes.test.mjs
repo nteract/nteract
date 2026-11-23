@@ -144,6 +144,9 @@ test("move_nodes needs the current revision and refuses target scope", async (t)
     { ok: false },
   );
   assert.equal(noop.code, "invalid_move");
+  // A move refusal names its operation, as the other edit refusals do.
+  assert.equal(noop.edit_index, 0);
+  assert.equal(noop.op, "move_nodes");
 });
 
 test("a retry after the comments write failed re-anchors the threads", async (t) => {

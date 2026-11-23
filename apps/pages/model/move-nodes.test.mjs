@@ -206,7 +206,36 @@ test("moving every node of a block into another removes it; its block comment co
   const [thread] = projectComments(after, nextComments);
   assert.equal(thread.target.kind, "selection");
   assert.equal(thread.selectionContext.status, "attached");
-  assert.match(thread.selectionContext.text, /^\n?Second block\.\nMore\.$/);
+  // From the first node's text, as a person's selection of the run starts.
+  assert.equal(thread.selectionContext.text, "Second block.\nMore.");
+});
+
+test("a move inside a large block fits the batch; too many are refused as moves", () => {
+  // One block of about 240,000 UTF-16 units, the size one flow makes of a
+  // long Page. A move counts its block twice, so one batch takes two moves.
+  const paragraph = "word ".repeat(400).trim();
+  const doc = page(Array.from({ length: 120 }, (_, i) => `${i} ${paragraph}`).join("\n\n"));
+  const { length } = doc.blocks[KEY].richText;
+  assert.ok(length > 235_000 && length < 250_000, String(length));
+  const all = ids(doc);
+  const { doc: after } = edit(
+    doc,
+    [1, 3].map((i) => ({ op: "move_nodes", node_id: all[i], after_node_id: all.at(-1) })),
+  );
+  assert.equal(ids(after).length, all.length);
+  assert.ok(markdown(after).endsWith(`1 ${paragraph}`));
+  assert.throws(
+    () =>
+      edit(
+        doc,
+        [1, 3, 5].map((i) => ({ op: "move_nodes", node_id: all[i], after_node_id: all.at(-1) })),
+      ),
+    (error) =>
+      error.code === undefined &&
+      error.editReason === "in_place_budget" &&
+      /moves nodes inside blocks too many times/.test(error.message) &&
+      error.editAt.index === 2,
+  );
 });
 
 test("a null after_node_id moves the run to the start of the Page, not of its block", () => {

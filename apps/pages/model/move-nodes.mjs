@@ -67,6 +67,9 @@ function endpoint(doc, key, offset) {
   };
 }
 
+const MOVE_BUDGET =
+  "This batch moves nodes inside blocks too many times for their size. Send fewer move_nodes per request.";
+
 const refuse = (message, code = "invalid_move") =>
   Object.assign(Error(message), { status: 400, code });
 
@@ -112,10 +115,11 @@ export function moveNodes(doc, op, { first, last, anchor }, context) {
   if (anchor && anchor.key === src && anchor.index === first.index - 1)
     throw refuse("These nodes already follow after_node_id; nothing to move");
   const dst = anchor ? anchor.key : top;
-  // The move reads its block before and after the delete and slices its
-  // spans; insertInPlace decodes the destination block three times.
-  for (let i = 0; i < 3; i++) spendInPlaceRead(budget, doc, src);
-  for (let i = 0; i < 3; i++) spendInPlaceRead(budget, doc, dst);
+  // Counted before any read, as an insert is: once for the block the run
+  // leaves and once for the block it lands in, so twice for a move inside
+  // one block. A move reads each about as often as an insert reads its own.
+  spendInPlaceRead(budget, doc, src, MOVE_BUDGET);
+  spendInPlaceRead(budget, doc, dst, MOVE_BUDGET);
 
   const count = last.index - first.index + 1;
   const { start } = first;
@@ -175,7 +179,13 @@ export function moveNodes(doc, op, { first, last, anchor }, context) {
     if (comments)
       for (const [id, target] of Object.entries(comments.threads))
         if (target?.kind === "block" && target.blockId === src) {
-          const next = selection(doc, dst, placed.start, placed.end);
+          // From the first node's text when it has any, as a person's
+          // selection of the run would start, not from its marker.
+          const text = doc.blocks[dst].richText;
+          const marker = text.charCodeAt(placed.start) === 0xfffc;
+          const lead =
+            marker && placed.start + 1 < placed.end && text.charCodeAt(placed.start + 1) !== 0xfffc;
+          const next = selection(doc, dst, placed.start + (lead ? 1 : 0), placed.end);
           comments.threads[id] = next;
           comments.rewrites.set(id, next);
         }
