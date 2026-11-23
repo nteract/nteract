@@ -129,6 +129,7 @@ import {
 } from "./asset-uploads.mjs";
 import { sessionStoreReady } from "./isolate-setup.mjs";
 import { startingPage } from "./starting-page.mjs";
+import { applyCommentRewrites, moveComments } from "../model/move-nodes.mjs";
 import { handleKiloSignIn, kiloSessionProvider } from "./kilo-handoff.mjs";
 import { signInCallbackOptions } from "./sign-in-failure.mjs";
 import { localOidcStore } from "./local-oidc-store.mjs";
@@ -8093,7 +8094,16 @@ export class Page {
         // name the characters it wrote. A replayed receipt has no caret.
         let caret = null;
         let applied;
-        const receipt = await documentMutation({
+        // A move re-anchors the comment threads on the text it moves. The
+        // moves read and update this copy of the thread targets; the host
+        // writes the rewrites to the comments document after the Page edit
+        // lands, as a second journaled write in the comments lane under the
+        // same nonce. A restart between the two leaves those threads
+        // detached, never on other text.
+        const moves = ops.some((op) => op?.op === "move_nodes")
+          ? moveComments(this.commentsView())
+          : null;
+        const pageReceipt = await documentMutation({
           storage: this.ctx.storage,
           hostActorPrefix: this.plain.hostActorPrefix,
           handle: this.handle,
@@ -8170,6 +8180,7 @@ export class Page {
                 arguments: effectiveArgs,
                 identity: publicIdentity(identity),
                 trace,
+                comments: moves,
               });
               if (body.operation === "edit_page") {
                 try {
@@ -8194,6 +8205,42 @@ export class Page {
           flush: () => this.flush(),
           onHeads: (heads) => (applied = heads),
         });
+        let receipt = pageReceipt;
+        if (moves && (moves.rewrites.size || moves.detached.length)) {
+          let reanchored;
+          if (moves.rewrites.size) {
+            let commentHeads;
+            reanchored = await documentMutation({
+              storage: this.ctx.storage,
+              hostActorPrefix: this.plain.hostActorPrefix,
+              handle: this.commentsHandle,
+              doc: COMMENTS_DOC,
+              pageId: this.metadata.pageId,
+              operation: "reanchor_comments",
+              args: { nonce: body.arguments.nonce, threads: [...moves.rewrites.keys()] },
+              identity,
+              baseRevision: () => undefined,
+              guard: (input) => input,
+              apply: (draft) => applyCommentRewrites(draft, moves.rewrites),
+              flush: () => this.flush(),
+              onHeads: (heads) => (commentHeads = heads),
+            });
+            this.commentsHandle.broadcast({
+              kind: "tool-edit",
+              identity: publicIdentity(identity),
+              heads: commentHeads,
+              comments: true,
+            });
+          }
+          receipt = {
+            ...pageReceipt,
+            ...(reanchored?.comment_revision && { comment_revision: reanchored.comment_revision }),
+            comments: {
+              reanchored: [...moves.rewrites.keys()],
+              detached: [...new Set(moves.detached)],
+            },
+          };
+        }
         this.cacheTitle();
         this.handle.broadcast({
           kind: "tool-edit",

@@ -457,7 +457,7 @@ test("every operation refuses an id of the wrong kind, naming what takes it", ()
   refusedKind(
     doc,
     { op: "delete_block", node_id: heading },
-    /^This id names a heading; delete_node removes it, and an insert's after_node_id puts new content after it\. delete_block takes a block's id/,
+    /^This id names a heading; delete_node removes it, move_nodes moves it, and an insert's after_node_id puts new content after it\. delete_block takes a block's id/,
   );
   refusedKind(
     doc,

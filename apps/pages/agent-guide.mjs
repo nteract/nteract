@@ -1036,7 +1036,7 @@ page_quota_exceeded with limit and count; tell the person rather than retrying.
   occurrence-th match or every match (all:true), and set_node to check a task, set a
   code block's language, change a heading level or align a table column. See Rich content.
   The same operations list also takes set_title, replace_block_markdown, insert_markdown, insert_image,
-  insert_node, move_block, delete_block, or delete_node operations. Every
+  insert_node, move_block, delete_block, delete_node, or move_nodes operations. Every
   operation names what it acts on by node_id; see Addresses below. A batch of
   set_source operations sets the Page's named sources; see Named sources. One
   set_view defines a reusable view. Use view_type module for new JavaScript,
@@ -1266,13 +1266,29 @@ take a block's id as node_id, and move_block's after_node_id is a block's id.
 An insert's after_node_id takes a top-level node's id, which writes the new
 content into that node's block directly after it, or a block's id, which puts
 it in a new block after that block.
-delete_node takes a node's id, set_image an image's. replace_match, format_match
+delete_node takes a node's id, set_image an image's. move_nodes takes node ids
+for node_id, through_node_id and after_node_id; see Move a section.
+replace_match, format_match
 and set_node take a node's id to match inside that node, or a block's to match
 anywhere in the block. Another kind is refused with wrong_address_kind; an id
 that names nothing live is node_not_found. Each insert's result.edits entry
 gives the new block's node_id and its nodes, or, for an insert after a node,
 the block it went into as block and the new nodes' ids as nodes, so the next
 request needs no read.
+
+### Move a section
+
+move_nodes moves a run of top-level nodes, node_id through through_node_id in
+one block, to directly after after_node_id, in the same block or another;
+after_node_id null moves the run to the start of its block. Use it to reorder
+sections: name a heading as node_id and the last node before the next heading
+of that level as through_node_id. Every character, mark and attribute moves
+as stored, and comment threads on the moved text stay attached. The moved
+nodes get new ids, which the result's nodes lists in order; every other node
+keeps its id. A thread that only partly overlaps the run loses its anchor and
+is listed in the receipt's comments.detached. Prefer move_nodes to deleting
+and inserting the same content again, which detaches every comment on it and
+can drop formatting a Markdown copy doesn't carry.
 
 ### Read only what you need
 
