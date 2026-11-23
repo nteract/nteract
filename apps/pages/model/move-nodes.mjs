@@ -1,6 +1,6 @@
 // move_nodes: a run of top-level nodes moved to after another top-level node,
-// in the same block or another one. This is a candidate operation for one
-// flow per Page (DIRECTION.md, "How an agent moves a section").
+// in the same block or another one. It is how a section moves in one flow
+// per Page (DIRECTION.md, "A section moves with a host move").
 //
 // Automerge text has no move. The run's stored spans are read, deleted, and
 // written again after the anchor with insertInPlace, so every character and
@@ -10,9 +10,10 @@
 //
 // Comment threads whose whole selection lies inside the run are re-anchored
 // on the same text at its new place. The rewrites are collected in
-// `comments.rewrites`; the host writes them to the comments document, not on
-// any author's behalf. A thread that only partly overlaps the run loses part
-// of its text and is counted as detached.
+// `comments.rewrites`; the host writes them to the comments document as its
+// own write, outside the rule that only a thread's author moves its anchor. A
+// thread that only partly overlaps the run loses part of its text and is
+// counted as detached.
 import * as A from "@automerge/automerge/slim";
 import { textPath } from "./richtext-format.mjs";
 import { nativeRead, readKind } from "./native-read.mjs";
@@ -179,13 +180,13 @@ export function moveNodes(doc, op, { first, last, anchor }, context) {
     if (comments)
       for (const [id, target] of Object.entries(comments.threads))
         if (target?.kind === "block" && target.blockId === src) {
-          // From the first node's text when it has any, as a person's
-          // selection of the run would start, not from its marker.
+          // From the run's first text, as a person's selection of it would
+          // start, not from the markers before it. A run of markers alone
+          // (a rule) keeps its last one.
           const text = doc.blocks[dst].richText;
-          const marker = text.charCodeAt(placed.start) === 0xfffc;
-          const lead =
-            marker && placed.start + 1 < placed.end && text.charCodeAt(placed.start + 1) !== 0xfffc;
-          const next = selection(doc, dst, placed.start + (lead ? 1 : 0), placed.end);
+          let from = placed.start;
+          while (from < placed.end - 1 && text.charCodeAt(from) === 0xfffc) from++;
+          const next = selection(doc, dst, from, placed.end);
           comments.threads[id] = next;
           comments.rewrites.set(id, next);
         }

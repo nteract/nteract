@@ -25,6 +25,10 @@ export const SOURCES_DOC = "sources";
 // A view's entries name its document `view:<view_id>` (document-modules.mjs
 // keyedDoc).
 const entryDoc = (entry) => entry?.doc ?? PAGE_DOC;
+/** The receipt lane of the comment anchors an edit_page move rewrites. That
+ * write goes to the comments document under edit_page's nonce, and a comment
+ * call may carry the same nonce in the `comments` lane. */
+export const REANCHOR_LANE = "reanchor";
 
 function reject(status, message, code, details) {
   const error = new Error(message);

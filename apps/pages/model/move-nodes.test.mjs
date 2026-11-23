@@ -155,11 +155,26 @@ test("a comment that crosses the run's edge is reported as detached", () => {
   assert.deepEqual(detached, [id]);
 });
 
-test("two moves in one batch carry a thread through both", () => {
+test("two moves in one batch carry a thread on a node neither names", () => {
   const doc = page("Alpha\n\nBeta note\n\nGamma\n\nDelta");
   const comments = withComments(doc, "note");
-  const [alpha, beta, , delta] = ids(doc);
-  void alpha;
+  const [, beta, gamma, delta] = ids(doc);
+  const moved = edit(
+    doc,
+    [
+      { op: "move_nodes", node_id: beta, after_node_id: delta },
+      { op: "move_nodes", node_id: gamma, after_node_id: null },
+    ],
+    comments,
+  );
+  assert.equal(markdown(moved.doc), "Gamma\n\nAlpha\n\nDelta\n\nBeta note");
+  assert.deepEqual(contexts(moved.doc, moved.comments), [{ status: "attached", text: "note" }]);
+});
+
+test("a second move of the same node carries its thread again", () => {
+  const doc = page("Alpha\n\nBeta note\n\nGamma\n\nDelta");
+  const comments = withComments(doc, "note");
+  const [, beta, , delta] = ids(doc);
   const first = edit(doc, [{ op: "move_nodes", node_id: beta, after_node_id: delta }], comments);
   const moved = first.result.edits[0].nodes[0];
   const second = edit(
@@ -208,6 +223,37 @@ test("moving every node of a block into another removes it; its block comment co
   assert.equal(thread.selectionContext.status, "attached");
   // From the first node's text, as a person's selection of the run starts.
   assert.equal(thread.selectionContext.text, "Second block.\nMore.");
+});
+
+test("a block comment on a moved run that opens with a rule or a list starts at its first text", () => {
+  for (const [source, text] of [
+    ["---\n\nAfter rule", "After rule"],
+    ["- a\n- b\n\nTail", "a\n\nb\nTail"],
+    ["> Quoted\n\nTail", "Quoted\nTail"],
+  ]) {
+    const { doc, second } = twoBlocks("First block.", source);
+    const run = nodeAddresses(doc, second);
+    const { comments } = comment(doc, newCommentsDoc(), {
+      action: "add",
+      block_id: second,
+      body: "On the whole block",
+    });
+    const moved = edit(
+      doc,
+      [
+        {
+          op: "move_nodes",
+          node_id: run[0],
+          through_node_id: run.at(-1),
+          after_node_id: ids(doc)[0],
+        },
+      ],
+      comments,
+    );
+    const [thread] = projectComments(moved.doc, moved.comments);
+    assert.equal(thread.selectionContext.status, "attached", source);
+    assert.equal(thread.selectionContext.text, text, source);
+  }
 });
 
 test("a move inside a large block fits the batch; too many are refused as moves", () => {

@@ -4271,17 +4271,19 @@ top-level nodes ([model/move-nodes.mjs](model/move-nodes.mjs)):
   source block becomes a selection over the moved text. A thread that crosses
   the run's edge is not rewritten and reads as detached. The host computes
   the rewrites in the Page change, journals them inside the Page receipt, and
-  writes them to the comments document as a second journaled write in the
-  comments lane under the request's nonce. The first attempt and every
-  retry run that write, and it applies once, so a retry after an interrupted
-  comments write re-anchors the threads. The host rewrite is not a peer's
+  writes them to the comments document as a second journaled write under the
+  request's nonce, in the `reanchor` lane so that nonce can't meet a comment
+  call's. The first attempt and every retry run that write, and it applies
+  once, so a retry after an interrupted comments write re-anchors the
+  threads. The Page's own events go out before it. The host rewrite is not a peer's
   anchor move: it keeps each anchor on the same text, so the author-only
   `move_anchor` rule doesn't apply. A peer anchor move made between the
   host's read of the threads and the rewrite is overwritten.
 - **Receipt:** the edit entry has `op`, `block`, `nodes`, `comments_moved` and
   `removed_block` when it applies. When the batch rewrote or detached a
-  thread, the receipt adds `comment_revision` and `comments: { reanchored,
-  detached }`, thread ids each; a retry returns the same receipt.
+  thread, the receipt adds `comments: { reanchored, detached }`, thread ids
+  each, and `comment_revision` when it rewrote one; a retry returns the same
+  receipt.
 - **Concurrency:** text a peer types into a moved node while the move lands
   is kept at the end of the node before the run's old place, as for
   `delete_node`. A comment a client anchors on the moved text concurrently
@@ -5067,8 +5069,9 @@ host/operation/n1_<first 32 hex of sha256(principal)>_<lane>_<nonce>
 ```
 
 Lanes keep one account's writes of different kinds apart on one object: `page`
-for edits, `comments` for comment writes, `catalog`, `project`,
-`project-access`, `page-access` and `lifecycle`. A Page stores its lifecycle
+for edits, `comments` for comment writes, `reanchor` for the comment anchors
+a move rewrites, `catalog`, `project`, `project-access`, `page-access` and
+`lifecycle`. A Page stores its lifecycle
 receipts (trash, restore, purge) under `host/lifecycle/` and a Space its
 receipts under `host/receipt/`, each with the same name after the prefix.
 Another account's identical nonce is another request. The same nonce with a

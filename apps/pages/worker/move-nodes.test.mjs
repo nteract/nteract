@@ -102,6 +102,64 @@ test("a section move keeps its comments attached; a retry replays the receipt", 
   assert.equal(again.blocks[0].markdown, after.blocks[0].markdown);
 });
 
+test("a move and a comment call may carry the same nonce", async (t) => {
+  // Lanes keep one account's writes of different kinds apart. The move's own
+  // write to the comments document must not take the comment lane's key.
+  const { call } = await session(t);
+  const read = await call("read_page", {});
+  const [block] = read.blocks;
+  const written = await call("edit_page", {
+    revision: read.revision,
+    nonce: nonce(),
+    operations: [
+      {
+        op: "replace_block_markdown",
+        node_id: block.node_id,
+        markdown: "Alpha\n\nBeta note\n\nGamma",
+      },
+    ],
+  });
+  const [, beta, gamma] = written.result.edits[0].nodes;
+  const shared = nonce();
+  const commented = await call("manage_page_comment", {
+    nonce: shared,
+    action: "add",
+    node_id: block.node_id,
+    selected_text: "note",
+    revision: written.revision,
+    body: "Keep",
+  });
+  const request = {
+    revision: written.revision,
+    nonce: shared,
+    operations: [{ op: "move_nodes", node_id: beta, after_node_id: gamma }],
+  };
+  const moved = await call("edit_page", request);
+  assert.deepEqual(moved.comments, { reanchored: [commented.result.thread_id], detached: [] });
+  assert.deepEqual(await call("edit_page", request), moved);
+  assert.equal((await call("read_page", {})).blocks[0].markdown, "Alpha\n\nGamma\n\nBeta note");
+  const listed = await call("list_page_comments", {});
+  const thread = listed.comments.find((entry) => entry.id === commented.result.thread_id);
+  assert.equal(thread.selectionContext.status, "attached");
+  assert.equal(thread.selectionContext.text, "note");
+  // The other order: a comment call under a nonce a move already used.
+  const second = nonce();
+  const [movedBeta] = moved.result.edits[0].nodes;
+  const [alpha] = written.result.edits[0].nodes;
+  await call("edit_page", {
+    revision: moved.revision,
+    nonce: second,
+    operations: [{ op: "move_nodes", node_id: movedBeta, after_node_id: alpha }],
+  });
+  const replied = await call("manage_page_comment", {
+    nonce: second,
+    action: "reply",
+    thread_id: commented.result.thread_id,
+    body: "Still here",
+  });
+  assert.equal(replied.result.thread_id, commented.result.thread_id);
+});
+
 test("move_nodes needs the current revision and refuses target scope", async (t) => {
   const { call } = await session(t);
   const read = await call("read_page", {});

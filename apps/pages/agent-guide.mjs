@@ -1293,9 +1293,11 @@ order; every other node keeps its id. A thread that only partly overlaps the
 run loses its anchor and is listed in the receipt's comments.detached. Text
 someone types into a moved node while the move lands is kept, at the end of
 the node before the run's old place: on a Page someone has open, read the
-nodes back after the move. Prefer move_nodes to deleting and inserting the
-same content again, which detaches every comment on it and can drop
-formatting a Markdown copy doesn't carry.
+nodes back after the move. After a 5xx answer or a lost one, send the same
+request again with the same nonce: the move applies once, and the retry
+finishes moving the comment anchors. Prefer move_nodes to deleting and
+inserting the same content again, which detaches every comment on it and can
+drop formatting a Markdown copy doesn't carry.
 
 ### Read only what you need
 
