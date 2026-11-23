@@ -140,6 +140,28 @@ describe("provider sessions", () => {
     await assert.rejects(createServerSession(request(), noDb, grant()), /not configured/);
   });
 
+  it("never overwrites a stored session when a new one draws the same id", async () => {
+    const env = environment();
+    const first = (await createServerSession(request(), env, grant())).split(";", 1)[0]!;
+    const held = env.DB.firstSession()!;
+    // Force the next insert onto the stored row's id, as a collision would.
+    const prepare = env.DB.prepare.bind(env.DB);
+    env.DB.prepare = (sql: string) => {
+      const statement = prepare(sql);
+      if (!sql.startsWith("INSERT INTO oidc_server_sessions")) return statement;
+      return {
+        ...statement,
+        bind: (...values: SessionDatabaseValue[]) =>
+          statement.bind(held.id as string, ...values.slice(1)),
+      } as SessionDatabaseStatement;
+    };
+    const other = grant({ identity: identity("user:pair:mallory") });
+    await assert.rejects(createServerSession(request(), env, other), /UNIQUE|constraint/i);
+    assert.deepEqual(env.DB.firstSession(), held);
+    const session = await readServerAppSession(env, request(first), now());
+    assert.equal(session?.principal, PRINCIPAL);
+  });
+
   it("accepts a grant until the second it expires", () => {
     const at = 1_800_000_000;
     assert.equal(checkedProviderGrant(grant({ expiresAt: at + 1 }), at).expiresAt, at + 1);
