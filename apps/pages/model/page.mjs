@@ -39,6 +39,7 @@ import { listStartWarning } from "./list-start-warning.mjs";
 import { insertOperation, insertedTypes } from "./node-registry.mjs";
 import { RESERVED_VIEW_IDS, VIEW_BLOCK, VIEW_ID_PATTERN, validViewId } from "../shared/views.mjs";
 import { stampFeatures } from "./schema-features.mjs";
+import { forOperation, refused } from "./edit-refusals.mjs";
 export { orderedBlockIds } from "./order.mjs";
 // A stored block holds its order and its text. Its id is its key in `blocks`.
 // Its text is written in the change that adds it, and always opens with a
@@ -101,7 +102,8 @@ export function validateImageInsertion(op) {
       (key) => !["op", "asset_id", "dark_asset_id", "alt", "title", "after_node_id"].includes(key),
     )
   )
-    throw Error(
+    throw refused(
+      "field_invalid",
       "insert_image requires an uploaded asset_id, alt text (up to 2048 characters), and optional after_node_id",
     );
 }
@@ -122,7 +124,8 @@ export function validateImageChange(op) {
       op.title !== null &&
       (typeof op.title !== "string" || op.title.length > 2048))
   )
-    throw Error(
+    throw refused(
+      "field_invalid",
       "set_image requires an image's node_id and asset_id, dark_asset_id (null removes), alt or title",
     );
 }
@@ -188,7 +191,7 @@ function nodeInsertionProblem(op) {
  * the attrs an agent may set. Returns the agent's attrs. */
 export function validateNodeInsertion(op) {
   const problem = nodeInsertionProblem(op);
-  if (problem) throw Error(problem);
+  if (problem) throw refused("field_invalid", problem);
   return op.node.attrs;
 }
 /** The view ids a batch's insert_node operations name, each once, in order.
@@ -300,11 +303,13 @@ export function validateEditFields(op) {
   if (!fields) return;
   const unexpected = Object.keys(op).find((field) => !["op", ...fields].includes(field));
   if (unexpected)
-    throw Error(
+    throw refused(
+      "field_unexpected",
       `${op.op} does not take ${String(unexpected).slice(0, 64)}; its fields are ${takenFields(op.op)}`,
+      unexpected,
     );
   if (fields.includes("markdown") && typeof op.markdown !== "string")
-    throw Error(`${op.op} requires a markdown string`);
+    throw refused("field_invalid", `${op.op} requires a markdown string`, "markdown");
 }
 // The addresses each operation names, by field, and the kinds each field
 // takes (model/addresses.mjs). Kinds are strict: no operation acts on the
@@ -394,14 +399,20 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
   if (op.op === "set_title") {
     // null clears an image's title; a Page always has a title, "" included.
     if (typeof op.title !== "string")
-      throw Error('set_title takes title as a string; "" leaves the Page untitled');
+      throw refused(
+        "field_invalid",
+        'set_title takes title as a string; "" leaves the Page untitled',
+        "title",
+      );
     // The limit is for new titles. A title already stored longer (a browser
     // merge admits one) can be sent back unchanged, as in a batch that
     // echoes it, and writes nothing.
     if (op.title === String(doc.title ?? "")) return;
     if (op.title.length > MAX_PAGE_TITLE)
-      throw Error(
+      throw refused(
+        "field_invalid",
         `set_title's title is at most ${MAX_PAGE_TITLE} characters; this one has ${op.title.length}`,
+        "title",
       );
     A.updateText(doc, ["title"], op.title);
     return;
@@ -485,7 +496,7 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
     };
   }
   const target = at.node_id;
-  if (!target) throw Error("Unsupported edit operation");
+  if (!target) throw refused("op_unknown", "Unsupported edit operation");
   const id = target.key;
   touched.push(id);
   if (op.op === "set_node" && target.kind === "node" && op.match_text === undefined) {
@@ -498,19 +509,27 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
     });
     const marker = spans[index];
     if (String(marker?.value?.type) !== DATAFRAME_BLOCK)
-      throw Error("set_node without match_text requires a dataframe node's id");
+      throw refused(
+        "set_node_needs_match",
+        "set_node without match_text requires a dataframe node's id",
+        "match_text",
+      );
     if (
       op.type !== undefined ||
       ["context_before", "context_after", "occurrence"].some((k) => op[k] !== undefined)
     )
-      throw Error("A dataframe edit takes node_id and attrs only");
+      throw refused("field_unexpected", "A dataframe edit takes node_id and attrs only");
     const changes = op.attrs;
     if (
       !isPlainObject(changes) ||
       !Object.keys(changes).length ||
       extraKey(changes, ["asset_id", "binding", "media_type", "title"]) !== undefined
     )
-      throw Error("A dataframe edit takes attrs: {asset_id or binding, media_type?, title?}");
+      throw refused(
+        "field_invalid",
+        "A dataframe edit takes attrs: {asset_id or binding, media_type?, title?}",
+        "attrs",
+      );
     const previous = readDataframe(
       Object.fromEntries(
         Object.entries(marker.value.attrs).map(([k, v]) => [
@@ -614,7 +633,7 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
       { first: target, last: at.through_node_id ?? target, anchor: at.after_node_id ?? null },
       { trace, touched, ...context },
     );
-  throw Error("Unsupported edit operation");
+  throw refused("op_unknown", "Unsupported edit operation");
 }
 /** Delete the top-level node `target` names: its marker through the next
  * node's marker, so its text, marks and children go with it and its
@@ -680,11 +699,11 @@ function applyOperation(doc, { operation, arguments: args = {}, trace, comments 
   // Comments are written to the comments document, never the Page.
   if (operation !== "edit_page") throw Error("Unsupported Page operation");
   if (!Array.isArray(args.operations) || args.operations.length > 100)
-    throw Error("Provide up to 100 operations");
+    throw refused("batch_invalid", "Provide up to 100 operations");
   if (args.operations.some((op) => !op || typeof op !== "object" || Array.isArray(op)))
-    throw Error("Each operation is an object with an op");
+    throw refused("batch_invalid", "Each operation is an object with an op");
   const { operations } = args;
-  for (const op of operations) validateEditFields(op);
+  for (const [i, op] of operations.entries()) forOperation(i, op, () => validateEditFields(op));
   const index = addressIndex(doc);
   // Every block the batch edits has its markers repaired first, in this
   // change: nodes stored under parents no writer wrote get the parents they
@@ -700,8 +719,17 @@ function applyOperation(doc, { operation, arguments: args = {}, trace, comments 
         : INSERTS.has(op.op)
           ? nodeBlockOf(index, op.after_node_id)
           : blockOf(index, op.node_id);
-    // A move writes into its anchor's block as well as its own.
-    const keys = op.op === "move_nodes" ? [key, nodeBlockOf(index, op.after_node_id)] : [key];
+    // A move writes into its anchor's block as well as its own. A null
+    // anchor is the start of the Page, in its first block.
+    const keys =
+      op.op === "move_nodes"
+        ? [
+            key,
+            op.after_node_id === null
+              ? orderedBlockIds(doc)[0]
+              : nodeBlockOf(index, op.after_node_id),
+          ]
+        : [key];
     for (const each of new Set(keys)) {
       if (each === undefined) continue;
       repairBlockMarkers(doc, each);
@@ -711,20 +739,23 @@ function applyOperation(doc, { operation, arguments: args = {}, trace, comments 
   // Every address names something live, of the kind its operation takes,
   // before any operation runs.
   const imageTargets = new Set();
-  const starts = operations.map((op) => {
-    if (op.op === "set_image") {
-      validateImageChange(op);
-      if (imageTargets.has(op.node_id)) throw Error("A batch cannot set the same image twice");
-      imageTargets.add(op.node_id);
-    }
-    return resolveOperation(index, doc, op);
-  });
+  const starts = operations.map((op, i) =>
+    forOperation(i, op, () => {
+      if (op.op === "set_image") {
+        validateImageChange(op);
+        if (imageTargets.has(op.node_id))
+          throw refused("batch_invalid", "A batch cannot set the same image twice", "node_id");
+        imageTargets.add(op.node_id);
+      }
+      return resolveOperation(index, doc, op);
+    }),
+  );
   // Every occurrence names a match in the batch's starting snapshot, the one
   // the caller read. Resolve them all before any operation runs.
   const anchors = operations.map((op, i) => {
     if (!PASSAGE_OPS.has(op.op) || op.occurrence === undefined) return undefined;
     const target = starts[i].node_id;
-    return anchorOccurrence(doc, target.key, scoped(op, target));
+    return forOperation(i, op, () => anchorOccurrence(doc, target.key, scoped(op, target)));
   });
   const budget = { writes: 0 };
   const edits = [];
@@ -732,13 +763,15 @@ function applyOperation(doc, { operation, arguments: args = {}, trace, comments 
     // Resolved again where the batch has reached: an earlier operation can
     // move the node's range, or delete what this one names.
     const touched = [];
-    const edit = applyEdit(doc, op, i ? resolveOperation(index, doc, op) : starts[i], {
-      trace,
-      touched,
-      anchor: anchors[i],
-      budget,
-      comments,
-    });
+    const edit = forOperation(i, op, () =>
+      applyEdit(doc, op, i ? resolveOperation(index, doc, op) : starts[i], {
+        trace,
+        touched,
+        anchor: anchors[i],
+        budget,
+        comments,
+      }),
+    );
     for (const key of touched) index.forget(key);
     if (edit) edits.push(edit);
   }

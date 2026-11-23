@@ -27,6 +27,7 @@ import { decode } from "./wordgard-doc.mjs";
 import { nativeRead, nativeReadSpans, readFingerprint, readKind } from "./native-read.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import { blockAddress } from "./addresses.mjs";
+import { refused } from "./edit-refusals.mjs";
 
 const width = (span) => (span.type === "text" ? span.value.length : 1);
 
@@ -41,8 +42,10 @@ export function spendInPlaceRead(budget, doc, key) {
   if (!budget) return;
   budget.inPlace = (budget.inPlace ?? 0) + doc.blocks[key].richText.length;
   if (budget.inPlace > MAX_BATCH_IN_PLACE_UNITS)
-    throw Error(
+    throw refused(
+      "in_place_budget",
       "This batch inserts inside blocks too many times for their size. Send fewer inserts per request, or put several nodes in one insert_markdown.",
+      "after_node_id",
     );
 }
 const article = (kind) => `${/^[aeiou]/.test(kind) ? "an" : "a"} ${kind}`;
@@ -73,7 +76,7 @@ function readBlock(doc, key, op) {
       Error(
         `This block holds nodes this version of Pages reads differently from how they're stored, so ${op} can't write inside it. Give after_node_id the block's id to insert after the block instead.`,
       ),
-      { code: "node_not_found" },
+      { code: "node_not_found", editField: "after_node_id" },
     );
   }
 }
@@ -162,7 +165,7 @@ export function insertInPlace(doc, target, spans, op) {
       Error(
         `${op} would join ${joined} into one. Start the new content with a different kind of node, such as a paragraph, insert after another node, or give after_node_id the block's id to put it in a block of its own.`,
       ),
-      { status: 400, code: "nodes_would_join" },
+      { status: 400, code: "nodes_would_join", editField: "after_node_id" },
     );
   }
   // The new nodes read back as encoded: their content and marks.
@@ -176,7 +179,7 @@ export function insertInPlace(doc, target, spans, op) {
       Error(
         `${op} could not write ${article(readKind(expected.nodes[0]))} here as given. Give after_node_id the block's id to put it in a block of its own.`,
       ),
-      { status: 400, code: "nodes_would_join" },
+      { status: 400, code: "nodes_would_join", editField: "after_node_id" },
     );
   return { block: blockAddress(doc, key), nodes: fresh, start, end };
 }

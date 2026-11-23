@@ -88,6 +88,12 @@ export function isLaunchErrorHandledByRuntimeBanner(error: string): boolean {
   return (
     error.includes("ipykernel not found in pixi.toml") ||
     error.includes("ipykernel not found in prepared ") ||
+    // Classified prepared-environment diagnostics from
+    // crates/runtimed/src/ipykernel_error.rs; the daemon also records them
+    // on the runtime lifecycle, so the runtime banner renders them.
+    error.includes("ipykernel is not importable from the prepared ") ||
+    error.includes("ipykernel is installed outside the interpreter's importable site-packages") ||
+    error.includes("Could not inspect ipykernel in the prepared ") ||
     error.includes("environment.yml declares conda env")
   );
 }

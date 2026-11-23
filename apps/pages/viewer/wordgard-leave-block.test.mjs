@@ -18,7 +18,14 @@ import {
   Paragraph,
 } from "./wordgard-model.mjs";
 import { createWordgardBinding, wordgardCodeNewlines } from "./wordgard-binding.mjs";
-import { exitBlock, finalBlock, leaveFinalBlock } from "./wordgard-leave-block.mjs";
+import {
+  atContinuation,
+  continueAtEnd,
+  exitBlock,
+  finalBlock,
+  leaveFinalBlock,
+} from "./wordgard-leave-block.mjs";
+import { writingContinuation } from "./writing-continuation.mjs";
 
 function fixture(markdown) {
   let doc = A.from(createPageData({ pageId: "page_fixture", title: "Leave block" }));
@@ -85,6 +92,8 @@ function fixture(markdown) {
   };
   return {
     editor,
+    session: Object.assign(replica, { alive: true, canWrite: true }),
+    id,
     markdown: () => blockMarkdown(doc.blocks[id]),
     types: () => state.doc.content.map((node) => node.type.name),
     changes: () => changes,
@@ -238,4 +247,51 @@ test("a Page block that ends in a dataframe offers a line below it", () => {
     PagesDataframe.of({ src, media_type: "application/vnd.apache.parquet", title: "Usage" }),
   ]);
   assert.equal(finalBlock(doc)?.node.type, PagesDataframe);
+});
+
+test("continueAtEnd adds an empty paragraph at the block's end, with the caret in it", () => {
+  for (const markdown of ["Just prose", "```js\nlet x = 1\n```", `Caption ${image}`, "- a\n- b"]) {
+    const f = fixture(markdown);
+    f.editor.select(0);
+    f.editor.dispatch(continueAtEnd(f.editor.state));
+    assert.equal(f.types().at(-1), Paragraph.type.name, markdown);
+    assert.equal(f.editor.state.doc.content.at(-1).content.length, 0, markdown);
+    assert.ok(atContinuation(f.editor.state), markdown);
+    assert.equal(f.changes(), 1, markdown);
+    // Again: the paragraph is there, so only the caret moves.
+    f.editor.select(0);
+    f.editor.dispatch(continueAtEnd(f.editor.state));
+    assert.ok(atContinuation(f.editor.state), markdown);
+    assert.equal(f.changes(), 1, markdown);
+    f.editor.type("After");
+    assert.equal(f.markdown(), `${markdown}\n\nAfter`);
+    // An ordinary edit: one undo takes the text, the next the line.
+    f.editor.run(undo);
+    f.editor.run(undo);
+    assert.equal(f.markdown(), markdown);
+  }
+});
+
+test("continueAtEnd writes nothing in a blank block or a read-only editor", () => {
+  const blank = fixture("");
+  blank.editor.dispatch(continueAtEnd(blank.editor.state, { blank: true }));
+  assert.ok(atContinuation(blank.editor.state));
+  assert.equal(blank.changes(), 0);
+  const readOnly = GardState.create({
+    doc: fixture("Prose").editor.state.doc,
+    config: [GardState.schemaElement.of(schema.elements), GardState.readOnly.of(true)],
+  });
+  assert.equal(continueAtEnd(readOnly), false);
+});
+
+test("Continue writing dispatches in the last block's editor and leaves its caret there", () => {
+  const f = fixture("Intro\n\n```js\nlet x = 1\n```");
+  f.editor.select(1);
+  assert.equal(writingContinuation(f.session, { editorOf: () => f.editor }), f.id);
+  assert.ok(atContinuation(f.editor.state));
+  assert.equal(f.changes(), 1);
+  assert.equal(writingContinuation(f.session, { editorOf: () => f.editor }), f.id);
+  assert.equal(f.changes(), 1);
+  f.editor.type("After");
+  assert.equal(f.markdown(), "Intro\n\n```js\nlet x = 1\n```\n\nAfter");
 });

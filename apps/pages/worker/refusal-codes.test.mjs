@@ -144,6 +144,67 @@ test("an edit batch that cannot apply names the selector, and nothing is written
   assert.deepEqual(f.heads(), await f.headsOf(tooLarge.body.revision), "nothing was written");
 });
 
+test("a refused batch says why and names the operation that refused it", async (t) => {
+  const f = await fixture(t);
+  const heads = f.heads();
+  const title = { op: "set_title", title: "Changed" };
+  const edit = async (nonce, operations, extra = {}) =>
+    f.tool("owner", "edit_page", {
+      revision: await f.revision(heads),
+      nonce,
+      operations,
+      ...extra,
+    });
+  const zero = await edit("reason-zero", [
+    title,
+    { op: "replace_match", node_id: f.block, match_text: "Tuesday", replacement: "x" },
+  ]);
+  assert.equal(zero.status, 400);
+  assert.deepEqual(
+    { ...zero.body, error: undefined },
+    {
+      error: undefined,
+      code: "invalid_edit_selector",
+      error_reason: "match_zero",
+      edit_index: 1,
+      op: "replace_match",
+      field: "match_text",
+      node_id: f.block,
+    },
+  );
+  // A caller's id that isn't an address is never echoed.
+  const malformed = await edit("reason-malformed", [
+    { op: "delete_block", node_id: "no-such-block" },
+  ]);
+  assert.equal(malformed.body.error_reason, "address_malformed");
+  assert.equal(malformed.body.edit_index, 0);
+  assert.equal(malformed.body.field, "node_id");
+  assert.equal(Object.hasOwn(malformed.body, "node_id"), false);
+  // A coded refusal names its operation, with no reason of its own.
+  const missing = await edit("reason-missing", [
+    title,
+    { op: "delete_block", node_id: "999999@abcdef" },
+  ]);
+  assert.equal(missing.body.code, "node_not_found");
+  assert.equal(missing.body.edit_index, 1);
+  assert.equal(missing.body.node_id, "999999@abcdef");
+  assert.equal(Object.hasOwn(missing.body, "error_reason"), false);
+  // Checked before the change, against the batch as sent.
+  const image = await edit("reason-image", [
+    title,
+    { op: "insert_image", asset_id: "not-an-asset", alt: "x" },
+  ]);
+  assert.equal(image.body.code, "invalid_edit_selector");
+  assert.equal(image.body.error_reason, "field_invalid");
+  assert.equal(image.body.edit_index, 1);
+  assert.equal(image.body.op, "insert_image");
+  // A target-scoped batch is refused as a whole.
+  const scoped = await edit("reason-scope", [title], { conflict_scope: "target" });
+  assert.equal(scoped.body.error_reason, "target_scope_ops");
+  assert.equal(Object.hasOwn(scoped.body, "edit_index"), false);
+  assert.deepEqual(f.heads(), heads, "nothing was written");
+});
+
 test("the host refuses every write to a Page stamped with a feature it lacks, and reads report the stamp", async (t) => {
   const plain = await fixture(t);
   // A new Page carries only the comments-doc stamp.

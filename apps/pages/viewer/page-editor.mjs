@@ -8,7 +8,11 @@ import * as A from "@automerge/automerge";
 export { PageSession } from "./session.mjs";
 export { orderedBlockIds } from "../model/order.mjs";
 export { captureCommentDraft, sendCommentDraft } from "./comment-draft.mjs";
-export { isEmptyPage, writingContinuation } from "./writing-continuation.mjs";
+export {
+  isEmptyPage,
+  placeContinuationCaret,
+  writingContinuation,
+} from "./writing-continuation.mjs";
 export { WordgardEditor } from "./WordgardEditor.jsx";
 export { onRendererUnavailable } from "./wordgard-widgets.mjs";
 export { CommentsPanel } from "./CommentsPanel.jsx";

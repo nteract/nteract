@@ -369,10 +369,146 @@ test("MCP clientInfo from initialize is carried onto tool-call usage events", as
   assert.doesNotMatch(JSON.stringify(failures), new RegExp(`${tool.principal}|${pageId}`));
 });
 
+test("a refused edit's reason and operation reach the caller over HTTP and MCP, and its failure row", async (t) => {
+  const auth = await createAuthFixture();
+  t.mock.method(globalThis, "fetch", auth.fetch);
+  const token = auth.apiKey();
+  const env = auth.env;
+  env.PAGES_USAGE = sqliteD1(t).open();
+  env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN ??= "https://pages.invalid";
+  const pageId = "44444444-4444-4444-8444-444444444444";
+  // The Page host's answers (refusal-codes.test.mjs covers how it writes them).
+  const refusal = {
+    error: "replace_match found 2 matches; exactly one is required.",
+    code: "invalid_edit_selector",
+    error_reason: "match_many",
+    edit_index: 1,
+    op: "replace_match",
+    field: "match_text",
+    node_id: "12@abcdef",
+  };
+  env.PAGES = {
+    getByName: () => ({
+      fetch: async (request) => {
+        const { operation } = await request.json();
+        return operation === "read_page"
+          ? Response.json(
+              { error: "Over budget", code: "read_budget_exceeded", outline: [] },
+              { status: 413 },
+            )
+          : Response.json(refusal, { status: 400 });
+      },
+    }),
+  };
+  const lines = [];
+  t.mock.method(console, "info", (line) => lines.push(JSON.parse(line)));
+  const holds = [];
+  const ctx = { waitUntil: (work) => holds.push(work) };
+  const headers = { authorization: `Bearer ${token}`, "x-pages-driver": "Kilo" };
+  const args = {
+    page_id: pageId,
+    revision: "r1",
+    nonce: "0b0f4a52-8a0e-4a4e-9a52-6c1f7d0c2a11",
+    operations: [
+      { op: "set_title", title: "T" },
+      { op: "replace_match", node_id: "12@abcdef", match_text: "a", replacement: "b" },
+    ],
+  };
+  const http = await worker.fetch(
+    new Request("https://pages.invalid/api/tools", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ operation: "edit_page", arguments: args }),
+    }),
+    env,
+    ctx,
+  );
+  assert.equal(http.status, 400);
+  assert.deepEqual(await http.json(), refusal);
+  const mcp = await worker.fetch(
+    new Request("https://pages.invalid/mcp", {
+      method: "POST",
+      headers: {
+        ...headers,
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "edit_page", arguments: args },
+      }),
+    }),
+    env,
+    ctx,
+  );
+  const { result } = await mcp.json();
+  assert.equal(result.isError, true);
+  for (const [key, value] of Object.entries(refusal))
+    assert.equal(result.structuredContent[key], value, key);
+  const read = await worker.fetch(
+    new Request("https://pages.invalid/api/tools", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ operation: "read_page", arguments: { page_id: pageId } }),
+    }),
+    env,
+    ctx,
+  );
+  assert.equal(read.status, 413);
+  await Promise.all(holds);
+  const calls = lines.filter((line) => line.event === USAGE_EVENT && line.action === "tool.call");
+  assert.deepEqual(
+    calls.map((line) => [line.operation, line.error_code, line.error_reason]),
+    [
+      ["edit_page", "invalid_edit_selector", "match_many"],
+      ["edit_page", "invalid_edit_selector", "match_many"],
+      ["read_page", "read_budget_exceeded", undefined],
+    ],
+  );
+  // The over-budget read keeps its event and writes no failure row.
+  assert.equal(
+    env.PAGES_USAGE.rows("SELECT * FROM pages_usage_events WHERE action = 'tool.call'").length,
+    3,
+  );
+  assert.deepEqual(
+    env.PAGES_USAGE.rows(
+      "SELECT surface, operation, error_code, error_reason FROM pages_usage_failures ORDER BY id",
+    ),
+    [
+      {
+        surface: "http-tools",
+        operation: "edit_page",
+        error_code: "invalid_edit_selector",
+        error_reason: "match_many",
+      },
+      {
+        surface: "mcp",
+        operation: "edit_page",
+        error_code: "invalid_edit_selector",
+        error_reason: "match_many",
+      },
+    ],
+  );
+  // Only the listed token reaches the log and the row: no message, no id.
+  assert.doesNotMatch(
+    JSON.stringify([calls, env.PAGES_USAGE.rows("SELECT * FROM pages_usage_failures")]),
+    /12@abcdef|exactly one/,
+  );
+});
+
 test("a usage record keeps an error code only when it is a code-shaped token", () => {
   for (const errorCode of ["a b", "Not Found", "user:one", "x".repeat(65), 7])
     assert.equal(usageEvent({ action: "tool.call", errorCode }).error_code, undefined, errorCode);
   assert.equal(usageEvent({ action: "tool.call", errorCode: "page_busy" }).error_code, "page_busy");
+  // A refusal reason is kept only when it is a listed one.
+  for (const errorReason of ["match_text Friday", "page_busy", 7])
+    assert.equal(usageEvent({ action: "tool.call", errorReason }).error_reason, undefined);
+  assert.equal(
+    usageEvent({ action: "tool.call", errorReason: "match_zero" }).error_reason,
+    "match_zero",
+  );
 });
 
 test("phasesOf keeps metric names and whole milliseconds, nothing else", () => {

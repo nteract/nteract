@@ -1881,8 +1881,8 @@ async fn handle_attempt(
                 // (old kernel still executes; UI thinks start failed).
                 // `reset_starting_state` first writes NotStarted and
                 // clears agent handles; we then overwrite lifecycle
-                // with Error + MissingIpykernel so the UI sees the
-                // correct reason. Minor TOCTOU against a concurrent
+                // with Error + the classified diagnostic so the UI sees
+                // the correct reason. Minor TOCTOU against a concurrent
                 // retry is accepted — a second retry observing Error
                 // will simply start a fresh launch.
                 reset_starting_state(room, None).await;
@@ -1900,12 +1900,7 @@ async fn handle_attempt(
                 }) {
                     warn!("[runtime-state] {}", e);
                 }
-                return NotebookResponse::Error {
-                    error: format!(
-                        "ipykernel not found in prepared {} environment",
-                        parsed_resolved.as_str()
-                    ),
-                };
+                return NotebookResponse::Error { error: details };
             }
         }
     }

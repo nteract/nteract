@@ -24,6 +24,7 @@ import {
   insertedViews,
   orderedBlockIds,
 } from "../model/page.mjs";
+import { atOperation, refusingOperation, withRefusal } from "../model/edit-refusals.mjs";
 import { insertOperation } from "../model/node-registry.mjs";
 import {
   documentFeatures,
@@ -1584,7 +1585,8 @@ const FAILURE_BODY_LIMIT = 64 * 1024;
  * `error.code`), else what withRefusalCode adds for its status. The body is
  * read only when it is JSON and declares at most FAILURE_BODY_LIMIT bytes, or
  * declares no length. usageEvent keeps the code only when it is a code-shaped
- * token; nothing else from the body is kept. Phases come from the request's
+ * token, and the body's `error_reason` only when it is a listed reason
+ * (model/edit-refusals.mjs); nothing else from the body is kept. Phases come from the request's
  * own recorder, since `Server-Timing` is set on the answer after this runs. */
 async function failureDetail(response, timing) {
   const detail = { phases: timing.header() || undefined };
@@ -1597,6 +1599,7 @@ async function failureDetail(response, timing) {
     const body = JSON.parse(text);
     if (!body || typeof body !== "object" || Array.isArray(body)) return detail;
     detail.errorCode = body.code ?? body.error?.code ?? refusalCode(response.status, body);
+    detail.errorReason = body.error_reason;
   } catch {
     // An unreadable body records the status alone.
   }
@@ -8120,12 +8123,22 @@ export class Page {
           prepare: inserts.length
             ? async () => {
                 if (inserts.length > 100)
-                  throw new HttpError(400, "Provide up to 100 operations", "invalid_edit_selector");
+                  throw Object.assign(
+                    new HttpError(400, "Provide up to 100 operations", "invalid_edit_selector"),
+                    { editReason: "batch_invalid" },
+                  );
                 let assets;
                 try {
                   assets = insertedAssets(inserts, this.metadata.pageId);
                 } catch (error) {
-                  throw new HttpError(400, error.message, "invalid_edit_selector");
+                  const at = refusingOperation(ops, (one) =>
+                    insertedAssets(one, this.metadata.pageId),
+                  );
+                  throw atOperation(
+                    withRefusal(new HttpError(400, error.message, "invalid_edit_selector"), error),
+                    at,
+                    ops[at],
+                  );
                 }
                 // Each names an asset stored on this Page, of its kind. One
                 // the gateway holds an asset_from for, and this Page lacks,
@@ -8204,9 +8217,12 @@ export class Page {
               // this build can't read is refused with 409 (newer_content), as
               // a target-scoped edit does.
               const status = error.code === "newer_content" ? 409 : 400;
-              throw Object.assign(
-                new HttpError(status, error.message, error.code ?? "invalid_edit_selector"),
-                error.details && { details: error.details },
+              throw withRefusal(
+                Object.assign(
+                  new HttpError(status, error.message, error.code ?? "invalid_edit_selector"),
+                  error.details && { details: error.details },
+                ),
+                error,
               );
             }
           },

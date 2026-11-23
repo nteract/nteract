@@ -8,6 +8,7 @@ import {
   migrateUsageStore,
   runUsageMaintenance,
   storedUsage,
+  USAGE_SCHEMA,
   usageQueueStep,
   writeUsageBatch,
 } from "./usage-store.mjs";
@@ -511,13 +512,27 @@ test("a failed tool call also stores a failure row with no principal or Page id"
     operation: "edit_page",
     status: 500,
     error_code: "internal_error",
+    error_reason: null,
     latency_ms: 15500,
     phases: "auth=3,page=15400",
   });
   // Free text never reaches the failure row.
   assert.deepEqual(
-    storedUsage({ ...failed, operation: "Edit Page", error_code: "a b", phases: "x=1;y" }).failure,
-    { operation: "unknown", status: 500, error_code: null, latency_ms: 15500, phases: null },
+    storedUsage({
+      ...failed,
+      operation: "Edit Page",
+      error_code: "a b",
+      error_reason: "match_text Friday",
+      phases: "x=1;y",
+    }).failure,
+    {
+      operation: "unknown",
+      status: 500,
+      error_code: null,
+      error_reason: null,
+      latency_ms: 15500,
+      phases: null,
+    },
   );
   for (const ok of [
     event({ action: "tool.call", outcome: "ok", status: 200 }),
@@ -537,6 +552,7 @@ test("a failed tool call also stores a failure row with no principal or Page id"
       operation: "edit_page",
       status: 500,
       error_code: "internal_error",
+      error_reason: null,
       latency_ms: 15500,
       phases: "auth=3,page=15400",
     },
@@ -549,6 +565,69 @@ test("a failed tool call also stores a failure row with no principal or Page id"
   // Failures share the raw events' 14-day retention.
   await runUsageMaintenance({ PAGES_USAGE: db }, at + 15 * DAY);
   assert.equal(db.rows("SELECT COUNT(*) AS n FROM pages_usage_failures")[0].n, 0);
+});
+
+test("a refused edit's failure row keeps its listed reason, and a read over budget writes none", async (t) => {
+  const db = sqliteD1(t).open();
+  const refused = event({
+    action: "tool.call",
+    surface: "mcp",
+    driver: "Claude",
+    operation: "edit_page",
+    status: 400,
+    outcome: "http_400",
+    error_code: "invalid_edit_selector",
+    error_reason: "match_zero",
+  });
+  assert.equal(storedUsage(refused).failure.error_reason, "match_zero");
+  // A read over its byte budget answers with an outline, as designed: its
+  // usage event stays, with no failure row.
+  const overBudget = event({
+    action: "tool.call",
+    surface: "mcp",
+    driver: "Claude",
+    operation: "read_page",
+    status: 413,
+    outcome: "http_413",
+    error_code: "read_budget_exceeded",
+  });
+  assert.equal(storedUsage(overBudget).failure, undefined);
+  await insert(db, [refused, overBudget]);
+  assert.deepEqual(db.rows("SELECT action, outcome FROM pages_usage_events ORDER BY id"), [
+    { action: "tool.call", outcome: "http_400" },
+    { action: "tool.call", outcome: "http_413" },
+  ]);
+  assert.deepEqual(
+    db.rows("SELECT operation, error_code, error_reason FROM pages_usage_failures"),
+    [{ operation: "edit_page", error_code: "invalid_edit_selector", error_reason: "match_zero" }],
+  );
+});
+
+test("the schema adds error_reason to a failure table the earlier statements created, and runs again", async (t) => {
+  const db = sqliteD1(t).open();
+  // The deployed shape: the table as USAGE_SCHEMA creates it, with a row an
+  // earlier build wrote.
+  for (const sql of USAGE_SCHEMA) db.sqlite.exec(sql);
+  db.sqlite.exec(`INSERT INTO pages_usage_failures
+    (day, ts, driver, surface, operation, status, error_code, latency_ms, phases)
+    VALUES ('2026-11-04', '2026-11-04T12:00:00.000Z', 'Claude', 'mcp', 'edit_page', 400,
+      'invalid_edit_selector', 12, NULL)`);
+  await migrateUsageStore(db);
+  await migrateUsageStore(db);
+  const columns = db.rows("PRAGMA table_info(pages_usage_failures)").map((c) => c.name);
+  assert.equal(columns.filter((name) => name === "error_reason").length, 1);
+  assert.deepEqual(
+    db.rows("SELECT operation, error_code, error_reason FROM pages_usage_failures"),
+    [{ operation: "edit_page", error_code: "invalid_edit_selector", error_reason: null }],
+  );
+  // A fresh database gets the same shape, also twice.
+  const fresh = sqliteD1(t).open();
+  await migrateUsageStore(fresh);
+  await migrateUsageStore(fresh);
+  assert.deepEqual(
+    fresh.rows("PRAGMA table_info(pages_usage_failures)").map((c) => c.name),
+    columns,
+  );
 });
 
 test("raw purge runs in bounded statements below the durable floor; rollups ignore rows left there", async (t) => {
@@ -641,7 +720,11 @@ test("rollup/purge are atomic, and an older invocation cannot undo a newer job",
     return batch(statements);
   });
   const old = runUsageMaintenance({ PAGES_USAGE: db }, at + 2 * DAY);
-  await tick();
+  // The migration takes several awaits; wait until the older job is held.
+  for (let waited = 0; !release; waited++) {
+    assert.ok(waited < 1000, "the older job reaches its held batch");
+    await tick();
+  }
   await runUsageMaintenance({ PAGES_USAGE: db }, at + 101 * DAY);
   const after = db.rows("SELECT * FROM pages_usage_weekly");
   release();

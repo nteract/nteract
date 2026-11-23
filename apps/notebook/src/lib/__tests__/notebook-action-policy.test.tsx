@@ -119,6 +119,14 @@ describe("notebook action policy helpers", () => {
   it("recognizes launch errors rendered by the runtime banner", () => {
     expect(isLaunchErrorHandledByRuntimeBanner("ipykernel not found in pixi.toml")).toBe(true);
     expect(isLaunchErrorHandledByRuntimeBanner("ipykernel not found in prepared env")).toBe(true);
+    // Classified diagnostics returned by LaunchKernel for prepared environments.
+    for (const error of [
+      "ipykernel is not importable from the prepared conda:inline environment.\npython: /p",
+      "ipykernel is installed outside the interpreter's importable site-packages path.\npython: /p",
+      "Could not inspect ipykernel in the prepared conda:inline environment. This does not mean ipykernel is missing.",
+    ]) {
+      expect(isLaunchErrorHandledByRuntimeBanner(error)).toBe(true);
+    }
     expect(isLaunchErrorHandledByRuntimeBanner("environment.yml declares conda env named x")).toBe(
       true,
     );

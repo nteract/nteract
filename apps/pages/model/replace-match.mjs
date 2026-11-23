@@ -13,6 +13,7 @@ import {
 } from "./marks.mjs";
 import { stampMarks } from "./schema-features.mjs";
 import { refuseUnreadableText } from "./richtext-spans.mjs";
+import { refused } from "./edit-refusals.mjs";
 
 const MAX_TEXT_LENGTH = 262144;
 const MAX_MATCHES = 10000;
@@ -20,14 +21,18 @@ const MAX_MATCHES = 10000;
 export function replacementLiteral(value, name, optional = false) {
   if (optional && value === undefined) return undefined;
   if (typeof value !== "string" || value.length > MAX_TEXT_LENGTH)
-    throw Error(`${name} must be a string of at most ${MAX_TEXT_LENGTH} UTF-16 units`);
+    throw refused(
+      "field_invalid",
+      `${name} must be a string of at most ${MAX_TEXT_LENGTH} UTF-16 units`,
+      name,
+    );
   if (
     [...value].some((char) => {
       const point = char.codePointAt(0);
       return point >= 0xd800 && point <= 0xdfff;
     })
   )
-    throw Error(`${name} must not contain an unpaired surrogate`);
+    throw refused("field_invalid", `${name} must not contain an unpaired surrogate`, name);
   return value;
 }
 
@@ -45,7 +50,8 @@ export function visibleRangeAddress(doc, id, start, end) {
   const addresses = blockAddresses(A.spans(doc, textPath(id)));
   const last = end - (/^[\udc00-\udfff]$/.test(doc.blocks[id].richText[end - 1]) ? 2 : 1);
   const nodeIndex = nodeIndexAt(addresses, start);
-  if (nodeIndex !== nodeIndexAt(addresses, last)) throw Error("Match crosses top-level nodes");
+  if (nodeIndex !== nodeIndexAt(addresses, last))
+    throw refused("match_boundary", "Match crosses top-level nodes", "match_text");
   const { start: nodeStart, end: nodeEnd } = addresses.nodes[nodeIndex];
   return {
     index: nodeIndex,
@@ -107,8 +113,13 @@ export function occurrenceOf(input) {
     input.occurrence < 1 ||
     input.occurrence > MAX_OCCURRENCE
   )
-    throw Error(`occurrence must be an integer from 1 to ${MAX_OCCURRENCE}`);
-  if (input.all !== undefined) throw Error("Use occurrence or all, not both");
+    throw refused(
+      "field_invalid",
+      `occurrence must be an integer from 1 to ${MAX_OCCURRENCE}`,
+      "occurrence",
+    );
+  if (input.all !== undefined)
+    throw refused("field_invalid", "Use occurrence or all, not both", "all");
   return input.occurrence;
 }
 
@@ -121,13 +132,14 @@ function visibleMatches(doc, id, input) {
   const before = replacementLiteral(input.context_before, "context_before", true);
   const after = replacementLiteral(input.context_after, "context_after", true);
   const scope = input[withinNode] ?? null;
-  if (!match) throw Error("match_text must not be empty");
+  if (!match) throw refused("field_invalid", "match_text must not be empty", "match_text");
   const matches = [];
   let candidates = 0;
   for (const segment of textSegments(doc.blocks[id])) {
     const offsets = [];
     for (let at = segment.text.indexOf(match); at >= 0; at = segment.text.indexOf(match, at + 1)) {
-      if (++candidates > MAX_MATCHES) throw Error("Too many matches; use a longer match_text");
+      if (++candidates > MAX_MATCHES)
+        throw refused("match_many", "Too many matches; use a longer match_text", "match_text");
       offsets.push(at);
     }
     for (let i = 0; i < offsets.length; i++) {
@@ -156,9 +168,17 @@ function matchRange(id, input, { at: start, segment, local }) {
   const op = input.op ?? "replace_match";
   const length = input.match_text.length;
   if (!graphemeBoundary(segment, local))
-    throw Error(`${op} match_text starts inside a character; include the whole character`);
+    throw refused(
+      "match_boundary",
+      `${op} match_text starts inside a character; include the whole character`,
+      "match_text",
+    );
   if (!graphemeBoundary(segment, local + length))
-    throw Error(`${op} match_text ends inside a character; include the whole character`);
+    throw refused(
+      "match_boundary",
+      `${op} match_text ends inside a character; include the whole character`,
+      "match_text",
+    );
   return { path: textPath(id), start, end: start + length, code: segment.code };
 }
 
@@ -168,18 +188,22 @@ function matchRange(id, input, { at: start, segment, local }) {
 export function findUniqueVisibleRange(doc, id, input) {
   const occurrence = occurrenceOf(input);
   const op = input.op ?? "replace_match";
-  if (input.all !== undefined) throw Error(`${op} does not take all`);
+  if (input.all !== undefined) throw refused("field_invalid", `${op} does not take all`, "all");
   const matches = visibleMatches(doc, id, input);
   if (occurrence !== undefined) {
     if (occurrence > matches.length)
-      throw Error(
+      throw refused(
+        "match_zero",
         `${op} found ${matches.length} matches; occurrence ${occurrence} doesn't exist. Read the block again.`,
+        "occurrence",
       );
     return matchRange(id, input, matches[occurrence - 1]);
   }
   if (matches.length !== 1)
-    throw Error(
+    throw refused(
+      matches.length ? "match_many" : "match_zero",
       `${op} found ${matches.length} matches; exactly one is required. Use occurrence, context_before/context_after or a longer match_text.`,
+      "match_text",
     );
   return matchRange(id, input, matches[0]);
 }
@@ -188,8 +212,9 @@ export function findUniqueVisibleRange(doc, id, input) {
  * `all: true`. A match that starts or ends inside a character is skipped. At
  * least one match is required. */
 export function findAllVisibleRanges(doc, id, input) {
-  if (input.all !== true) throw Error("all takes the value true");
-  if (input.occurrence !== undefined) throw Error("Use occurrence or all, not both");
+  if (input.all !== true) throw refused("field_invalid", "all takes the value true", "all");
+  if (input.occurrence !== undefined)
+    throw refused("field_invalid", "Use occurrence or all, not both", "occurrence");
   const ranges = [];
   const length = input.match_text.length;
   for (const match of visibleMatches(doc, id, input)) {
@@ -198,7 +223,12 @@ export function findAllVisibleRanges(doc, id, input) {
     if (!graphemeBoundary(match.segment, match.local + length)) continue;
     ranges.push(matchRange(id, input, match));
   }
-  if (!ranges.length) throw Error(`${input.op} found 0 matches; at least one is required`);
+  if (!ranges.length)
+    throw refused(
+      "match_zero",
+      `${input.op} found 0 matches; at least one is required`,
+      "match_text",
+    );
   return ranges;
 }
 
@@ -229,8 +259,10 @@ export function locateRange(doc, id, input, anchor) {
     A.getCursor(doc, path, start) !== anchor.first ||
     doc.blocks[id].richText.slice(start, end) !== input.match_text
   )
-    throw Error(
+    throw refused(
+      "batch_overlap",
       `${input.op ?? "replace_match"} occurrence ${input.occurrence} was changed by an earlier operation in this batch`,
+      "occurrence",
     );
   return { path, start, end };
 }
@@ -244,7 +276,8 @@ export function spendMarkWrites(budget, writes) {
   if (!budget) return;
   budget.writes += writes;
   if (budget.writes > MAX_BATCH_MARK_WRITES)
-    throw Error(
+    throw refused(
+      "mark_budget",
       `This batch writes formatting on more than ${MAX_BATCH_MARK_WRITES} ranges; split it into smaller batches.`,
     );
 }
@@ -434,8 +467,10 @@ export function replaceMatch(doc, id, input, trace, { anchor, budget } = {}) {
   const { path, start, end } = locateRange(doc, id, input, anchor);
   refuseUnreadableText(A.spans(doc, path), start, "replace_match");
   if (runs && inCodeBlock(doc, path, start))
-    throw Error(
+    throw refused(
+      "code_block",
       "replacement_markdown can't format text inside a code block; code text is unformatted. Use replacement.",
+      "replacement_markdown",
     );
   const overlapping = A.marks(doc, path).filter((mark) => mark.start < end && mark.end > start);
   const covers = (mark) => mark.start <= start && mark.end >= end;
@@ -525,7 +560,11 @@ export function replaceMatch(doc, id, input, trace, { anchor, budget } = {}) {
 export function replacementOf(input) {
   const literal = input.replacement !== undefined;
   if (literal === (input.replacement_markdown !== undefined))
-    throw Error("replace_match takes replacement or replacement_markdown, not both");
+    throw refused(
+      "field_invalid",
+      "replace_match takes replacement or replacement_markdown, not both",
+      "replacement",
+    );
   if (literal) return { text: replacementLiteral(input.replacement, "replacement"), runs: null };
   const source = replacementLiteral(input.replacement_markdown, "replacement_markdown");
   const runs = parseInlineMarkdown(source);
@@ -569,12 +608,14 @@ function applyRuns(doc, path, start, runs, commonMarks, budget) {
 export function formatMarks(add) {
   if (add === undefined) return {};
   if (!add || typeof add !== "object" || Array.isArray(add))
-    throw Error("add must map mark names to values");
+    throw refused("field_invalid", "add must map mark names to values", "add");
   return Object.fromEntries(
     Object.entries(add).map(([name, value]) => {
-      if (!isKnownMark(name)) throw Error(`Unsupported rich mark: ${name}`);
+      if (!isKnownMark(name))
+        throw refused("field_invalid", `Unsupported rich mark: ${name}`, "add");
       const rule = markSpec(name).value;
-      if (rule.type === "flag" && value !== true) throw Error(`${name} takes the value true`);
+      if (rule.type === "flag" && value !== true)
+        throw refused("field_invalid", `${name} takes the value true`, "add");
       if (name === "highlight") return [name, normalizeHighlight(value)];
       return [name, encodeMarkValue(name, value)];
     }),
@@ -587,12 +628,14 @@ export function formatChanges(input) {
   const add = formatMarks(input.add);
   const remove = input.remove ?? [];
   if (!Array.isArray(remove) || remove.some((name) => typeof name !== "string"))
-    throw Error("remove must be a list of mark names");
-  for (const name of remove) if (!isKnownMark(name)) throw Error(`Unsupported rich mark: ${name}`);
+    throw refused("field_invalid", "remove must be a list of mark names", "remove");
+  for (const name of remove)
+    if (!isKnownMark(name))
+      throw refused("field_invalid", `Unsupported rich mark: ${name}`, "remove");
   if (!Object.keys(add).length && !remove.length)
-    throw Error("format_match requires add or remove");
+    throw refused("field_invalid", "format_match requires add or remove", "add");
   if (remove.some((name) => Object.hasOwn(add, name)))
-    throw Error("A mark cannot be both added and removed");
+    throw refused("field_invalid", "A mark cannot be both added and removed", "remove");
   return { add, remove };
 }
 
@@ -612,18 +655,27 @@ export function formatMatch(doc, id, input, trace, { anchor, budget } = {}) {
   if (input.all === undefined) {
     const range = locateRange(doc, id, located, anchor);
     if (inCodeBlock(doc, path, range.start))
-      throw Error("format_match can't format text inside a code block; code text is unformatted.");
+      throw refused(
+        "code_block",
+        "format_match can't format text inside a code block; code text is unformatted.",
+        "match_text",
+      );
     ranges = [range];
   } else {
     const found = findAllVisibleRanges(doc, id, located);
     if (found.length > MAX_ALL_RANGES)
-      throw Error(
+      throw refused(
+        "match_many",
         `format_match all found ${found.length} matches; at most ${MAX_ALL_RANGES} per operation. Narrow it with a node's node_id, context or a longer match_text.`,
       );
     ranges = found.filter((range) => !range.code);
     skipped = found.length - ranges.length;
     if (!ranges.length)
-      throw Error("format_match found matches only inside code blocks; code text is unformatted.");
+      throw refused(
+        "code_block",
+        "format_match found matches only inside code blocks; code text is unformatted.",
+        "match_text",
+      );
   }
   const spans = A.spans(doc, path);
   for (const range of ranges) refuseUnreadableText(spans, range.start, "format_match");

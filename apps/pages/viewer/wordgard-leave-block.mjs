@@ -13,8 +13,10 @@ import {
 // code block, moves between table cells, and a dataframe, an unknown block
 // or an image is selected whole. When one of these ends a Page block, ArrowDown on its
 // last line, Mod-Enter, or a click below it adds a real empty paragraph after
-// it and puts the caret there. That's an ordinary edit, so it merges like any
-// Enter, and opening a Page still writes nothing.
+// it and puts the caret there. "Continue writing" below the last Page block
+// adds the same paragraph at the block's end (continueAtEnd). That's an
+// ordinary edit, so it merges like any Enter, and opening a Page still writes
+// nothing.
 
 /** The final top-level node when the caret can't leave it by typing: a code
  * block, table, dataframe or unknown block, or a paragraph that
@@ -37,6 +39,37 @@ const addLine = (end) => ({
   scrollIntoView: true,
   userEvent: "split.textblock",
 });
+
+/** "Continue writing" in this block: the caret in an empty paragraph at its
+ * end. When the last top-level node is already an empty paragraph, or the
+ * block is `blank` (nothing a reader would see), this only moves the caret
+ * there; otherwise it adds one empty paragraph after the last node. False in
+ * a read-only editor. */
+export function continueAtEnd(state, { blank = false } = {}) {
+  if (state.readOnly) return false;
+  const { doc } = state;
+  const last = doc.content.at(-1);
+  if (last?.type === Paragraph.type && (blank || !last.content.length))
+    return {
+      selection: GardSelection.cursor(doc.length - 1),
+      scrollIntoView: true,
+      userEvent: "select",
+    };
+  return addLine(doc.length);
+}
+
+/** Whether the caret sits in an empty paragraph that ends the block, where
+ * continueAtEnd puts it. */
+export function atContinuation(state) {
+  const last = state.doc.content.at(-1);
+  const { selection } = state;
+  return (
+    selection instanceof GardSelection.Text &&
+    selection.empty &&
+    last?.type === Paragraph.type &&
+    selection.head === state.doc.length - 1
+  );
+}
 
 function inFinal(state, final) {
   return !!final && state.selection.from >= final.from;

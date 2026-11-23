@@ -27,6 +27,7 @@
 import { validPageId } from "./registration.mjs";
 import { validSpaceId } from "./spaces.mjs";
 import { enqueueUsage } from "./usage-store.mjs";
+import { EDIT_REFUSAL_REASONS } from "../model/edit-refusals.mjs";
 
 export const USAGE_EVENT = "pages.usage.v1";
 export const USAGE_ACTIONS = Object.freeze([
@@ -270,6 +271,7 @@ export function usageEvent({
   outcome,
   status,
   errorCode,
+  errorReason,
   closeCode,
   closeReason,
   phases,
@@ -302,6 +304,8 @@ export function usageEvent({
     outcome: outcomeOf(outcome),
     status: Number.isSafeInteger(status) ? status : undefined,
     error_code: outcomeOf(errorCode),
+    // A listed reason only (model/edit-refusals.mjs), never a message.
+    error_reason: EDIT_REFUSAL_REASONS.includes(errorReason) ? errorReason : undefined,
     close_code: closeCodeOf(closeCode),
     close_reason: outcomeOf(closeReason),
     phases: phasesOf(phases),
