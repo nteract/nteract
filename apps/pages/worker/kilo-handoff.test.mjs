@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { readServerAppSession, SERVER_SESSION_COOKIE } from "@nteract/session";
-import { ServerSessionGrantRejected } from "@cloud/server-oidc.ts";
+import {
+  readServerAppSession,
+  SERVER_SESSION_COOKIE,
+  ServerSessionGrantRejected,
+} from "@nteract/session";
 import { startLocalKiloHandoff } from "../scripts/fixtures/local-kilo-handoff.mjs";
 import { authenticate } from "./auth.mjs";
 import worker from "./index.mjs";

@@ -66,6 +66,17 @@ export {
   type AppSessionEnvironment,
   type CloudAppSession,
 } from "./app-session.ts";
+export {
+  ServerSessionGrantRejected,
+  checkedProviderGrant,
+  createServerSession,
+  insertServerSession,
+  providerSessionContext,
+  type ProviderSessionEnvironment,
+  type ProviderSessionOptions,
+  type ServerSessionGrant,
+  type ServerSessionProvider,
+} from "./provider-session.ts";
 export type {
   SessionDatabase,
   SessionDatabaseStatement,

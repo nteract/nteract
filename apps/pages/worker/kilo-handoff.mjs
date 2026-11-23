@@ -37,8 +37,14 @@
  * Kilo they can't claim an invitation by email. Company-domain view stays off
  * for Kilo deployments whatever Kilo sends: the Kilo provider reviews no
  * company domains (identity-provider.mjs). */
-import { createServerSession, ServerSessionGrantRejected } from "@cloud/server-oidc.ts";
-import { cookieValue, randomSecret, readServerAppSession, secretHash } from "@nteract/session";
+import {
+  cookieValue,
+  createServerSession,
+  randomSecret,
+  readServerAppSession,
+  secretHash,
+  ServerSessionGrantRejected,
+} from "@nteract/session";
 import { browserSessionOptions } from "./browser-account.mjs";
 import { recordOidcEvent } from "./auth-events.mjs";
 import { migrateSchema } from "./catalog-index.mjs";
