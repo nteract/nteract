@@ -1,0 +1,79 @@
+name: Prepare Artifact Signing
+description: >-
+  Stage the pinned Microsoft Artifact Signing client, its metadata, and a Tauri
+  config whose signCommand runs scripts/ci/windows-sign.ps1. The calling job
+  needs `id-token: write`, AZURE_CLIENT_ID and AZURE_TENANT_ID, and an
+  environment named by the signing app's federated credential.
+
+outputs:
+  tauri-config:
+    description: Path of the Tauri config file to pass to `tauri build --config`.
+    value: ${{ steps.prepare.outputs.tauri-config }}
+
+runs:
+  using: composite
+  steps:
+    - id: prepare
+      shell: pwsh
+      env:
+        # NuGet's published SHA-512 for this exact package version. Change both
+        # together, from the package's catalog entry on api.nuget.org.
+        CLIENT_VERSION: "1.0.128"
+        CLIENT_SHA512: "mPBqaR9Pwvoi8Z3PhVZzPphgf775GjEsRTubB5jMkIja4KyzbjibVSoRtNIyAyR4W4VBwrUQkackwFvF31y/lQ=="
+        SIGNING_ENDPOINT: https://eus.codesigning.azure.net
+        SIGNING_ACCOUNT: NumFOCUS
+        SIGNING_PROFILE: TrustedCertificateProfileForALLNumFOCUS
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        # The signing dlib is x64, even for ARM64 binaries, and SignTool must
+        # match the dlib's architecture, not the application target.
+        $sdkRoot = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots" -Name KitsRoot10).KitsRoot10
+        $signtool = Get-ChildItem -Path "$sdkRoot\bin" -Recurse -Filter "signtool.exe" |
+          Where-Object { $_.FullName -match "\\x64\\" } |
+          Sort-Object { [version]($_.FullName -replace '.*\\(\d+\.\d+\.\d+\.\d+)\\.*','$1') } -Descending |
+          Select-Object -First 1
+        if (-not $signtool) { throw "x64 signtool.exe not found; the Artifact Signing dlib needs the x64 Windows SDK signing tool" }
+        Write-Host "Found signtool: $($signtool.FullName)"
+
+        $root = Join-Path $env:RUNNER_TEMP "artifact-signing"
+        New-Item -ItemType Directory -Force -Path $root | Out-Null
+        # Expand-Archive accepts only a .zip name; a .nupkg is a zip.
+        $package = Join-Path $root "client.zip"
+        Invoke-WebRequest "https://www.nuget.org/api/v2/package/Microsoft.ArtifactSigning.Client/$env:CLIENT_VERSION" -OutFile $package
+        $sha512 = [Security.Cryptography.SHA512]::Create()
+        $hash = [Convert]::ToBase64String($sha512.ComputeHash([IO.File]::ReadAllBytes($package)))
+        if ($hash -ne $env:CLIENT_SHA512) { throw "Artifact Signing client $env:CLIENT_VERSION has SHA-512 $hash, expected $env:CLIENT_SHA512" }
+        $client = Join-Path $root "client"
+        Expand-Archive -Path $package -DestinationPath $client -Force
+        $dlib = Join-Path $client "bin\x64\Azure.CodeSigning.Dlib.dll"
+        if (-not (Test-Path $dlib)) { throw "Signing dlib missing from the client package: $dlib" }
+
+        $metadata = Join-Path $root "metadata.json"
+        @{
+          Endpoint = $env:SIGNING_ENDPOINT
+          CodeSigningAccountName = $env:SIGNING_ACCOUNT
+          CertificateProfileName = $env:SIGNING_PROFILE
+        } | ConvertTo-Json | Set-Content -Path $metadata -Encoding utf8
+
+        # Tauri resolves signCommand without a shell and reuses it from NSIS
+        # for the uninstaller, so the script path is absolute.
+        $script = Join-Path $env:GITHUB_WORKSPACE "scripts\ci\windows-sign.ps1"
+        if (-not (Test-Path $script)) { throw "Sign script missing: $script" }
+        $tauriConfig = Join-Path $root "tauri-release.json"
+        @{
+          build = @{ beforeBuildCommand = "" }
+          bundle = @{
+            windows = @{
+              signCommand = @{
+                cmd = "pwsh"
+                args = @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", $script, "%1")
+              }
+            }
+          }
+        } | ConvertTo-Json -Depth 6 | Set-Content -Path $tauriConfig -Encoding utf8
+
+        "SIGNTOOL_PATH=$($signtool.FullName)" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+        "ARTIFACT_SIGNING_DLIB=$dlib" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+        "ARTIFACT_SIGNING_METADATA=$metadata" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
+        "tauri-config=$tauriConfig" | Out-File -Append -FilePath $env:GITHUB_OUTPUT -Encoding utf8

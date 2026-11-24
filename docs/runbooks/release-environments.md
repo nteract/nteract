@@ -15,66 +15,79 @@ upstream run's branch do hold.
 
 ## Environments
 
+Signing builds and publishing jobs run in separate environments. The build jobs
+run a large third-party dependency tree, so they never see the publishing
+tokens, and the publishing jobs never see the signing keys.
+
 | Environment | Deployment refs | Required reviewers | Used by |
 |---|---|---|---|
-| `release-nightly` | branch `main` | none, so the 09:00 UTC schedule runs unattended | `release-common.yml` signing builds, `prerelease`, `publish-plugin`, `recover-nightly-wheel` when called from `release-nightly.yml` |
-| `release-stable` | branch `main`, tag `v*` | `rgbkrk`, `intentionally-left-nil`; prevent self-review | the same jobs when called from `release-stable.yml` |
+| `release-signing` | branch `main` | none, so the 09:00 UTC schedule runs unattended | `build-notebook-*` jobs in `release-common.yml` when called from `release-nightly.yml` |
+| `release-signing-stable` | branch `main`, tag `v*` | `rgbkrk`, `intentionally-left-nil`; prevent self-review | the same jobs when called from `release-stable.yml` |
+| `release-nightly` | branch `main` | none | `prerelease`, `publish-plugin`, `recover-nightly-wheel` for nightly |
+| `release-stable` | branch `main`, tag `v*` | `rgbkrk`, `intentionally-left-nil`; prevent self-review | `prerelease`, `publish-plugin` for stable |
 | `npm-publish` | branch `main` | none | the `publish-*` jobs in `publish-npm.yml` (npm OIDC only, no secrets) |
 | `sift-preview` | all branches | `rgbkrk`, `intentionally-left-nil` | `sift-preview.yml` deploy |
 
-`release-stable` admits `v*` tags because a stable release promotes a nightly
-tag such as `v2.10.1-nightly.202611161728`. Anyone with push access can create a
-`v*` tag, so this environment needs reviewers. Prevent self-review means a
-stolen token of the person who dispatched the run cannot approve it; the other
-reviewer must. Turn it off only if a second reviewer is not available. A stable
-run asks twice: once when the signing builds start, and again when `prerelease`
-and `publish-plugin` start.
+The stable environments admit `v*` tags because a stable release promotes a
+nightly tag such as `v2.10.1-nightly.202611161728`. Anyone with push access can
+create a `v*` tag, so these environments need reviewers. Prevent self-review
+means a stolen token of the person who dispatched the run cannot approve it; the
+other reviewer must. Turn it off only if a second reviewer is not available. A
+stable run asks twice: once when the signing builds start
+(`release-signing-stable`), and again when `prerelease` and `publish-plugin`
+start (`release-stable`).
 
 `sift-preview` deploys pull request branches, and a pull request branch can
 edit `sift-preview.yml`. The reviewer is the only gate there. Before approving,
 read the run's workflow file at the pull request head.
 
+## Windows signing by OIDC
+
+Windows builds sign through Azure Artifact Signing with no client secret. The
+Entra app `nteract_signing` (owned by NumFOCUS) holds one federated credential
+per signing environment:
+
+| Issuer | Subject |
+|---|---|
+| `https://token.actions.githubusercontent.com` | `repo:nteract/nteract:environment:release-signing` |
+| `https://token.actions.githubusercontent.com` | `repo:nteract/nteract:environment:release-signing-stable` |
+
+Audience `api://AzureADTokenExchange` for both. The first exists; the second
+must be added before a stable release can sign Windows binaries. Until then
+the stable Windows jobs fail at token exchange, and nightly is unaffected.
+
+`.github/actions/prepare-artifact-signing` downloads the pinned
+`Microsoft.ArtifactSigning.Client` package, checks NuGet's SHA-512, and writes a
+Tauri config whose `signCommand` runs `scripts/ci/windows-sign.ps1`. That
+script requests a fresh GitHub OIDC token for each file and hands it to the
+signing dlib through `WorkloadIdentityCredential`.
+
 ## Create the environments
 
 Run these from any checkout with `gh` authenticated as a repository admin.
+Nightly environments allow `main` only:
 
 ```bash
-gh api -X PUT repos/nteract/nteract/environments/release-nightly --input - <<'JSON'
-{"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
-JSON
+for env in release-signing release-nightly npm-publish; do gh api -X PUT "repos/nteract/nteract/environments/$env" -F 'deployment_branch_policy[protected_branches]=false' -F 'deployment_branch_policy[custom_branch_policies]=true' && gh api -X POST "repos/nteract/nteract/environments/$env/deployment-branch-policies" -f name=main -f type=branch; done
 ```
 
-```bash
-gh api -X POST repos/nteract/nteract/environments/release-nightly/deployment-branch-policies -f name=main -f type=branch
-```
+Stable environments allow `main` and `v*` tags, with reviewers:
 
 ```bash
-gh api -X PUT repos/nteract/nteract/environments/release-stable --input - <<'JSON'
+for env in release-signing-stable release-stable; do
+  gh api -X PUT "repos/nteract/nteract/environments/$env" --input - <<'JSON'
 {
   "prevent_self_review": true,
   "reviewers": [{"type": "User", "id": 836375}, {"type": "User", "id": 6687139}],
   "deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}
 }
 JSON
+  gh api -X POST "repos/nteract/nteract/environments/$env/deployment-branch-policies" -f name=main -f type=branch
+  gh api -X POST "repos/nteract/nteract/environments/$env/deployment-branch-policies" -f name='v*' -f type=tag
+done
 ```
 
-```bash
-gh api -X POST repos/nteract/nteract/environments/release-stable/deployment-branch-policies -f name=main -f type=branch
-```
-
-```bash
-gh api -X POST repos/nteract/nteract/environments/release-stable/deployment-branch-policies -f name='v*' -f type=tag
-```
-
-```bash
-gh api -X PUT repos/nteract/nteract/environments/npm-publish --input - <<'JSON'
-{"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
-JSON
-```
-
-```bash
-gh api -X POST repos/nteract/nteract/environments/npm-publish/deployment-branch-policies -f name=main -f type=branch
-```
+`sift-preview` takes the same reviewers, any branch, and self-review allowed:
 
 ```bash
 gh api -X PUT repos/nteract/nteract/environments/sift-preview --input - <<'JSON'
@@ -96,33 +109,29 @@ Check each one in Settings → Environments. In each environment, leave
 GitHub cannot read a secret back, so a secret is never moved: it is set again in
 the environment and then deleted at repository level. Use the rotated values.
 
-Set these in both `release-nightly` and `release-stable`:
+| Secret | Environments | Read by |
+|---|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | `release-signing`, `release-signing-stable` | every `build-notebook-*` job |
+| `NUMFOCUS_APPLE_CERTIFICATE`, `NUMFOCUS_APPLE_CERTIFICATE_PASSWORD`, `NUMFOCUS_APPLE_SIGNING_IDENTITY`, `NUMFOCUS_APPLE_API_ISSUER`, `NUMFOCUS_APPLE_API_KEY`, `NUMFOCUS_APPLE_API_PRIVATE_KEY` | `release-signing`, `release-signing-stable` | `build-notebook-macos-arm64`, `build-notebook-macos-x64` |
+| `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` | `release-signing`, `release-signing-stable` | `build-notebook-windows-x64`, `build-notebook-windows-arm64`. Identifiers, not credentials. |
+| `CLAUDE_PLUGIN_DEPLOY_TOKEN` | `release-nightly`, `release-stable` | `publish-plugin` |
+| `DISCORD_WEBHOOK` | `release-nightly`, `release-stable` | `prerelease` |
+| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | `sift-preview` | `deploy` |
 
-| Secret | Read by |
-|---|---|
-| `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | every `build-notebook-*` job |
-| `NUMFOCUS_APPLE_CERTIFICATE`, `NUMFOCUS_APPLE_CERTIFICATE_PASSWORD`, `NUMFOCUS_APPLE_SIGNING_IDENTITY`, `NUMFOCUS_APPLE_API_ISSUER`, `NUMFOCUS_APPLE_API_KEY`, `NUMFOCUS_APPLE_API_PRIVATE_KEY` | `build-notebook-macos-arm64`, `build-notebook-macos-x64` |
-| `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | `build-notebook-windows-x64`, `build-notebook-windows-arm64` |
-| `CLAUDE_PLUGIN_DEPLOY_TOKEN` | `publish-plugin` |
-| `DISCORD_WEBHOOK` | `prerelease` |
+`AZURE_CLIENT_SECRET` is not set anywhere. NumFOCUS deleted the client secret,
+and Windows signing uses the federated credential instead.
 
-For each name, once per environment:
+`npm-publish` holds no secrets.
+
+For each name, once per environment it belongs in:
 
 ```bash
-gh secret set TAURI_SIGNING_PRIVATE_KEY --env release-nightly -R nteract/nteract
-```
-
-```bash
-gh secret set TAURI_SIGNING_PRIVATE_KEY --env release-stable -R nteract/nteract
+gh secret set TAURI_SIGNING_PRIVATE_KEY --env release-signing -R nteract/nteract
 ```
 
 `gh secret set` reads the value from stdin; pipe it from 1Password with
 `op read` to keep it out of shell history. For multi-line values, such as the
 Tauri key or a base64 certificate, use `< file`.
-
-Set these in `sift-preview`: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`.
-
-`npm-publish` holds no secrets.
 
 Then delete the repository copies:
 

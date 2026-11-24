@@ -56,7 +56,7 @@ Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-rel
 | Updater manifest | `latest.json` |
 
 - **macOS:** Builds are signed and notarized. Standalone `runtimed` assets are published outside the notarized `.app`, so they carry no notarization; an embedding host must sign them under its own identity.
-- **Windows:** Builds use Azure Trusted Signing via `trusted-signing-cli` and `signtool.exe`.
+- **Windows:** Builds use Azure Artifact Signing through `signtool.exe` and Microsoft's signing dlib. `scripts/ci/windows-sign.ps1` signs each file with a GitHub OIDC token exchanged through a federated credential; there is no client secret.
 - **Linux:** Desktop releases publish AppImage only. DEB, RPM, and APT installs are not supported because `runtimed` is a per-user daemon.
 
 Linux users can also install the released AppImage with:

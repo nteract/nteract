@@ -502,7 +502,8 @@ test("all three release consumers apply the shared identity guard before using s
   assert.match(validation, /node --test[^\n]*scripts\/tests\/nightly-wheel-recovery\.test\.mjs/);
 });
 
-const channelEnvironment = "    environment: ${{ inputs.version_suffix == 'stable' && 'release-stable' || 'release-nightly' }}";
+const publishEnvironment = "    environment: ${{ inputs.version_suffix == 'stable' && 'release-stable' || 'release-nightly' }}";
+const signingEnvironment = "    environment: ${{ inputs.version_suffix == 'stable' && 'release-signing-stable' || 'release-signing' }}";
 
 test("every release job that reads a secret or mints an OIDC token runs in the channel environment", () => {
   const gated = [];
@@ -510,10 +511,27 @@ test("every release job that reads a secret or mints an OIDC token runs in the c
     const secrets = [...body.matchAll(/secrets\.([A-Z0-9_]+)/g)].map(match => match[1]).filter(name => name !== "GITHUB_TOKEN");
     if (secrets.length === 0 && !/^      id-token: write$/m.test(body)) continue;
     gated.push(id);
-    const environment = id === "recover-nightly-wheel" ? "    environment: release-nightly" : channelEnvironment;
+    const environment = id === "recover-nightly-wheel"
+      ? "    environment: release-nightly"
+      : id.startsWith("build-notebook-") ? signingEnvironment : publishEnvironment;
     assert.ok(body.split("\n").includes(environment), `${id} must declare its release environment`);
   }
   assert.ok(gated.includes("prerelease") && gated.includes("publish-plugin") && gated.includes("build-notebook-linux"));
+});
+
+test("Windows signing exchanges a GitHub OIDC token, with no client secret", () => {
+  assert.doesNotMatch(release, /AZURE_CLIENT_SECRET|trusted-signing-cli/);
+  for (const id of ["build-notebook-windows-x64", "build-notebook-windows-arm64"]) {
+    const body = jobs.get(id);
+    assert.match(body, /^      id-token: write$/m, `${id} must mint an OIDC token`);
+    assert.match(body, /uses: \.\/\.github\/actions\/prepare-artifact-signing/);
+    assert.match(body, /args: --bundles nsis --config \$\{\{ steps\.signing\.outputs\.tauri-config \}\}/);
+  }
+  const tauri = JSON.parse(readFileSync(new URL("../../crates/notebook/tauri.conf.json", import.meta.url), "utf8"));
+  assert.equal(tauri.bundle.windows.signCommand, undefined, "only release jobs configure Windows signing");
+  const action = readFileSync(new URL("../../.github/actions/prepare-artifact-signing/action.yml", import.meta.url), "utf8");
+  assert.match(action, /CLIENT_SHA512: "[A-Za-z0-9+\/]{86}=="/);
+  assert.match(action, /scripts\\ci\\windows-sign\.ps1/);
 });
 
 test("release callers run only from main, and stable also from v tags", () => {
