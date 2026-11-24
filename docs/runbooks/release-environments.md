@@ -124,9 +124,7 @@ for name in TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD NUMFOCU
 ```
 
 No workflow reads these repository secrets. Delete them, and revoke the
-credentials behind them, since they were in the same dump.
-`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` lose their last reader when
-`sift-preview.yml` is removed; delete them after that removal is on `main`.
+credentials behind them, since they were in the same dump:
 
 ```bash
 for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APT_GPG_KEY_ID APT_GPG_PRIVATE_KEY AZURE_CERT_PROFILE_NAME AZURE_CODE_SIGNING_NAME AZURE_ENDPOINT CF_ACCOUNT_ID CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID R2_AWS_ACCESS_KEY_ID R2_AWS_SECRET_ACCESS_KEY R2_BUCKET_NAME; do gh secret delete "$name" -R nteract/nteract; done
