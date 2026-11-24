@@ -16,22 +16,35 @@ function positiveInteger(value, name) {
 
 const releaseTagRef = /^v\d/;
 
-// The commit named by the `v` tag a release run started from, resolved with
-// tagSha(tag). A run from `main` or from a ref that is not tag-like needs no
-// lookup and gets undefined.
-export async function releaseTagCommit(run, tagSha) {
+// Evidence for a release run that started from a `v` tag: the commit the tag
+// names, and whether `main` contains that commit. Anyone with push access can
+// create a tag on an unreviewed commit, so the tag alone proves nothing. A run
+// from `main` or from a ref that is not tag-like needs no lookup and gets
+// undefined. refs is {tagSha(tag), onMain(sha)}; see refLookupsFrom.
+export async function releaseTagEvidence(run, refs) {
   const ref = String(run.head_branch ?? "");
-  return ref !== "main" && releaseTagRef.test(ref) ? tagSha(ref) : undefined;
+  if (ref === "main" || !releaseTagRef.test(ref)) return undefined;
+  const commit = await refs.tagSha(ref);
+  return {commit, onMain: commit === run.head_sha && await refs.onMain(commit)};
 }
 
-// Resolves a tag to its commit through the repository REST API, peeling
-// annotated tags. getJson fetches a path under /repos/{owner}/{repo}.
-export function tagShaFrom(getJson) {
-  return async tag => {
-    let object = (await getJson(`/git/ref/tags/${encodeURIComponent(tag)}`)).object;
-    for (let depth = 0; object?.type === "tag" && depth < 5; depth++) object = (await getJson(`/git/tags/${object.sha}`)).object;
-    if (object?.type !== "commit") throw new Error("Release tag must resolve to a commit");
-    return object.sha;
+// Ref lookups through the repository REST API. getJson fetches a path under
+// /repos/{owner}/{repo} and throws on a non-2xx response.
+export function refLookupsFrom(getJson) {
+  return {
+    // Resolves a tag to its commit, peeling annotated tags.
+    tagSha: async tag => {
+      let object = (await getJson(`/git/ref/tags/${encodeURIComponent(tag)}`)).object;
+      for (let depth = 0; object?.type === "tag" && depth < 5; depth++) object = (await getJson(`/git/tags/${object.sha}`)).object;
+      if (object?.type !== "commit") throw new Error("Release tag must resolve to a commit");
+      return object.sha;
+    },
+    // Compares main to sha: "behind" or "identical" means main contains sha.
+    onMain: async sha => {
+      if (!/^[a-f0-9]{40}$/.test(String(sha))) throw new Error("Expected a full commit SHA");
+      const {status} = await getJson(`/compare/main...${sha}`);
+      return status === "behind" || status === "identical";
+    },
   };
 }
 
@@ -56,12 +69,15 @@ export function releaseIdentity(run, expected) {
     throw new Error("Expected a Stable Release or Nightly Release workflow run");
   }
   // A release publishes from `main`, or a stable release from a `v` tag. A
-  // branch can borrow a tag-like name, so a tag counts only when the caller
-  // resolved it (releaseTagCommit) to this run's commit.
+  // branch can borrow a tag-like name and a tag can sit on any commit, so a
+  // tag counts only when the caller showed (releaseTagEvidence) that it names
+  // this run's commit and that `main` contains it.
   const fromMain = run.head_branch === "main";
-  const fromReleaseTag = channel === "stable" && releaseTagRef.test(String(run.head_branch ?? "")) && expected.tagCommit === run.head_sha;
+  const tag = expected.tag;
+  const fromReleaseTag = channel === "stable" && releaseTagRef.test(String(run.head_branch ?? "")) &&
+    tag?.commit === run.head_sha && tag?.onMain === true;
   if (!fromMain && !fromReleaseTag) {
-    throw new Error("Upstream release must run from main or a v* release tag at its commit");
+    throw new Error("Upstream release must run from main, or from a v* tag on a commit main contains");
   }
   if (channel === "nightly" && run.display_title !== "Nightly Release") {
     throw new Error("Expected a normal Nightly Release producer, not a repair run");

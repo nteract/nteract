@@ -19,6 +19,7 @@ function server() {
     },
     release: async tag => { calls.push(`tag:${tag}`); return {id: 789, tag_name: tag, draft: false, prerelease: true}; },
     tagSha: async () => identity.sourceSha,
+    onMain: async () => true,
     assets: async () => { calls.push('list'); return assets; },
     assetBytes: async id => { calls.push(`download:${id}`); return bytes.get(id); },
     newerRelease: async () => { calls.push('stale-check'); return false; },
@@ -65,6 +66,21 @@ test('failed upstream, mismatched tag/source, or changed local bytes cannot uplo
   await assert.rejects(publishAssets(candidate, files, api), /does not match/);
   await assert.rejects(publishAssets(candidate, {...files, [names[0]]: Buffer.from('repacked')}, api), /checksum/);
   assert.ok(!calls.some(call => call.startsWith('upload:')));
+});
+test('a stable release from a v tag uploads only when main contains the tagged commit', async () => {
+  const stable = {...candidate, channel: 'stable', version: '0.7.6-stable.202610151200', wasm: {...wasm, channel: 'stable', version: '0.7.6-stable.202610151200'}};
+  const stableNames = assetNames(stable);
+  const stableFiles = {[stableNames[0]]: files[names[0]], [stableNames[1]]: Buffer.from(`${digest(files[names[0]])}  ${stableNames[0]}\n`)};
+  stable.sha256 = Object.fromEntries(Object.entries(stableFiles).map(([name, bytes]) => [name, digest(bytes)]));
+  const {api, calls} = server();
+  const releaseRun = api.releaseRun;
+  api.releaseRun = async (...args) => ({...await releaseRun(...args), path: '.github/workflows/release-stable.yml', event: 'workflow_dispatch', head_branch: 'v9.9.9'});
+  api.release = async tag => ({id: 789, tag_name: tag, draft: false, prerelease: false});
+  api.onMain = async () => false;
+  await assert.rejects(publishAssets(stable, stableFiles, api), /commit main contains/);
+  assert.ok(!calls.some(call => call.startsWith('upload:')));
+  api.onMain = async () => true;
+  assert.equal(await publishAssets(stable, stableFiles, api), 'published');
 });
 test('wheel-only recovery is not an editor release producer', async () => {
   const {api, calls} = server();

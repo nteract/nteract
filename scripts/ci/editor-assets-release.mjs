@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {releaseIdentity, releaseTagCommit} from './npm-release.mjs';
+import {releaseIdentity, releaseTagEvidence} from './npm-release.mjs';
 export const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 export const positive = value => {
   if (!/^[1-9]\d*$/.test(String(value))) throw new Error('Expected a positive run or artifact ID');
@@ -46,8 +46,8 @@ export function validateCandidate(candidate, files) {
 export async function publishAssets(candidate, files, api) {
   validateCandidate(candidate, files);
   const run = await api.releaseRun(candidate.runId, candidate.runAttempt);
-  const tagCommit = await releaseTagCommit(run, api.tagSha);
-  const identity = releaseIdentity(run, {runId: candidate.runId, runAttempt: candidate.runAttempt, repository: api.repository, sourceSha: candidate.sourceSha, tagCommit});
+  const tag = await releaseTagEvidence(run, api);
+  const identity = releaseIdentity(run, {runId: candidate.runId, runAttempt: candidate.runAttempt, repository: api.repository, sourceSha: candidate.sourceSha, tag});
   validateWasm(candidate.wasm, identity);
   if (candidate.version !== candidate.wasm.version || candidate.channel !== identity.channel) throw new Error('Editor candidate release mismatch');
   const release = await api.release(`v${candidate.version}`);

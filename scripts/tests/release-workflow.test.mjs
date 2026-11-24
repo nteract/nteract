@@ -6,6 +6,7 @@ import {join} from "node:path";
 import {test} from "node:test";
 import {fileURLToPath} from "node:url";
 import {runInNewContext} from "node:vm";
+import {parse as parseYaml} from "yaml";
 
 function workflow(name) {
   return readFileSync(new URL(`../../.github/workflows/${name}.yml`, import.meta.url), "utf8");
@@ -496,27 +497,37 @@ test("all three release consumers apply the shared identity guard before using s
     const source = readFileSync(new URL(`../ci/${name}`, import.meta.url), "utf8");
     assert.match(source, /import[^;]*releaseIdentity[^;]*from ["']\.\/npm-release\.mjs["']/);
     assert.match(source, /releaseIdentity\(/);
+    // A tag-started stable release counts only with evidence that main contains its commit.
+    assert.match(source, /releaseTagEvidence\([^)]*refLookupsFrom\(/);
+    assert.match(source, /\btag(?:: | = )await releaseTagEvidence\(/);
   }
   assert.match(validation, /scripts\/ci\/nightly-wheel-recovery\.mjs/);
   assert.match(validation, /scripts\/tests\/nightly-wheel-recovery\.test\.mjs/);
   assert.match(validation, /node --test[^\n]*scripts\/tests\/nightly-wheel-recovery\.test\.mjs/);
 });
 
-const publishEnvironment = "    environment: ${{ inputs.version_suffix == 'stable' && 'release-stable' || 'release-nightly' }}";
-const signingEnvironment = "    environment: ${{ inputs.version_suffix == 'stable' && 'release-signing-stable' || 'release-signing' }}";
+const parsedWorkflow = name => parseYaml(workflow(name));
+const parsedRelease = parsedWorkflow("release-common");
+const oneLine = value => String(value ?? "").replace(/\s+/g, " ").trim();
+const publishEnvironment = "${{ inputs.version_suffix == 'stable' && 'release-stable' || 'release-nightly' }}";
+const signingEnvironment = "${{ inputs.version_suffix == 'stable' && 'release-signing-stable' || 'release-signing' }}";
 
-test("every release job that reads a secret or mints an OIDC token runs in the channel environment", () => {
+test("every release job that reads a secret or mints an OIDC token runs in its environment", () => {
   const gated = [];
-  for (const [id, body] of jobs) {
-    const secrets = [...body.matchAll(/secrets\.([A-Z0-9_]+)/g)].map(match => match[1]).filter(name => name !== "GITHUB_TOKEN");
-    if (secrets.length === 0 && !/^      id-token: write$/m.test(body)) continue;
+  for (const [id, job] of Object.entries(parsedRelease.jobs)) {
+    const secrets = [...JSON.stringify(job).matchAll(/secrets\.([A-Z0-9_]+)/g)].map(match => match[1]).filter(name => name !== "GITHUB_TOKEN");
+    if (secrets.length === 0 && job.permissions?.["id-token"] !== "write") continue;
     gated.push(id);
     const environment = id === "recover-nightly-wheel"
-      ? "    environment: release-nightly"
+      ? "release-nightly"
       : id.startsWith("build-notebook-") ? signingEnvironment : publishEnvironment;
-    assert.ok(body.split("\n").includes(environment), `${id} must declare its release environment`);
+    assert.equal(job.environment, environment, `${id} must run in its release environment`);
   }
-  assert.ok(gated.includes("prerelease") && gated.includes("publish-plugin") && gated.includes("build-notebook-linux"));
+  assert.deepEqual(gated.sort(), [
+    "build-notebook-linux", "build-notebook-macos-arm64", "build-notebook-macos-x64",
+    "build-notebook-windows-arm64", "build-notebook-windows-x64",
+    "prerelease", "publish-plugin", "recover-nightly-wheel",
+  ]);
 });
 
 test("Windows signing exchanges a GitHub OIDC token, with no client secret", () => {
@@ -535,31 +546,78 @@ test("Windows signing exchanges a GitHub OIDC token, with no client secret", () 
 });
 
 test("release callers run only from main, and stable also from v tags", () => {
-  assert.match(workflow("release-nightly"), /^    if: github\.repository == 'nteract\/nteract' && github\.ref == 'refs\/heads\/main'$/m);
-  const stable = workflow("release-stable");
-  assert.match(stable, /github\.ref == 'refs\/heads\/main' \|\| startsWith\(github\.ref, 'refs\/tags\/v'\)/);
-  assert.match(stable, /^      - "v\*"$/m);
+  const nightly = parsedWorkflow("release-nightly");
+  assert.deepEqual(Object.keys(nightly.on).sort(), ["schedule", "workflow_dispatch"]);
+  assert.equal(oneLine(nightly.jobs.release.if), "github.repository == 'nteract/nteract' && github.ref == 'refs/heads/main'");
+  const stable = parsedWorkflow("release-stable");
+  assert.deepEqual(stable.on.push, {tags: ["v*"]});
+  assert.equal(oneLine(stable.jobs.release.if), "github.repository == 'nteract/nteract' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))");
+  for (const caller of [nightly, stable]) {
+    assert.deepEqual(Object.keys(caller.jobs), ["release"], "the guarded job is the whole pipeline");
+    assert.equal(caller.jobs.release.uses, "./.github/workflows/release-common.yml");
+  }
 });
 
-test("release-common run scripts never splice caller inputs", () => {
-  for (const [id, body] of jobs) {
-    for (const block of body.split(/^      - /m)) {
-      const run = /^        run: \|?\n?([\s\S]*)/m.exec(block)?.[1] ?? "";
-      assert.doesNotMatch(run, /\$\{\{\s*inputs\./, `${id} interpolates an input into a run script`);
+// A job-level `if:` that is false skips the job before any step, checkout
+// included. A job that needs a skipped job is skipped too, unless its own
+// condition asks for always(), failure() or !cancelled().
+function assertGuardedBefore(name, guards) {
+  const {jobs: workflowJobs} = parsedWorkflow(name);
+  for (const [id, guard] of Object.entries(guards)) {
+    assert.equal(oneLine(workflowJobs[id].if), guard, `${name} ${id} guard`);
+    assert.equal(workflowJobs[id].needs, undefined, `${name} ${id} must be a root job`);
+  }
+  const needs = id => [workflowJobs[id].needs ?? []].flat();
+  const guarded = id => id in guards || (needs(id).length > 0 && needs(id).some(guarded));
+  for (const [id, job] of Object.entries(workflowJobs)) {
+    assert.ok(guarded(id), `${name} ${id} must wait on a guarded job`);
+    assert.doesNotMatch(String(job.if ?? ""), /always\(\)|failure\(\)|cancelled\(\)/, `${name} ${id} must not run past a skipped guard`);
+  }
+}
+
+const upstreamGuard = "github.repository == 'nteract/nteract' && github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && (github.event.workflow_run.head_branch == 'main' || startsWith(github.event.workflow_run.head_branch, 'v'))))";
+
+test("workflow_run publishers and builders skip refs other than main and upstream releases from other branches", () => {
+  assertGuardedBefore("publish-npm", {
+    "resolve-wasm": `${upstreamGuard} && inputs.packages != 'sift'`,
+    "resolve-release": upstreamGuard,
+  });
+  assertGuardedBefore("build-wasm-npm", {resolve: upstreamGuard});
+  assertGuardedBefore("build-editor-assets", {resolve: upstreamGuard});
+  assertGuardedBefore("publish-editor-assets", {
+    publish: "github.repository == 'nteract/nteract' && github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'))",
+  });
+});
+
+test("npm OIDC publishers run in npm-publish", () => {
+  const publishers = Object.entries(parsedWorkflow("publish-npm").jobs).filter(([, job]) => job.permissions?.["id-token"] === "write");
+  assert.deepEqual(publishers.map(([id]) => id).sort(), ["publish-native", "publish-pi", "publish-sift", "publish-sift-csv", "publish-wasm", "publish-wrapper"]);
+  for (const [id, job] of publishers) assert.equal(job.environment, "npm-publish", `${id} must run in npm-publish`);
+});
+
+test("Sift preview deploys only in its reviewed environment, from a sanitized branch name", () => {
+  const {deploy} = parsedWorkflow("sift-preview").jobs;
+  assert.equal(deploy.environment, "sift-preview");
+  const step = deploy.steps.find(item => item.id === "deploy");
+  assert.match(step.with.command, /--branch=\$\{\{ steps\.branch\.outputs\.name \}\}$/);
+  assert.match(deploy.steps.find(item => item.id === "branch").run, /tr -c 'A-Za-z0-9-' '-'/);
+});
+
+test("no workflow or composite action splices inputs or event fields into a run script", () => {
+  const directory = new URL("../../.github/", import.meta.url);
+  const files = [
+    ...readdirSync(new URL("workflows/", directory)).filter(file => file.endsWith(".yml")).map(file => new URL(`workflows/${file}`, directory)),
+    ...readdirSync(new URL("actions/", directory)).map(dir => new URL(`actions/${dir}/action.yml`, directory)),
+  ];
+  for (const file of files) {
+    const parsed = parseYaml(readFileSync(file, "utf8"));
+    const steps = [
+      ...Object.values(parsed.jobs ?? {}).flatMap(job => job.steps ?? []),
+      ...(parsed.runs?.steps ?? []),
+    ];
+    for (const step of steps) {
+      assert.doesNotMatch(String(step.run ?? ""), /\$\{\{[^}]*\b(inputs\.|github\.event\.|github\.head_ref)/, `${file.pathname} step ${step.name ?? step.id ?? "?"}`);
     }
-  }
-});
-
-test("npm OIDC publishers run in npm-publish and resolve only from main", () => {
-  const npm = workflow("publish-npm");
-  const npmJobs = workflowJobs(npm);
-  for (const [id, body] of npmJobs) {
-    if (!/^      id-token: write$/m.test(body)) continue;
-    assert.match(body, /^    environment: npm-publish$/m, `${id} must run in npm-publish`);
-  }
-  for (const id of ["resolve-wasm", "resolve-release"]) {
-    assert.match(npmJobs.get(id), /github\.ref == 'refs\/heads\/main'/);
-    assert.match(npmJobs.get(id), /github\.event\.workflow_run\.head_branch == 'main'/);
   }
 });
 

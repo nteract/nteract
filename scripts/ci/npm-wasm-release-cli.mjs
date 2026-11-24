@@ -6,7 +6,7 @@ import {appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileS
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {setTimeout as sleep} from "node:timers/promises";
-import {releaseIdentity, releaseTagCommit, tagShaFrom} from "./npm-release.mjs";
+import {refLookupsFrom, releaseIdentity, releaseTagEvidence} from "./npm-release.mjs";
 import {positive, successfulJobAtAttempt, validateWasm} from "./editor-assets-release.mjs";
 import {candidateName, digest, packJobStatusAtAttempt, publishWasmPackage, resolveCandidate, resolveWasmPlan, seal, tarballName, validatePacked, waitForWasmPublication, wasmVerificationRecovery} from "./npm-wasm-release.mjs";
 
@@ -87,8 +87,8 @@ if (command === "seal") {
   const runId = positive(automatic ? event.workflow_run.id : env.RELEASE_RUN_ID);
   const runAttempt = positive(automatic ? event.workflow_run.run_attempt : env.RELEASE_RUN_ATTEMPT);
   const upstreamRun = await run(runId, runAttempt);
-  const tagCommit = await releaseTagCommit(upstreamRun, tagShaFrom(json));
-  const identity = releaseIdentity(upstreamRun, {repository, runId, runAttempt, sourceSha: automatic ? event.workflow_run.head_sha : undefined, tagCommit});
+  const tag = await releaseTagEvidence(upstreamRun, refLookupsFrom(json));
+  const identity = releaseIdentity(upstreamRun, {repository, runId, runAttempt, sourceSha: automatic ? event.workflow_run.head_sha : undefined, tag});
   // Historical releases without this new source package stay eligible for all
   // existing publishers; the additive WASM producer/publisher skips them.
   const sourceResponse = await fetch(`${apiBase}/contents/packages/runtimed-wasm/package.json?ref=${identity.sourceSha}`, {signal: AbortSignal.timeout(30_000), headers: {Authorization: `Bearer ${env.GH_TOKEN}`, Accept: "application/vnd.github+json"}});
