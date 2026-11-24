@@ -28,7 +28,7 @@ Usage:
 Options:
   --tag <tag>          Download artifacts from a GitHub release tag.
                        Defaults to GitHub's latest non-prerelease release.
-  --from-dir <dir>     Install artifacts from a local directory instead of GitHub.
+  --from-dir <dir>     Install artifacts from a trusted local directory.
   --repo <owner/repo>  GitHub repository (default: nteract/nteract).
   --channel <name>     stable or nightly (default: stable). Nightly requires --tag.
   --prefix <dir>       Install root (default: $XDG_DATA_HOME/nteract/<channel>,
@@ -262,6 +262,20 @@ download_url() {
   fi
 }
 
+if [[ -z "$FROM_DIR" ]]; then
+  for file in SHA256SUMS SHA256SUMS.minisig; do
+    download_url "$(base_url)/$file" "$TMP_DIR/$file"
+  done
+  # The updater public key in crates/notebook/tauri.conf.json.
+  minisign -Vm "$TMP_DIR/SHA256SUMS" -P 'RWQ8MUSfTZ0g5J1X+iGMaR2GTZgLOuDUnTSGHNW5B/wktOQYuOwbH4RP'
+  IFS= read -r release < "$TMP_DIR/SHA256SUMS"
+  if [[ "$release" != "# v"*"-${CHANNEL}."* || ( -n "$TAG" && "$release" != "# $TAG" ) ]]; then
+    echo "Checksum manifest does not match the requested release." >&2
+    exit 1
+  fi
+  TAG="${release#\# }"
+fi
+
 fetch_asset() {
   local asset="$1"
   local dest="$2"
@@ -274,10 +288,15 @@ fetch_asset() {
     echo "Using $src"
     cp "$src" "$dest"
   else
-    local url
+    local url digest
     url="$(base_url)/$asset"
     echo "Downloading $url"
     download_url "$url" "$dest"
+    digest=$(sha256sum < "$dest" 2>/dev/null || shasum -a 256 < "$dest")
+    if ! grep -Fxq "${digest%% *}  $asset" "$TMP_DIR/SHA256SUMS"; then
+      echo "SHA-256 verification failed for $asset." >&2
+      exit 1
+    fi
   fi
   chmod 0755 "$dest"
 }

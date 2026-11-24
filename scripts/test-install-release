@@ -114,7 +114,7 @@ make_fetch_tool_path_without_curl() {
   mkdir -p "$dir"
 
   local tool
-  for tool in bash basename chmod cp dirname env ln mkdir mktemp mv readlink rm; do
+  for tool in bash basename chmod cp dirname env grep ln minisign mkdir mktemp mv readlink rm shasum; do
     ln -s "$(command -v "$tool")" "$dir/$tool"
   done
 
@@ -193,8 +193,20 @@ WGET_LOG="$WORK/wget-calls.log"
 WGET_DOWNLOAD_LOG="$WORK/wget-downloads.log"
 make_linux_fixtures "$WORK/wget-assets" "$WGET_LOG"
 make_fetch_tool_path_without_curl "$WORK/no-curl-tools" "$WORK/wget-assets" "$WGET_DOWNLOAD_LOG"
-PATH="$WORK/shim-linux:$WORK/no-curl-tools" run_installer "$WGET_HOME" \
-  --tag v9.9.9-stable.202601010101 --no-start > "$WORK/wget-out.log"
+WGET_TAG=v9.9.9-stable.202601010101
+minisign -GW -s "$WORK/key" -p "$WORK/key.pub" >/dev/null
+sed "s|RWQ8MUSfTZ0g5J1X+iGMaR2GTZgLOuDUnTSGHNW5B/wktOQYuOwbH4RP|$(tail -n 1 "$WORK/key.pub")|" \
+  "$INSTALLER" > "$WORK/wget-installer"
+(
+  cd "$WORK/wget-assets"
+  { echo "# $WGET_TAG"; shasum -a 256 -- *linux-x64*; } > SHA256SUMS
+  minisign -Sm SHA256SUMS -s "$WORK/key"
+)
+run_wget_installer() {
+  INSTALLER_UNDER_TEST="$WORK/wget-installer" PATH="$WORK/shim-linux:$WORK/no-curl-tools" \
+    run_installer "$1" --tag "$WGET_TAG" --no-start
+}
+run_wget_installer "$WGET_HOME" > "$WORK/wget-out.log"
 WGET_PREFIX="$WGET_HOME/.local/share/nteract/stable"
 assert_file "$WGET_PREFIX/nteract.AppImage"
 assert_link "$WGET_HOME/.local/bin/runt" "$WGET_PREFIX/bin/runt"
@@ -204,6 +216,22 @@ grep -q "wget runtimed-linux-x64" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: r
 grep -q "wget nteract-mcp-linux-x64" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: mcp asset was not downloaded with wget"
 grep -q "wget nteract-stable-linux-x64.AppImage" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: appimage asset was not downloaded with wget"
 grep -q "runt daemon doctor --fix --no-start" "$WGET_LOG" || fail "wget fallback: daemon doctor --fix --no-start not invoked"
+
+note "reject altered downloads and missing signatures before installation"
+rm "$WGET_LOG"
+for asset in nteract-mcp-linux-x64 SHA256SUMS SHA256SUMS.minisig; do
+  source_asset="$WORK/wget-assets/$asset"
+  mv "$source_asset" "$WORK/original"
+  if [[ "$asset" != SHA256SUMS.minisig ]]; then
+    { cat "$WORK/original"; echo '# tampered'; } > "$source_asset"
+  fi
+  if run_wget_installer "$WORK/rejected" > "$WORK/rejected.log" 2>&1; then
+    fail "accepted altered or missing $asset"
+  fi
+  [[ -z "$(find "$WORK/rejected" ! -type d -print)" ]] || fail "installed files after rejecting $asset"
+  assert_missing "$WGET_LOG"
+  mv "$WORK/original" "$source_asset"
+done
 
 note "linux nightly desktop install"
 NIGHTLY_HOME="$WORK/nightly-home"

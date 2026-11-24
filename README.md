@@ -73,6 +73,8 @@ separate [local setup](apps/pages/README.md#run-locally).
 
 Download the latest release from [GitHub Releases](https://github.com/nteract/nteract/releases).
 
+The shell installer requires `minisign` to verify release downloads.
+
 On Linux (x64 or ARM64) and macOS (Apple silicon or Intel), this command installs the
 AppImage or signed .app bundle, CLI/daemon, and per-user service
 (systemd or launchd):

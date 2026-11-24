@@ -2154,6 +2154,22 @@ jobs:
           cp "notebook-linux-x64/nteract-${CHANNEL}-linux-x64.AppImage.sig" release-assets/ 2>/dev/null || true
           cp "notebook-linux-arm64/nteract-${CHANNEL}-linux-arm64.AppImage.sig" release-assets/ 2>/dev/null || true
 
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+
+      - name: Sign shell installer checksums with the updater key
+        working-directory: release-assets
+        env:
+          TAG_NAME: v${{ needs.compute-version.outputs.version }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          echo "# $TAG_NAME" > SHA256SUMS
+          sha256sum -- install-linux-release *-linux-{x64,arm64} *.AppImage *.app.tar.gz >> SHA256SUMS
+          printf '%s\n' "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" | minisign -Sm SHA256SUMS \
+            -s <(printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" | base64 -d) \
+            -p <(jq -r .plugins.updater.pubkey ../crates/notebook/tauri.conf.json | base64 -d)
+
       - name: Generate updater manifest (latest.json)
         env:
           VERSION: ${{ needs.compute-version.outputs.version }}
@@ -2272,7 +2288,6 @@ jobs:
           VERSION_SUFFIX: ${{ inputs.version_suffix }}
           COMMIT_SHA: ${{ needs.compute-version.outputs.source_sha }}
           RELEASE_INTRO: ${{ inputs.release_intro }}
-          RELEASE_REPO: ${{ github.repository }}
           BASE_VERSION: ${{ needs.compute-version.outputs.base_version }}
           TAG_NAME: v${{ needs.compute-version.outputs.version }}
         run: |
@@ -2284,7 +2299,6 @@ jobs:
             DAEMON_NAME="runtimed-nightly"
             MCP_NAME="nteract-mcp-nightly"
           fi
-          INSTALLER_URL="https://github.com/${RELEASE_REPO}/releases/download/${TAG_NAME}/install-linux-release"
           CANONICAL_CLI_NAME="nteract-cli"
           if [ "$VERSION_SUFFIX" = "nightly" ]; then
             CANONICAL_CLI_NAME="nteract-cli-nightly"
@@ -2335,13 +2349,13 @@ jobs:
             echo 'Pinned to this release:'
             echo ''
             echo '```bash'
-            echo "curl -fsSL ${INSTALLER_URL} | bash"
+            echo "curl -fsSL https://sh.nteract.io | bash -s -- --channel ${VERSION_SUFFIX} --tag ${TAG_NAME}"
             echo '```'
             echo ''
             echo 'CLI-only install for notebooks, MCP, and workstations (no local daemon service is started):'
             echo ''
             echo '```bash'
-            echo "curl -fsSL ${INSTALLER_URL} | bash -s -- --cli"
+            echo "curl -fsSL https://sh.nteract.io | bash -s -- --channel ${VERSION_SUFFIX} --tag ${TAG_NAME} --cli"
             echo 'nteract --help'
             echo 'nteract mcp'
             echo '```'
@@ -2438,6 +2452,8 @@ jobs:
             ./release-assets/runtimed*.THIRD_PARTY_NOTICES.txt
             ./release-assets/runtimed*.sbom.cdx.json
             ./release-assets/install-linux-release
+            ./release-assets/SHA256SUMS
+            ./release-assets/SHA256SUMS.minisig
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-x64.AppImage.sig
             ./release-assets/nteract-${{ inputs.version_suffix }}-linux-arm64.AppImage
