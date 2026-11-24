@@ -26,7 +26,7 @@ tokens, and the publishing jobs never see the signing keys.
 | `release-nightly` | branch `main` | none | `prerelease`, `publish-plugin`, `recover-nightly-wheel` for nightly |
 | `release-stable` | branch `main`, tag `v*` | `rgbkrk`, `intentionally-left-nil`; prevent self-review | `prerelease`, `publish-plugin` for stable |
 | `npm-publish` | branch `main` | none | the `publish-*` jobs in `publish-npm.yml` (npm OIDC only, no secrets) |
-| `sift-preview` | all branches | `rgbkrk`, `intentionally-left-nil` | `sift-preview.yml` deploy |
+| `sift-preview` | all branches | `rgbkrk`, `intentionally-left-nil`; prevent self-review | `sift-preview.yml` deploy |
 
 The stable environments admit `v*` tags because a stable release promotes a
 nightly tag such as `v2.10.1-nightly.202611161728`. Anyone with push access can
@@ -38,8 +38,9 @@ stable run asks twice: once when the signing builds start
 start (`release-stable`).
 
 `sift-preview` deploys pull request branches, and a pull request branch can
-edit `sift-preview.yml`. The reviewer is the only gate there. Before approving,
-read the run's workflow file at the pull request head.
+edit `sift-preview.yml`. The reviewer is the only gate there, so the person who
+pushed cannot approve their own deploy. Before approving, read the run's
+workflow file at the pull request head.
 
 ## Windows signing by OIDC
 
@@ -52,9 +53,11 @@ per signing environment:
 | `https://token.actions.githubusercontent.com` | `repo:nteract/nteract:environment:release-signing` |
 | `https://token.actions.githubusercontent.com` | `repo:nteract/nteract:environment:release-signing-stable` |
 
-Audience `api://AzureADTokenExchange` for both. The first exists; the second
-must be added before a stable release can sign Windows binaries. Until then
-the stable Windows jobs fail at token exchange, and nightly is unaffected.
+Audience `api://AzureADTokenExchange`, entity type Environment, org `nteract`,
+repo `nteract`, for both. Both are required: nightly Windows signing uses the
+first and stable uses the second. A missing credential fails that channel's
+Windows jobs at token exchange. Confirm both exist before merging the change
+that switches signing to OIDC.
 
 `.github/actions/prepare-artifact-signing` downloads the pinned
 `Microsoft.ArtifactSigning.Client` package, checks NuGet's SHA-512, and writes a
@@ -87,12 +90,12 @@ JSON
 done
 ```
 
-`sift-preview` takes the same reviewers, any branch, and self-review allowed:
+`sift-preview` takes the same reviewers on any branch:
 
 ```bash
 gh api -X PUT repos/nteract/nteract/environments/sift-preview --input - <<'JSON'
 {
-  "prevent_self_review": false,
+  "prevent_self_review": true,
   "reviewers": [{"type": "User", "id": 836375}, {"type": "User", "id": 6687139}],
   "deployment_branch_policy": null
 }
@@ -220,21 +223,63 @@ can still merge a change outside these paths, and the next nightly builds it
 with signing keys. A required review on every pull request closes that; it is
 a team call, not part of this change.
 
-Release tags cannot move or be deleted. Workflows create `v*` tags with
-`GITHUB_TOKEN`, so creation stays open:
+Release tags: only repository admins and GitHub Actions create, move or delete
+`v*` tags. `compute-version` reserves each release tag with `GITHUB_TOKEN`, so
+GitHub Actions must stay on the bypass list (actor 15368 is the GitHub Actions
+app; role 5 is the repository admin role):
 
 ```bash
 gh api -X POST repos/nteract/nteract/rulesets --input - <<'JSON'
 {
-  "name": "release tags: no move or delete",
+  "name": "release tags: admins and Actions only",
   "target": "tag",
   "enforcement": "active",
   "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
-  "bypass_actors": [],
-  "rules": [{"type": "update"}, {"type": "deletion"}]
+  "bypass_actors": [
+    {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"},
+    {"actor_id": 15368, "actor_type": "Integration", "bypass_mode": "always"}
+  ],
+  "rules": [{"type": "creation"}, {"type": "update"}, {"type": "deletion"}]
 }
 JSON
 ```
+
+After applying it, confirm the next nightly's "Reserve release tag" step still
+pushes its tag. A maintain token can no longer push a `v*` tag directly.
+
+The Actions bypass applies to any workflow run, including one dispatched on a
+branch, so a pusher can still get a `v*` tag created on an unreviewed commit.
+Two checks cover that: `release-signing-stable` and `release-stable` require a
+reviewer, and the npm, WASM and editor-asset publishers accept a tag-started
+stable release only when `main` contains its commit
+(`releaseTagEvidence` in `scripts/ci/npm-release.mjs`).
+
+## Settings checklist
+
+The environment rules are the only gate on a dispatched run, because a branch
+controls its own workflow file. None of the workflow changes protect anything
+until these settings exist.
+
+- [ ] `release-signing`, `release-nightly`, `npm-publish`: deployment branch
+  `main` only, no tags, no reviewers.
+- [ ] `release-signing-stable`, `release-stable`: deployment branch `main` and
+  tag `v*`, required reviewers `rgbkrk` and `intentionally-left-nil`, prevent
+  self-review on.
+- [ ] `sift-preview`: all branches, the same reviewers, prevent self-review on.
+- [ ] Admin bypass off in every one of those environments.
+- [ ] Both federated credentials exist on `nteract_signing`:
+  `release-signing` and `release-signing-stable`.
+- [ ] Every moved secret is set in its environments and deleted at repository
+  level, `AZURE_CLIENT_SECRET` included. The 15 unused repository secrets are
+  deleted.
+- [ ] The organization secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is deleted.
+  `secrets: inherit` passes organization secrets to every release job, and any
+  workflow can read them directly.
+- [ ] npm trusted publishers for all ten packages name environment
+  `npm-publish`. PyPI `runtimed` publishers name `release-nightly`
+  (`release-nightly.yml`) and `release-stable` (`release-stable.yml`).
+- [ ] Code owner review ruleset and release tag ruleset applied.
+- [ ] Actions settings below.
 
 ## Actions settings
 
