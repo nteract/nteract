@@ -24,7 +24,7 @@ globalThis.fetch = async input => {
       const fresh = attempt === 2 && process.env.SCENARIO === 'rerun-all';
       value = {jobs: [{id: attempt === 1 ? 131514752546 : 131559168413, run_id: 123, run_attempt: attempt, name: 'release / Build WASM artifacts', status: 'completed', conclusion: 'success', started_at: fresh ? '2026-11-12T23:08:10Z' : '2026-11-12T21:45:10Z', completed_at: fresh ? '2026-11-12T23:12:50Z' : '2026-11-12T21:48:50Z'}]};
     } else {
-      value = {id: 123, run_attempt: attempt, run_started_at: process.env.SCENARIO === 'missing-time' ? null : start, created_at: '2026-11-12T21:45:04Z', repository: {full_name: 'nteract/nteract'}, head_repository: {full_name: 'nteract/nteract'}, head_sha: sha, path: '.github/workflows/release-nightly.yml', display_title: 'Nightly Release', event: 'schedule', status: 'completed', conclusion: 'success'};
+      value = {id: 123, run_attempt: attempt, run_started_at: process.env.SCENARIO === 'missing-time' ? null : start, created_at: '2026-11-12T21:45:04Z', repository: {full_name: 'nteract/nteract'}, head_repository: {full_name: 'nteract/nteract'}, head_sha: sha, head_branch: 'main', path: '.github/workflows/release-nightly.yml', display_title: 'Nightly Release', event: 'schedule', status: 'completed', conclusion: 'success'};
     }
   } else if (path.startsWith('/actions/workflows/')) {
     value = {workflow_runs: []};

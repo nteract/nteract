@@ -212,7 +212,7 @@ test("a Sift-only run skips the WASM and Node SDK chains but not Sift", () => {
   const resolve = jobs.get("resolve-release");
   assert.match(resolve, /NPM_PACKAGES: \$\{\{ inputs\.packages \}\}/);
   assert.match(resolve, /packages: \$\{\{ steps\.identity\.outputs\.packages \}\}/);
-  assert.match(jobs.get("resolve-wasm"), /^    if: .* && inputs\.packages != 'sift'$/m);
+  assert.match(jobs.get("resolve-wasm"), /^    if: >-\n(?:      .*\n)*      inputs\.packages != 'sift'$/m);
   assert.match(jobs.get("pack-native"), /^    if: needs\.resolve-release\.outputs\.packages == 'all'$/m);
   // Everything else in the Node SDK chain waits on pack-native.
   assert.match(jobs.get("publish-native"), /^    needs: \[resolve-release, pack-native\]$/m);

@@ -6,6 +6,7 @@ import {join} from "node:path";
 import {test} from "node:test";
 import {fileURLToPath} from "node:url";
 import {runInNewContext} from "node:vm";
+import {parse as parseYaml} from "yaml";
 
 function workflow(name) {
   return readFileSync(new URL(`../../.github/workflows/${name}.yml`, import.meta.url), "utf8");
@@ -496,15 +497,126 @@ test("all three release consumers apply the shared identity guard before using s
     const source = readFileSync(new URL(`../ci/${name}`, import.meta.url), "utf8");
     assert.match(source, /import[^;]*releaseIdentity[^;]*from ["']\.\/npm-release\.mjs["']/);
     assert.match(source, /releaseIdentity\(/);
+    // A tag-started stable release counts only with evidence that main contains its commit.
+    assert.match(source, /releaseTagEvidence\([^)]*refLookupsFrom\(/);
+    assert.match(source, /\btag(?:: | = )await releaseTagEvidence\(/);
   }
   assert.match(validation, /scripts\/ci\/nightly-wheel-recovery\.mjs/);
   assert.match(validation, /scripts\/tests\/nightly-wheel-recovery\.test\.mjs/);
   assert.match(validation, /node --test[^\n]*scripts\/tests\/nightly-wheel-recovery\.test\.mjs/);
 });
 
+const parsedWorkflow = name => parseYaml(workflow(name));
+const parsedRelease = parsedWorkflow("release-common");
+const oneLine = value => String(value ?? "").replace(/\s+/g, " ").trim();
+const publishEnvironment = "${{ inputs.version_suffix == 'stable' && 'release-stable' || 'release-nightly' }}";
+const signingEnvironment = "${{ inputs.version_suffix == 'stable' && 'release-signing-stable' || 'release-signing' }}";
+
+test("every release job that reads a secret or mints an OIDC token runs in its environment", () => {
+  const gated = [];
+  for (const [id, job] of Object.entries(parsedRelease.jobs)) {
+    const secrets = [...JSON.stringify(job).matchAll(/secrets\.([A-Z0-9_]+)/g)].map(match => match[1]).filter(name => name !== "GITHUB_TOKEN");
+    if (secrets.length === 0 && job.permissions?.["id-token"] !== "write") continue;
+    gated.push(id);
+    const environment = id === "recover-nightly-wheel"
+      ? "release-nightly"
+      : id.startsWith("build-notebook-") ? signingEnvironment : publishEnvironment;
+    assert.equal(job.environment, environment, `${id} must run in its release environment`);
+  }
+  assert.deepEqual(gated.sort(), [
+    "build-notebook-linux", "build-notebook-macos-arm64", "build-notebook-macos-x64",
+    "build-notebook-windows-arm64", "build-notebook-windows-x64",
+    "prerelease", "publish-plugin", "recover-nightly-wheel",
+  ]);
+});
+
+test("Windows signing exchanges a GitHub OIDC token, with no client secret", () => {
+  assert.doesNotMatch(release, /AZURE_CLIENT_SECRET|trusted-signing-cli/);
+  for (const id of ["build-notebook-windows-x64", "build-notebook-windows-arm64"]) {
+    const body = jobs.get(id);
+    assert.match(body, /^      id-token: write$/m, `${id} must mint an OIDC token`);
+    assert.match(body, /uses: \.\/\.github\/actions\/prepare-artifact-signing/);
+    assert.match(body, /args: --bundles nsis --config \$\{\{ steps\.signing\.outputs\.tauri-config \}\}/);
+  }
+  const tauri = JSON.parse(readFileSync(new URL("../../crates/notebook/tauri.conf.json", import.meta.url), "utf8"));
+  assert.equal(tauri.bundle.windows.signCommand, undefined, "only release jobs configure Windows signing");
+  const action = readFileSync(new URL("../../.github/actions/prepare-artifact-signing/action.yml", import.meta.url), "utf8");
+  assert.match(action, /CLIENT_SHA512: "[A-Za-z0-9+\/]{86}=="/);
+  assert.match(action, /scripts\\ci\\windows-sign\.ps1/);
+});
+
+test("release callers run only from main, and stable also from v tags", () => {
+  const nightly = parsedWorkflow("release-nightly");
+  assert.deepEqual(Object.keys(nightly.on).sort(), ["schedule", "workflow_dispatch"]);
+  assert.equal(oneLine(nightly.jobs.release.if), "github.repository == 'nteract/nteract' && github.ref == 'refs/heads/main'");
+  const stable = parsedWorkflow("release-stable");
+  assert.deepEqual(stable.on.push, {tags: ["v*"]});
+  assert.equal(oneLine(stable.jobs.release.if), "github.repository == 'nteract/nteract' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))");
+  for (const caller of [nightly, stable]) {
+    assert.deepEqual(Object.keys(caller.jobs), ["release"], "the guarded job is the whole pipeline");
+    assert.equal(caller.jobs.release.uses, "./.github/workflows/release-common.yml");
+  }
+});
+
+// A job-level `if:` that is false skips the job before any step, checkout
+// included. A job that needs a skipped job is skipped too, unless its own
+// condition asks for always(), failure() or !cancelled().
+function assertGuardedBefore(name, guards) {
+  const {jobs: workflowJobs} = parsedWorkflow(name);
+  for (const [id, guard] of Object.entries(guards)) {
+    assert.equal(oneLine(workflowJobs[id].if), guard, `${name} ${id} guard`);
+    assert.equal(workflowJobs[id].needs, undefined, `${name} ${id} must be a root job`);
+  }
+  const needs = id => [workflowJobs[id].needs ?? []].flat();
+  const guarded = id => id in guards || (needs(id).length > 0 && needs(id).some(guarded));
+  for (const [id, job] of Object.entries(workflowJobs)) {
+    assert.ok(guarded(id), `${name} ${id} must wait on a guarded job`);
+    assert.doesNotMatch(String(job.if ?? ""), /always\(\)|failure\(\)|cancelled\(\)/, `${name} ${id} must not run past a skipped guard`);
+  }
+}
+
+const upstreamGuard = "github.repository == 'nteract/nteract' && github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && (github.event.workflow_run.head_branch == 'main' || startsWith(github.event.workflow_run.head_branch, 'v'))))";
+
+test("workflow_run publishers and builders skip refs other than main and upstream releases from other branches", () => {
+  assertGuardedBefore("publish-npm", {
+    "resolve-wasm": `${upstreamGuard} && inputs.packages != 'sift'`,
+    "resolve-release": upstreamGuard,
+  });
+  assertGuardedBefore("build-wasm-npm", {resolve: upstreamGuard});
+  assertGuardedBefore("build-editor-assets", {resolve: upstreamGuard});
+  assertGuardedBefore("publish-editor-assets", {
+    publish: "github.repository == 'nteract/nteract' && github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'))",
+  });
+});
+
+test("npm OIDC publishers run in npm-publish", () => {
+  const publishers = Object.entries(parsedWorkflow("publish-npm").jobs).filter(([, job]) => job.permissions?.["id-token"] === "write");
+  assert.deepEqual(publishers.map(([id]) => id).sort(), ["publish-native", "publish-pi", "publish-sift", "publish-sift-csv", "publish-wasm", "publish-wrapper"]);
+  for (const [id, job] of publishers) assert.equal(job.environment, "npm-publish", `${id} must run in npm-publish`);
+});
+
+test("no workflow or composite action splices inputs or event fields into a run script", () => {
+  const directory = new URL("../../.github/", import.meta.url);
+  const files = [
+    ...readdirSync(new URL("workflows/", directory)).filter(file => file.endsWith(".yml")).map(file => new URL(`workflows/${file}`, directory)),
+    ...readdirSync(new URL("actions/", directory)).map(dir => new URL(`actions/${dir}/action.yml`, directory)),
+  ];
+  for (const file of files) {
+    const parsed = parseYaml(readFileSync(file, "utf8"));
+    const steps = [
+      ...Object.values(parsed.jobs ?? {}).flatMap(job => job.steps ?? []),
+      ...(parsed.runs?.steps ?? []),
+    ];
+    for (const step of steps) {
+      assert.doesNotMatch(String(step.run ?? ""), /\$\{\{[^}]*\b(inputs\.|github\.event\.|github\.head_ref)/, `${file.pathname} step ${step.name ?? step.id ?? "?"}`);
+    }
+  }
+});
+
 test("stable and nightly keep publishing their own plugin slice", () => {
   const plugin = jobs.get("publish-plugin");
-  assert.match(plugin, /--channel "\$\{\{ inputs\.publish_plugin_channel \}\}"/);
+  assert.match(plugin, /--channel "\$RELEASE_PLUGIN_CHANNEL"/);
+  assert.match(release, /^  RELEASE_PLUGIN_CHANNEL: \$\{\{ inputs\.publish_plugin_channel \}\}$/m);
   for (const channel of ["stable", "nightly"]) {
     const caller = workflow(`release-${channel}`);
     assert.match(caller, /uses: \.\/\.github\/workflows\/release-common\.yml/);

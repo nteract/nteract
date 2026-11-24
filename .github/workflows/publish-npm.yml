@@ -35,6 +35,13 @@ on:
 permissions:
   contents: read
 
+# Every job that mints an npm OIDC token runs in the `npm-publish` environment,
+# which admits only `main`. Each package's npm trusted publisher names that
+# environment, so a copy of this file dispatched on another branch cannot
+# publish. The resolve jobs run only from `main` and only for upstream releases
+# from `main` or a `v*` tag; npm-release.mjs checks that the tag names the
+# release commit. docs/runbooks/release-environments.md has the settings.
+
 # Serialize both channels, including manual retries, without replacing a waiting
 # stable release with another nightly. Preflight still rejects stale candidates.
 concurrency:
@@ -48,7 +55,12 @@ env:
 jobs:
   resolve-wasm:
     name: Resolve retained WASM npm candidate
-    if: (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') && inputs.packages != 'sift'
+    if: >-
+      github.repository == 'nteract/nteract' && github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        (github.event.workflow_run.head_branch == 'main' || startsWith(github.event.workflow_run.head_branch, 'v')))) &&
+      inputs.packages != 'sift'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -86,6 +98,7 @@ jobs:
           if-no-files-found: error
 
   publish-wasm:
+    environment: npm-publish
     name: Publish WASM npm package
     needs: [resolve-wasm]
     if: needs.resolve-wasm.outputs.present == 'true'
@@ -113,7 +126,11 @@ jobs:
 
   resolve-release:
     name: Resolve successful upstream release
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.repository == 'nteract/nteract' && github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        (github.event.workflow_run.head_branch == 'main' || startsWith(github.event.workflow_run.head_branch, 'v'))))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -321,6 +338,7 @@ jobs:
           retention-days: 7
 
   publish-native:
+    environment: npm-publish
     name: Publish native package (${{ matrix.target }})
     needs: [resolve-release, pack-native]
     runs-on: ubuntu-latest
@@ -404,6 +422,7 @@ jobs:
           retention-days: 7
 
   publish-wrapper:
+    environment: npm-publish
     name: Publish wrapper package
     needs: [pack-wrapper]
     runs-on: ubuntu-latest
@@ -475,6 +494,7 @@ jobs:
           retention-days: 7
 
   publish-pi:
+    environment: npm-publish
     name: Publish Pi package
     needs: [pack-pi]
     runs-on: ubuntu-latest
@@ -566,6 +586,7 @@ jobs:
           retention-days: 7
 
   publish-sift:
+    environment: npm-publish
     name: Publish Sift package
     needs: [resolve-release, pack-sift]
     runs-on: ubuntu-latest
@@ -675,6 +696,7 @@ jobs:
           retention-days: 7
 
   publish-sift-csv:
+    environment: npm-publish
     name: Publish Sift CSV package
     needs: [resolve-release, pack-sift-csv]
     runs-on: ubuntu-latest

@@ -13,6 +13,14 @@ concurrency:
 
 jobs:
   release:
+    # Stable releases run from `main` or a `v*` tag, the nightly tag being
+    # promoted. A dispatch on any other ref skips the whole pipeline. This file
+    # comes from the dispatched ref, so this guard stops mistakes; the
+    # `release-stable` environment's deployment policy and required reviewers
+    # stop a branch that edits it.
+    if: >-
+      github.repository == 'nteract/nteract' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     uses: ./.github/workflows/release-common.yml
     # Ceiling for the reusable workflow. Its jobs can request at most these
     # scopes; each job in release-common.yml narrows further with its own

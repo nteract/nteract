@@ -5,7 +5,7 @@ import {execFileSync} from 'node:child_process';
 import {appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
-import {releaseIdentity} from './npm-release.mjs';
+import {refLookupsFrom, releaseIdentity, releaseTagEvidence} from './npm-release.mjs';
 import {assetNames, candidateName, digest, identityFromBuildTitle, positive, publishAssets, resolveEditorCandidate, resolveWasmCandidate, successfulJobAtAttempt, validateBuildRun, validateCandidate, validateWasm} from './editor-assets-release.mjs';
 const env = process.env;
 const repository = env.GITHUB_REPOSITORY;
@@ -58,7 +58,8 @@ async function zipEntries(artifact, names) {
 }
 async function upstream(identity) {
   const value = await run(identity.runId, identity.runAttempt);
-  return releaseIdentity(value, {repository, runId: identity.runId, runAttempt: identity.runAttempt, sourceSha: identity.sourceSha});
+  const tag = await releaseTagEvidence(value, refLookupsFrom(json));
+  return releaseIdentity(value, {repository, runId: identity.runId, runAttempt: identity.runAttempt, sourceSha: identity.sourceSha, tag});
 }
 async function wasmPlan(identity) {
   return resolveWasmCandidate(identity, {
@@ -128,12 +129,7 @@ if (command === 'prepare') {
     release: tag => json(`/releases/tags/${encodeURIComponent(tag)}`),
     assets: id => pages(`/releases/${positive(id)}/assets`),
     assetBytes: async id => Buffer.from(await (await request(`/releases/assets/${positive(id)}`, {headers: {Accept: 'application/octet-stream'}})).arrayBuffer()),
-    tagSha: async tag => {
-      let object = (await json(`/git/ref/tags/${encodeURIComponent(tag)}`)).object;
-      for (let depth = 0; object.type === 'tag' && depth < 5; depth++) object = (await json(`/git/tags/${object.sha}`)).object;
-      if (object.type !== 'commit') throw new Error('Release tag must resolve to a commit');
-      return object.sha;
-    },
+    ...refLookupsFrom(json),
     newerRelease: async (channel, version) => (await pages('/releases')).some(release => !release.draft && release.prerelease === (channel === 'nightly') && new RegExp(`^v\\d+\\.\\d+\\.\\d+-${channel}\\.\\d{12}$`).test(release.tag_name) && release.tag_name.slice(-12) > version.slice(-12)),
     upload: async (release, name, bytes) => {
       // Always upload without clobber: a concurrent conflicting name fails.

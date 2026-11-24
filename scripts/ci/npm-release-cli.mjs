@@ -11,8 +11,10 @@ import {
   publishPackage,
   releaseIdentity,
   releasePlan,
+  releaseTagEvidence,
   standaloneReleaseIdentity,
   stampManifest,
+  refLookupsFrom,
   stampBuildManifest,
   standalonePackages,
   verifyManifest,
@@ -52,6 +54,7 @@ if (command === "resolve") {
     runId,
     runAttempt,
     sourceSha: automatic ? event.workflow_run.head_sha : undefined,
+    tag: await releaseTagEvidence(run, refLookupsFrom(api)),
   };
   let identity;
   if (packages === "sift") {

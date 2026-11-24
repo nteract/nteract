@@ -9,6 +9,8 @@ import {
   registryPackage,
   releaseIdentity,
   releasePlan,
+  refLookupsFrom,
+  releaseTagEvidence,
   stampManifest,
   standaloneReleaseIdentity,
 } from "../ci/npm-release.mjs";
@@ -18,7 +20,7 @@ const expected = {repository: "nteract/nteract", runId: "100", runAttempt: "1", 
 const run = {
   id: 100, run_attempt: 1,
   repository: {full_name: expected.repository}, head_repository: {full_name: expected.repository},
-  path: ".github/workflows/release-nightly.yml", event: "schedule",
+  path: ".github/workflows/release-nightly.yml", event: "schedule", head_branch: "main",
   display_title: "Nightly Release",
   status: "completed", conclusion: "success", head_sha: sourceSha,
 };
@@ -167,6 +169,71 @@ for (const [name, patch] of [
 ]) {
   test(`rejects ${name}`, () => assert.throws(() => releaseIdentity({...run, ...patch}, expected)));
 }
+
+const stableRun = {...run, path: ".github/workflows/release-stable.yml", event: "workflow_dispatch"};
+const releaseTag = "v2.10.1-nightly.202611161728";
+const onMainTag = {commit: sourceSha, onMain: true};
+
+test("a stable release promoted from a v tag on main resolves", () => {
+  const resolved = releaseIdentity({...stableRun, head_branch: releaseTag}, {...expected, tag: onMainTag});
+  assert.equal(resolved.channel, "stable");
+});
+
+for (const [name, patch, extra] of [
+  ["a nightly from another branch", {head_branch: "ctf-14e80d41"}, {}],
+  ["a stable from another branch", {...stableRun, head_branch: "ctf-14e80d41"}, {}],
+  ["a stable from a branch with a tag-like name", {...stableRun, head_branch: "v9-attack"}, {}],
+  ["a stable from a tag at another commit", {...stableRun, head_branch: releaseTag}, {tag: {commit: "b".repeat(40), onMain: true}}],
+  ["a stable from a tag on a commit main does not contain", {...stableRun, head_branch: "v9.9.9"}, {tag: {commit: sourceSha, onMain: false}}],
+  ["a stable from a tag with no main evidence", {...stableRun, head_branch: releaseTag}, {tag: {commit: sourceSha}}],
+  ["a nightly from a v tag", {head_branch: releaseTag}, {tag: onMainTag}],
+  ["a run with no ref", {head_branch: undefined}, {}],
+]) {
+  test(`rejects ${name}`, () => assert.throws(() => releaseIdentity({...run, ...patch}, {...expected, ...extra}), /main, or from a v\* tag on a commit main contains/));
+}
+
+test("only a tag-like ref other than main is looked up, and main is checked only for the run's commit", async () => {
+  const calls = [];
+  const refs = (tagCommit, contained) => ({
+    tagSha: async tag => { calls.push(["tag", tag]); return tagCommit; },
+    onMain: async sha => { calls.push(["main", sha]); return contained; },
+  });
+  assert.equal(await releaseTagEvidence({head_branch: "main", head_sha: sourceSha}, refs(sourceSha, true)), undefined);
+  assert.equal(await releaseTagEvidence({head_branch: "ctf-14e80d41", head_sha: sourceSha}, refs(sourceSha, true)), undefined);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(await releaseTagEvidence({head_branch: releaseTag, head_sha: sourceSha}, refs(sourceSha, true)), onMainTag);
+  assert.deepEqual(await releaseTagEvidence({head_branch: "v9.9.9", head_sha: sourceSha}, refs(sourceSha, false)), {commit: sourceSha, onMain: false});
+  calls.length = 0;
+  assert.deepEqual(await releaseTagEvidence({head_branch: releaseTag, head_sha: sourceSha}, refs("b".repeat(40), true)), {commit: "b".repeat(40), onMain: false});
+  assert.deepEqual(calls, [["tag", releaseTag]], "a tag at another commit never reaches the main check");
+});
+
+test("tag lookup peels annotated tags and requires a commit", async () => {
+  const objects = {
+    [`/git/ref/tags/${releaseTag}`]: {object: {type: "tag", sha: "1".repeat(40)}},
+    [`/git/tags/${"1".repeat(40)}`]: {object: {type: "commit", sha: sourceSha}},
+    "/git/ref/tags/v-tree": {object: {type: "tree", sha: "2".repeat(40)}},
+  };
+  const getJson = async path => {
+    if (!(path in objects)) throw new Error(`HTTP 404 ${path}`);
+    return objects[path];
+  };
+  const {tagSha} = refLookupsFrom(getJson);
+  assert.equal(await tagSha(releaseTag), sourceSha);
+  await assert.rejects(tagSha("v-tree"), /resolve to a commit/);
+  await assert.rejects(tagSha("v-missing"), /404/);
+});
+
+test("main contains a commit only when the comparison is behind or identical", async () => {
+  const requested = [];
+  const lookups = status => refLookupsFrom(async path => { requested.push(path); return {status}; });
+  assert.equal(await lookups("behind").onMain(sourceSha), true);
+  assert.equal(await lookups("identical").onMain(sourceSha), true);
+  assert.equal(await lookups("ahead").onMain(sourceSha), false);
+  assert.equal(await lookups("diverged").onMain(sourceSha), false);
+  assert.equal(requested[0], `/compare/main...${sourceSha}`);
+  await assert.rejects(lookups("behind").onMain("main"), /full commit SHA/);
+});
 
 test("nightly version needs a checked-in stable version and a valid immutable run ID", () => {
   assert.throws(() => releasePlan("0.5.6-beta.1", identity), /version/);

@@ -1,0 +1,6 @@
+# Workflows, composite actions and the scripts release jobs run decide what
+# reads signing keys and publishing tokens. A change here needs a review from
+# one of these owners once the main ruleset requires code owner review; see
+# docs/runbooks/release-environments.md.
+/.github/ @rgbkrk @intentionally-left-nil
+/scripts/ci/ @rgbkrk @intentionally-left-nil

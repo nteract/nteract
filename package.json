@@ -115,6 +115,7 @@
     "vite-plus": "catalog:",
     "vitest": "catalog:",
     "webdriverio": "^8.40.0",
-    "wrangler": "4.94.0"
+    "wrangler": "4.94.0",
+    "yaml": "2.8.3"
   }
 }

@@ -19,6 +19,11 @@ concurrency:
 
 jobs:
   release:
+    # Nightly releases run only from `main`; the schedule always does. This
+    # file comes from the dispatched ref, so this guard stops mistakes; the
+    # `release-nightly` environment's `main`-only deployment policy stops a
+    # branch that edits it.
+    if: github.repository == 'nteract/nteract' && github.ref == 'refs/heads/main'
     uses: ./.github/workflows/release-common.yml
     # Ceiling for the reusable workflow. Its jobs can request at most these
     # scopes; each job in release-common.yml narrows further with its own

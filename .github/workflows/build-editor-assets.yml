@@ -27,7 +27,11 @@ concurrency:
 jobs:
   resolve:
     name: Resolve editor candidate
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.repository == 'nteract/nteract' && github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_run' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        (github.event.workflow_run.head_branch == 'main' || startsWith(github.event.workflow_run.head_branch, 'v'))))
     runs-on: ubuntu-24.04
     outputs:
       reuse: ${{ steps.plan.outputs.reuse }}
