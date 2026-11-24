@@ -2,12 +2,11 @@
 set -euo pipefail
 
 # Disabled from release gates while Linux desktop releases are AppImage-only.
-# See docs/linux.md and contributing/releasing.md before re-enabling DEB/APT
-# package-manager smokes.
+# See docs/linux.md and contributing/releasing.md before re-enabling DEB
+# package smokes.
 
 usage() {
   echo "usage: ubuntu-deb-smoke.sh local <path-to-deb> <stable|nightly> [expected-version]" >&2
-  echo "       ubuntu-deb-smoke.sh apt <stable|nightly> [expected-version]" >&2
 }
 
 MODE=${1:-}
@@ -22,11 +21,6 @@ case "$MODE" in
     DEB_PATH=${1:?missing path-to-deb}
     CHANNEL=${2:?missing channel}
     EXPECTED_VERSION=${3:-}
-    ;;
-  apt)
-    DEB_PATH=""
-    CHANNEL=${1:?missing channel}
-    EXPECTED_VERSION=${2:-}
     ;;
   *)
     usage
@@ -55,65 +49,27 @@ case "$CHANNEL" in
     ;;
 esac
 
-retry() {
-  local max_attempts=$1
-  shift
-  local attempt=1
-  until "$@"; do
-    if [[ "$attempt" -ge "$max_attempts" ]]; then
-      return 1
-    fi
-    sleep $((attempt * 5))
-    attempt=$((attempt + 1))
-  done
-}
-
-expected_apt_version_available() {
-  apt-get update
-  echo "=== APT package policy ==="
-  apt-cache policy "$PACKAGE_NAME"
-  apt-cache policy "$PACKAGE_NAME" | grep -F "$EXPECTED_VERSION"
-}
-
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl file gnupg systemd
+apt-get install -y --no-install-recommends ca-certificates curl file systemd
 
-if [[ "$MODE" == "local" ]]; then
-  if [[ ! -f "$DEB_PATH" ]]; then
-    echo "Debian package not found: $DEB_PATH" >&2
-    exit 1
-  fi
-
-  echo "=== Debian package metadata ==="
-  dpkg-deb --info "$DEB_PATH"
-  dpkg-deb --field "$DEB_PATH" Package Version Architecture
-
-  ACTUAL_PACKAGE=$(dpkg-deb --field "$DEB_PATH" Package)
-  if [[ "$ACTUAL_PACKAGE" != "$PACKAGE_NAME" ]]; then
-    echo "Expected package $PACKAGE_NAME, got $ACTUAL_PACKAGE" >&2
-    exit 1
-  fi
-
-  apt-get install -y --no-install-recommends "$DEB_PATH"
-else
-  curl -fsSL https://apt.runtimed.com/nteract-keyring.gpg \
-    | gpg --dearmor --yes -o /usr/share/keyrings/nteract-keyring.gpg
-
-  echo "deb [arch=amd64 signed-by=/usr/share/keyrings/nteract-keyring.gpg] https://apt.runtimed.com ${CHANNEL} main" \
-    > "/etc/apt/sources.list.d/${PACKAGE_NAME}.list"
-
-  if [[ -n "$EXPECTED_VERSION" ]]; then
-    retry 10 expected_apt_version_available
-  else
-    apt-get update
-    echo "=== APT package policy ==="
-    apt-cache policy "$PACKAGE_NAME"
-  fi
-
-  apt-get install -y --no-install-recommends "$PACKAGE_NAME"
+if [[ ! -f "$DEB_PATH" ]]; then
+  echo "Debian package not found: $DEB_PATH" >&2
+  exit 1
 fi
+
+echo "=== Debian package metadata ==="
+dpkg-deb --info "$DEB_PATH"
+dpkg-deb --field "$DEB_PATH" Package Version Architecture
+
+ACTUAL_PACKAGE=$(dpkg-deb --field "$DEB_PATH" Package)
+if [[ "$ACTUAL_PACKAGE" != "$PACKAGE_NAME" ]]; then
+  echo "Expected package $PACKAGE_NAME, got $ACTUAL_PACKAGE" >&2
+  exit 1
+fi
+
+apt-get install -y --no-install-recommends "$DEB_PATH"
 
 INSTALLED_VERSION=$(dpkg-query -W -f='${Version}' "$PACKAGE_NAME")
 echo "Installed $PACKAGE_NAME version: $INSTALLED_VERSION"

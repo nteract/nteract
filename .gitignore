@@ -148,10 +148,6 @@ uv.lock
 result
 .cargo
 
-# APT publisher secrets
-scripts/apt/.env
-scripts/apt/debs/*.deb
-
 # Superpowers brainstorming scratch
 .superpowers/
 
