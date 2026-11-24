@@ -65,7 +65,15 @@ Run these from any checkout with `gh` authenticated as a repository admin.
 Nightly environments allow `main` only:
 
 ```bash
-for env in release-signing release-nightly npm-publish; do gh api -X PUT "repos/nteract/nteract/environments/$env" -F 'deployment_branch_policy[protected_branches]=false' -F 'deployment_branch_policy[custom_branch_policies]=true' && gh api -X POST "repos/nteract/nteract/environments/$env/deployment-branch-policies" -f name=main -f type=branch; done
+for env in release-signing release-nightly npm-publish; do
+  gh api -X PUT "repos/nteract/nteract/environments/$env" --input - <<'JSON'
+{
+  "can_admins_bypass": false,
+  "deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}
+}
+JSON
+  gh api -X POST "repos/nteract/nteract/environments/$env/deployment-branch-policies" -f name=main -f type=branch
+done
 ```
 
 Stable environments allow `main` and `v*` tags, with reviewers:
@@ -74,6 +82,7 @@ Stable environments allow `main` and `v*` tags, with reviewers:
 for env in release-signing-stable release-stable; do
   gh api -X PUT "repos/nteract/nteract/environments/$env" --input - <<'JSON'
 {
+  "can_admins_bypass": false,
   "prevent_self_review": true,
   "reviewers": [{"type": "User", "id": 836375}, {"type": "User", "id": 6687139}],
   "deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}
@@ -86,8 +95,13 @@ done
 
 User ids: 836375 is `rgbkrk`, 6687139 is `intentionally-left-nil`.
 
-Check each one in Settings → Environments. In each environment, leave
-"Allow administrators to bypass configured protection rules" off.
+The API turns on "Allow administrators to bypass configured protection
+rules" unless the request sets `can_admins_bypass`, so both commands set it to
+false. Read it back for each environment; this prints `false`:
+
+```bash
+gh api repos/nteract/nteract/environments/<env> --jq .can_admins_bypass
+```
 
 ## Put each secret in its environment
 
