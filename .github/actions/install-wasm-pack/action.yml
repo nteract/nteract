@@ -12,10 +12,12 @@ runs:
   steps:
     - name: Download wasm-pack
       shell: bash
+      env:
+        WASM_PACK_VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
 
-        version="${{ inputs.version }}"
+        version="$WASM_PACK_VERSION"
         case "$RUNNER_OS" in
           Linux) os="unknown-linux-musl" ;;
           macOS) os="apple-darwin" ;;

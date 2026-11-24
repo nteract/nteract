@@ -164,35 +164,40 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
+          TARGET_OS: ${{ inputs.target_os }}
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head_sha }}
         run: |
           mkdir -p pr-binary
           cp target/release/notebook pr-binary/notebook
           chmod +x pr-binary/notebook
           cp -R target/release/binaries pr-binary/binaries
 
-          cat > pr-binary/build-metadata.json <<EOF
-          {
-            "pr_number": "${{ needs.resolve-pr.outputs.pr_number }}",
-            "target_os": "${{ inputs.target_os }}",
-            "commit": "${{ needs.resolve-pr.outputs.head_sha }}",
-            "version": "$VERSION"
-          }
-          EOF
+          jq -n \
+            --arg pr_number "$PR_NUMBER" \
+            --arg target_os "$TARGET_OS" \
+            --arg commit "$HEAD_SHA" \
+            --arg version "$VERSION" \
+            '{pr_number: $pr_number, target_os: $target_os, commit: $commit, version: $version}' \
+            > pr-binary/build-metadata.json
 
       - name: Collect artifact payload (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
+          TARGET_OS: ${{ inputs.target_os }}
+          HEAD_SHA: ${{ needs.resolve-pr.outputs.head_sha }}
         run: |
           New-Item -ItemType Directory -Force pr-binary | Out-Null
           Copy-Item target/release/notebook.exe pr-binary/notebook.exe
           Copy-Item target/release/binaries pr-binary/binaries -Recurse
 
           $metadata = @{
-            pr_number = "${{ needs.resolve-pr.outputs.pr_number }}"
-            target_os = "${{ inputs.target_os }}"
-            commit = "${{ needs.resolve-pr.outputs.head_sha }}"
+            pr_number = "$env:PR_NUMBER"
+            target_os = "$env:TARGET_OS"
+            commit = "$env:HEAD_SHA"
             version = "$env:VERSION"
           } | ConvertTo-Json
 

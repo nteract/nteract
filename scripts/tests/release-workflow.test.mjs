@@ -502,9 +502,53 @@ test("all three release consumers apply the shared identity guard before using s
   assert.match(validation, /node --test[^\n]*scripts\/tests\/nightly-wheel-recovery\.test\.mjs/);
 });
 
+const channelEnvironment = "    environment: ${{ inputs.version_suffix == 'stable' && 'release-stable' || 'release-nightly' }}";
+
+test("every release job that reads a secret or mints an OIDC token runs in the channel environment", () => {
+  const gated = [];
+  for (const [id, body] of jobs) {
+    const secrets = [...body.matchAll(/secrets\.([A-Z0-9_]+)/g)].map(match => match[1]).filter(name => name !== "GITHUB_TOKEN");
+    if (secrets.length === 0 && !/^      id-token: write$/m.test(body)) continue;
+    gated.push(id);
+    const environment = id === "recover-nightly-wheel" ? "    environment: release-nightly" : channelEnvironment;
+    assert.ok(body.split("\n").includes(environment), `${id} must declare its release environment`);
+  }
+  assert.ok(gated.includes("prerelease") && gated.includes("publish-plugin") && gated.includes("build-notebook-linux"));
+});
+
+test("release callers run only from main, and stable also from v tags", () => {
+  assert.match(workflow("release-nightly"), /^    if: github\.repository == 'nteract\/nteract' && github\.ref == 'refs\/heads\/main'$/m);
+  const stable = workflow("release-stable");
+  assert.match(stable, /github\.ref == 'refs\/heads\/main' \|\| startsWith\(github\.ref, 'refs\/tags\/v'\)/);
+  assert.match(stable, /^      - "v\*"$/m);
+});
+
+test("release-common run scripts never splice caller inputs", () => {
+  for (const [id, body] of jobs) {
+    for (const block of body.split(/^      - /m)) {
+      const run = /^        run: \|?\n?([\s\S]*)/m.exec(block)?.[1] ?? "";
+      assert.doesNotMatch(run, /\$\{\{\s*inputs\./, `${id} interpolates an input into a run script`);
+    }
+  }
+});
+
+test("npm OIDC publishers run in npm-publish and resolve only from main", () => {
+  const npm = workflow("publish-npm");
+  const npmJobs = workflowJobs(npm);
+  for (const [id, body] of npmJobs) {
+    if (!/^      id-token: write$/m.test(body)) continue;
+    assert.match(body, /^    environment: npm-publish$/m, `${id} must run in npm-publish`);
+  }
+  for (const id of ["resolve-wasm", "resolve-release"]) {
+    assert.match(npmJobs.get(id), /github\.ref == 'refs\/heads\/main'/);
+    assert.match(npmJobs.get(id), /github\.event\.workflow_run\.head_branch == 'main'/);
+  }
+});
+
 test("stable and nightly keep publishing their own plugin slice", () => {
   const plugin = jobs.get("publish-plugin");
-  assert.match(plugin, /--channel "\$\{\{ inputs\.publish_plugin_channel \}\}"/);
+  assert.match(plugin, /--channel "\$RELEASE_PLUGIN_CHANNEL"/);
+  assert.match(release, /^  RELEASE_PLUGIN_CHANNEL: \$\{\{ inputs\.publish_plugin_channel \}\}$/m);
   for (const channel of ["stable", "nightly"]) {
     const caller = workflow(`release-${channel}`);
     assert.match(caller, /uses: \.\/\.github\/workflows\/release-common\.yml/);

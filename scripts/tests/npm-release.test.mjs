@@ -9,8 +9,10 @@ import {
   registryPackage,
   releaseIdentity,
   releasePlan,
+  releaseTagCommit,
   stampManifest,
   standaloneReleaseIdentity,
+  tagShaFrom,
 } from "../ci/npm-release.mjs";
 
 const sourceSha = "a".repeat(40);
@@ -18,7 +20,7 @@ const expected = {repository: "nteract/nteract", runId: "100", runAttempt: "1", 
 const run = {
   id: 100, run_attempt: 1,
   repository: {full_name: expected.repository}, head_repository: {full_name: expected.repository},
-  path: ".github/workflows/release-nightly.yml", event: "schedule",
+  path: ".github/workflows/release-nightly.yml", event: "schedule", head_branch: "main",
   display_title: "Nightly Release",
   status: "completed", conclusion: "success", head_sha: sourceSha,
 };
@@ -167,6 +169,49 @@ for (const [name, patch] of [
 ]) {
   test(`rejects ${name}`, () => assert.throws(() => releaseIdentity({...run, ...patch}, expected)));
 }
+
+const stableRun = {...run, path: ".github/workflows/release-stable.yml", event: "workflow_dispatch"};
+const releaseTag = "v2.10.1-nightly.202611161728";
+
+test("a stable release promoted from a v tag at its commit resolves", () => {
+  const resolved = releaseIdentity({...stableRun, head_branch: releaseTag}, {...expected, tagCommit: sourceSha});
+  assert.equal(resolved.channel, "stable");
+});
+
+for (const [name, patch, extra] of [
+  ["a nightly from another branch", {head_branch: "ctf-14e80d41"}, {}],
+  ["a stable from another branch", {...stableRun, head_branch: "ctf-14e80d41"}, {}],
+  ["a stable from a branch with a tag-like name", {...stableRun, head_branch: "v9-attack"}, {}],
+  ["a stable from a tag at another commit", {...stableRun, head_branch: releaseTag}, {tagCommit: "b".repeat(40)}],
+  ["a nightly from a v tag", {head_branch: releaseTag}, {tagCommit: sourceSha}],
+  ["a run with no ref", {head_branch: undefined}, {}],
+]) {
+  test(`rejects ${name}`, () => assert.throws(() => releaseIdentity({...run, ...patch}, {...expected, ...extra}), /main or a v\* release tag/));
+}
+
+test("only a tag-like ref other than main is resolved to a commit", async () => {
+  const looked = [];
+  const tagSha = async tag => { looked.push(tag); return sourceSha; };
+  assert.equal(await releaseTagCommit({head_branch: "main"}, tagSha), undefined);
+  assert.equal(await releaseTagCommit({head_branch: "ctf-14e80d41"}, tagSha), undefined);
+  assert.equal(await releaseTagCommit({head_branch: releaseTag}, tagSha), sourceSha);
+  assert.deepEqual(looked, [releaseTag]);
+});
+
+test("tag lookup peels annotated tags and requires a commit", async () => {
+  const objects = {
+    [`/git/ref/tags/${releaseTag}`]: {object: {type: "tag", sha: "1".repeat(40)}},
+    [`/git/tags/${"1".repeat(40)}`]: {object: {type: "commit", sha: sourceSha}},
+    "/git/ref/tags/v-tree": {object: {type: "tree", sha: "2".repeat(40)}},
+  };
+  const getJson = async path => {
+    if (!(path in objects)) throw new Error(`HTTP 404 ${path}`);
+    return objects[path];
+  };
+  assert.equal(await tagShaFrom(getJson)(releaseTag), sourceSha);
+  await assert.rejects(tagShaFrom(getJson)("v-tree"), /resolve to a commit/);
+  await assert.rejects(tagShaFrom(getJson)("v-missing"), /404/);
+});
 
 test("nightly version needs a checked-in stable version and a valid immutable run ID", () => {
   assert.throws(() => releasePlan("0.5.6-beta.1", identity), /version/);

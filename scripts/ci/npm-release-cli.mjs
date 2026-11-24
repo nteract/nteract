@@ -11,8 +11,10 @@ import {
   publishPackage,
   releaseIdentity,
   releasePlan,
+  releaseTagCommit,
   standaloneReleaseIdentity,
   stampManifest,
+  tagShaFrom,
   stampBuildManifest,
   standalonePackages,
   verifyManifest,
@@ -52,6 +54,7 @@ if (command === "resolve") {
     runId,
     runAttempt,
     sourceSha: automatic ? event.workflow_run.head_sha : undefined,
+    tagCommit: await releaseTagCommit(run, tagShaFrom(api)),
   };
   let identity;
   if (packages === "sift") {

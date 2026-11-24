@@ -15,7 +15,7 @@ function server() {
     repository: 'nteract/nteract',
     releaseRun: async (id, attempt) => {
       calls.push(`release:${id}/${attempt}`);
-      return {id: Number(id), run_attempt: Number(attempt), repository: {full_name: api.repository}, head_repository: {full_name: api.repository}, head_sha: identity.sourceSha, path: '.github/workflows/release-nightly.yml', display_title: 'Nightly Release', event: 'schedule', status: 'completed', conclusion: 'success'};
+      return {id: Number(id), run_attempt: Number(attempt), repository: {full_name: api.repository}, head_repository: {full_name: api.repository}, head_sha: identity.sourceSha, head_branch: 'main', path: '.github/workflows/release-nightly.yml', display_title: 'Nightly Release', event: 'schedule', status: 'completed', conclusion: 'success'};
     },
     release: async tag => { calls.push(`tag:${tag}`); return {id: 789, tag_name: tag, draft: false, prerelease: true}; },
     tagSha: async () => identity.sourceSha,

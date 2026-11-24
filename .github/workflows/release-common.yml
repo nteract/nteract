@@ -54,12 +54,30 @@ permissions:
 
 env:
   RUNT_BUILD_CHANNEL: ${{ inputs.version_suffix }}
+  # Caller inputs reach scripts through the environment, never as text spliced
+  # into a `run:` body.
+  RELEASE_TITLE: ${{ inputs.release_title }}
+  RELEASE_GITHUB_PRERELEASE: ${{ inputs.github_release_prerelease }}
+  RELEASE_MANIFEST_NOTES_PREFIX: ${{ inputs.manifest_notes_prefix }}
+  RELEASE_UPDATER_CHANNEL_TAG: ${{ inputs.updater_channel_tag }}
+  RELEASE_UPDATER_CHANNEL_TITLE: ${{ inputs.updater_channel_title }}
+  RELEASE_UPDATER_CHANNEL_NOTES: ${{ inputs.updater_channel_notes }}
+  RELEASE_UPDATER_CHANNEL_PRERELEASE: ${{ inputs.updater_channel_prerelease }}
+  RELEASE_PLUGIN_CHANNEL: ${{ inputs.publish_plugin_channel }}
   # Dispatch/schedule/tag callers use their immutable event SHA. Also preserve
   # the upstream source if called via workflow_run. All source checkouts use it.
   NTERACT_BUILD_GIT_HASH: ${{ github.event.workflow_run.head_sha || github.sha }}
 
+# Signing keys, the plugin deploy token, the Discord webhook and PyPI trusted
+# publishing live in the `release-nightly` and `release-stable` environments,
+# not at repository level. Only the jobs that declare one of those environments
+# can read them, and each environment's deployment policy admits only `main`
+# (nightly) or `main` plus `v*` tags behind required reviewers (stable). A job
+# that needs a new signing or publishing secret must declare the environment.
+# docs/runbooks/release-environments.md has the settings.
 jobs:
   recover-nightly-wheel:
+    environment: release-nightly
     name: Complete allowlisted nightly PyPI wheel set only
     if: inputs.recovery_run_id != ''
     runs-on: ubuntu-24.04
@@ -122,7 +140,7 @@ jobs:
         run: |
           CURRENT_VERSION=$(grep '^version' crates/runt/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           TIMESTAMP=$(date -u +%Y%m%d%H%M)
-          VERSION="${CURRENT_VERSION}-${{ inputs.version_suffix }}.${TIMESTAMP}"
+          VERSION="${CURRENT_VERSION}-${RUNT_BUILD_CHANNEL}.${TIMESTAMP}"
           echo "Setting version to: ${VERSION}"
           {
             echo "VERSION=${VERSION}"
@@ -401,6 +419,7 @@ jobs:
             runtimed-darwin-x64.*
 
   build-notebook-macos-arm64:
+    environment: ${{ inputs.version_suffix == 'stable' && 'release-stable' || 'release-nightly' }}
     name: Build macOS ARM64 Notebook
     runs-on: macos-15
     needs: [compute-version, build-wasm]
@@ -493,7 +512,7 @@ jobs:
           sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
           sed -i '' "s/\"productName\": \"[^\"]*\"/\"productName\": \"${PRODUCT_NAME}\"/" crates/notebook/tauri.conf.json
           sed -i '' "s/\"identifier\": \"[^\"]*\"/\"identifier\": \"${BUNDLE_ID}\"/" crates/notebook/tauri.conf.json
-          sed -i '' "s#https://github.com/nteract/nteract/releases/download/stable-latest/latest.json#https://github.com/nteract/nteract/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
+          sed -i '' "s#https://github.com/nteract/nteract/releases/download/stable-latest/latest.json#https://github.com/nteract/nteract/releases/download/${RELEASE_UPDATER_CHANNEL_TAG}/latest.json#" crates/notebook/tauri.conf.json
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/notebook/Cargo.toml
@@ -586,6 +605,7 @@ jobs:
           if-no-files-found: error
 
   build-notebook-macos-x64:
+    environment: ${{ inputs.version_suffix == 'stable' && 'release-stable' || 'release-nightly' }}
     name: Build macOS x64 Notebook
     # Standard macOS runners are ARM64; keep the explicit x64 targets below.
     runs-on: macos-15
@@ -682,7 +702,7 @@ jobs:
           sed -i '' "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
           sed -i '' "s/\"productName\": \"[^\"]*\"/\"productName\": \"${PRODUCT_NAME}\"/" crates/notebook/tauri.conf.json
           sed -i '' "s/\"identifier\": \"[^\"]*\"/\"identifier\": \"${BUNDLE_ID}\"/" crates/notebook/tauri.conf.json
-          sed -i '' "s#https://github.com/nteract/nteract/releases/download/stable-latest/latest.json#https://github.com/nteract/nteract/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
+          sed -i '' "s#https://github.com/nteract/nteract/releases/download/stable-latest/latest.json#https://github.com/nteract/nteract/releases/download/${RELEASE_UPDATER_CHANNEL_TAG}/latest.json#" crates/notebook/tauri.conf.json
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
           sed -i '' "s/^version = .*/version = \"${VERSION}\"/" crates/notebook/Cargo.toml
@@ -775,6 +795,7 @@ jobs:
           if-no-files-found: error
 
   build-notebook-windows-x64:
+    environment: ${{ inputs.version_suffix == 'stable' && 'release-stable' || 'release-nightly' }}
     name: Build Windows x64 Notebook
     runs-on: windows-2025
     needs: [compute-version, build-wasm]
@@ -874,7 +895,7 @@ jobs:
           $tauriConf = $tauriConf -replace '"version": "[^"]+"', "`"version`": `"$version`""
           $tauriConf = $tauriConf -replace '"productName": "[^"]+"', "`"productName`": `"$productName`""
           $tauriConf = $tauriConf -replace '"identifier": "[^"]+"', "`"identifier`": `"$bundleId`""
-          $tauriConf = $tauriConf -replace 'https://github.com/nteract/nteract/releases/download/stable-latest/latest.json', 'https://github.com/nteract/nteract/releases/download/${{ inputs.updater_channel_tag }}/latest.json'
+          $tauriConf = $tauriConf -replace 'https://github.com/nteract/nteract/releases/download/stable-latest/latest.json', "https://github.com/nteract/nteract/releases/download/$($env:RELEASE_UPDATER_CHANNEL_TAG)/latest.json"
           Set-Content crates/notebook/tauri.conf.json $tauriConf
           $runtCargo = Get-Content crates/runt/Cargo.toml -Raw
           $runtCargo = $runtCargo -replace '(?m)^version = ".*"$', "version = `"$version`""
@@ -1008,6 +1029,7 @@ jobs:
           if-no-files-found: error
 
   build-notebook-windows-arm64:
+    environment: ${{ inputs.version_suffix == 'stable' && 'release-stable' || 'release-nightly' }}
     name: Build Windows ARM64 Notebook
     runs-on: windows-11-vs2026-arm
     needs: [compute-version, build-wasm]
@@ -1122,7 +1144,7 @@ jobs:
           $tauriConf = $tauriConf -replace '"version": "[^"]+"', "`"version`": `"$version`""
           $tauriConf = $tauriConf -replace '"productName": "[^"]+"', "`"productName`": `"$productName`""
           $tauriConf = $tauriConf -replace '"identifier": "[^"]+"', "`"identifier`": `"$bundleId`""
-          $tauriConf = $tauriConf -replace 'https://github.com/nteract/nteract/releases/download/stable-latest/latest.json', 'https://github.com/nteract/nteract/releases/download/${{ inputs.updater_channel_tag }}/latest.json'
+          $tauriConf = $tauriConf -replace 'https://github.com/nteract/nteract/releases/download/stable-latest/latest.json', "https://github.com/nteract/nteract/releases/download/$($env:RELEASE_UPDATER_CHANNEL_TAG)/latest.json"
           Set-Content crates/notebook/tauri.conf.json $tauriConf
           $runtCargo = Get-Content crates/runt/Cargo.toml -Raw
           $runtCargo = $runtCargo -replace '(?m)^version = ".*"$', "version = `"$version`""
@@ -1259,6 +1281,7 @@ jobs:
           if-no-files-found: error
 
   build-notebook-linux:
+    environment: ${{ inputs.version_suffix == 'stable' && 'release-stable' || 'release-nightly' }}
     name: Build Linux ${{ matrix.platform.arch }} Notebook
     runs-on: ${{ matrix.platform.runner }}
     needs: [compute-version, build-wasm]
@@ -1375,7 +1398,7 @@ jobs:
           sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${VERSION}\"/" crates/notebook/tauri.conf.json
           sed -i "s/\"productName\": \"[^\"]*\"/\"productName\": \"${PRODUCT_NAME}\"/" crates/notebook/tauri.conf.json
           sed -i "s/\"identifier\": \"[^\"]*\"/\"identifier\": \"${BUNDLE_ID}\"/" crates/notebook/tauri.conf.json
-          sed -i "s#https://github.com/nteract/nteract/releases/download/stable-latest/latest.json#https://github.com/nteract/nteract/releases/download/${{ inputs.updater_channel_tag }}/latest.json#" crates/notebook/tauri.conf.json
+          sed -i "s#https://github.com/nteract/nteract/releases/download/stable-latest/latest.json#https://github.com/nteract/nteract/releases/download/${RELEASE_UPDATER_CHANNEL_TAG}/latest.json#" crates/notebook/tauri.conf.json
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runt/Cargo.toml
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/runtimed/Cargo.toml
           sed -i "s/^version = .*/version = \"${VERSION}\"/" crates/notebook/Cargo.toml
@@ -1578,7 +1601,7 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           BASE_VERSION="${{ needs.compute-version.outputs.base_version }}"
-          if [ "${{ inputs.github_release_prerelease }}" = "true" ]; then
+          if [ "$RELEASE_GITHUB_PRERELEASE" = "true" ]; then
             # Bump patch and use alpha tag so it sorts after current stable (PEP 440).
             MAJOR_MINOR="${BASE_VERSION%.*}"
             PATCH="${BASE_VERSION##*.}"
@@ -1597,7 +1620,7 @@ jobs:
         run: |
           $content = Get-Content python/runtimed/pyproject.toml -Raw
           $baseVersion = "${{ needs.compute-version.outputs.base_version }}"
-          if ("${{ inputs.github_release_prerelease }}" -eq "true") {
+          if ($env:RELEASE_GITHUB_PRERELEASE -eq "true") {
             # Bump patch and use alpha tag so it sorts after current stable (PEP 440).
             $parts = $baseVersion.Split('.')
             $parts[2] = [string]([int]$parts[2] + 1)
@@ -1821,6 +1844,7 @@ jobs:
           fi
 
   publish-plugin:
+    environment: ${{ inputs.version_suffix == 'stable' && 'release-stable' || 'release-nightly' }}
     # Assemble this release's channel-slice of the agent plugin
     # distribution repo (nteract/agent-plugins). One repo, two plugins:
     # "nteract" (stable) and "nightly" (dev). Each channel's publish
@@ -1890,7 +1914,7 @@ jobs:
           # marketplace.json entry. The other channel's slice is left
           # as-is, so serial runs compose.
           ./scripts/assemble-plugin-dist.sh \
-            --channel "${{ inputs.publish_plugin_channel }}" \
+            --channel "$RELEASE_PLUGIN_CHANNEL" \
             --binaries-dir plugin-binaries \
             --out-dir plugin-dist-repo
 
@@ -1932,6 +1956,7 @@ jobs:
           exit 1
 
   prerelease:
+    environment: ${{ inputs.version_suffix == 'stable' && 'release-stable' || 'release-nightly' }}
     name: ${{ inputs.release_title }}
     runs-on: ubuntu-24.04
     permissions:
@@ -1976,7 +2001,7 @@ jobs:
             --jq '.[] | select(.draft == false) | .tag_name' > "$RUNNER_TEMP/published-release-tags"
           bash scripts/ci/filter-unpublished-release-tags.sh "$RUNNER_TEMP/published-release-tags" "$TAG_NAME"
 
-          if [ "${{ inputs.github_release_prerelease }}" = "false" ]; then
+          if [ "$RELEASE_GITHUB_PRERELEASE" = "false" ]; then
             # Stable release: generate changelog since the previous stable tag.
             # We can't use --latest because nightly tags between stable releases
             # cause git-cliff to pick a nightly→stable range with zero commits.
@@ -2203,7 +2228,7 @@ jobs:
 
           jq -n \
             --arg version "$VERSION" \
-            --arg notes "${{ inputs.manifest_notes_prefix }} $TAG_NAME" \
+            --arg notes "$RELEASE_MANIFEST_NOTES_PREFIX $TAG_NAME" \
             --arg pub_date "$PUB_DATE" \
             --arg sig_darwin_arm64 "$SIG_DARWIN_ARM64" \
             --arg url_darwin_arm64 "$RELEASE_BASE/nteract-${CHANNEL}-darwin-arm64.app.tar.gz" \
@@ -2472,22 +2497,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${{ inputs.updater_channel_prerelease }}" = "true" ]; then
+          if [ "$RELEASE_UPDATER_CHANNEL_PRERELEASE" = "true" ]; then
             PRERELEASE_FLAG="--prerelease"
           else
             PRERELEASE_FLAG=""
           fi
 
           # Ensure the rolling updater release exists, then update latest.json
-          gh release create "${{ inputs.updater_channel_tag }}" \
-            --title "${{ inputs.updater_channel_title }}" \
-            --notes "${{ inputs.updater_channel_notes }}" \
+          gh release create "$RELEASE_UPDATER_CHANNEL_TAG" \
+            --title "$RELEASE_UPDATER_CHANNEL_TITLE" \
+            --notes "$RELEASE_UPDATER_CHANNEL_NOTES" \
             ${PRERELEASE_FLAG} \
             --latest=false 2>/dev/null || true
 
-          gh release edit "${{ inputs.updater_channel_tag }}" --prerelease=${{ inputs.updater_channel_prerelease }} --latest=false >/dev/null 2>&1 || true
+          gh release edit "$RELEASE_UPDATER_CHANNEL_TAG" --prerelease="$RELEASE_UPDATER_CHANNEL_PRERELEASE" --latest=false >/dev/null 2>&1 || true
 
-          gh release upload "${{ inputs.updater_channel_tag }}" release-assets/latest.json --clobber
+          gh release upload "$RELEASE_UPDATER_CHANNEL_TAG" release-assets/latest.json --clobber
 
       - name: Notify Discord
         env:
@@ -2500,11 +2525,9 @@ jobs:
             exit 0
           fi
 
-          curl -H "Content-Type: application/json" -d "{
-            \"embeds\": [{
-              \"title\": \"${{ inputs.release_title }} succeeded\",
-              \"description\": \"Version \`v${VERSION}\` published successfully\",
-              \"url\": \"$RUN_URL\",
-              \"color\": 3066993
-            }]
-          }" "$DISCORD_WEBHOOK"
+          jq -n \
+            --arg title "$RELEASE_TITLE succeeded" \
+            --arg description "Version \`v${VERSION}\` published successfully" \
+            --arg url "$RUN_URL" \
+            '{embeds: [{title: $title, description: $description, url: $url, color: 3066993}]}' \
+            | curl -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
