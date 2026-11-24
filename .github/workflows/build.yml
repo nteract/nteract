@@ -777,15 +777,15 @@ jobs:
           pnpm --dir apps/notebook build
           pnpm --dir apps/elements build
 
-      # Validate the complete cloud package on PRs too, including stacked PRs
-      # that do not target main and therefore have no PR preview deployment.
+      # Build the viewer and export the celld projects so a break in the cloud
+      # package surfaces on the PR. The editor-assets step below packages this
+      # viewer build.
       - name: Build and validate cloud deployment bundle
         if: needs.changes.outputs.pr_like == 'true' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         run: |
           pnpm --filter @nteract/preview-python build
           pnpm --dir apps/notebook-cloud build:viewer
-          NOTEBOOK_CLOUD_CELLD_PYTHON=1 node apps/notebook-cloud/scripts/celld-local.mjs export "$RUNNER_TEMP/main-preview-export"
-          node .github/preview/pack.mjs "$RUNNER_TEMP/main-preview-export" "$GITHUB_SHA" "$RUNNER_TEMP/preview.bundle.gz"
+          NOTEBOOK_CLOUD_CELLD_PYTHON=1 node apps/notebook-cloud/scripts/celld-local.mjs export "$RUNNER_TEMP/cloud-export"
 
       # The optional post-release editor workflow packages this viewer build.
       # Exercise packaging and smoke here so breaks surface on the PR before
@@ -800,17 +800,6 @@ jobs:
             --source-sha="$GITHUB_SHA" \
             --built-at="$(git show -s --format=%cI HEAD)"
           bash scripts/ci/notebook-cloud-assets-smoke.sh "$RUNNER_TEMP/notebook-cloud-assets/notebook-cloud-assets-nightly.tar.gz"
-
-      - name: Upload main cloud deployment bundle
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: preview-bundle
-          path: ${{ runner.temp }}/preview.bundle.gz
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
-          overwrite: true
 
       - uses: ./.github/actions/install-cargo-about
 
