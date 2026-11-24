@@ -26,7 +26,6 @@ tokens, and the publishing jobs never see the signing keys.
 | `release-nightly` | branch `main` | none | `prerelease`, `publish-plugin`, `recover-nightly-wheel` for nightly |
 | `release-stable` | branch `main`, tag `v*` | `rgbkrk`, `intentionally-left-nil`; prevent self-review | `prerelease`, `publish-plugin` for stable |
 | `npm-publish` | branch `main` | none | the `publish-*` jobs in `publish-npm.yml` (npm OIDC only, no secrets) |
-| `sift-preview` | all branches | `rgbkrk`, `intentionally-left-nil`; prevent self-review | `sift-preview.yml` deploy |
 
 The stable environments admit `v*` tags because a stable release promotes a
 nightly tag such as `v2.10.1-nightly.202611161728`. Anyone with push access can
@@ -36,11 +35,6 @@ other reviewer must. Turn it off only if a second reviewer is not available. A
 stable run asks twice: once when the signing builds start
 (`release-signing-stable`), and again when `prerelease` and `publish-plugin`
 start (`release-stable`).
-
-`sift-preview` deploys pull request branches, and a pull request branch can
-edit `sift-preview.yml`. The reviewer is the only gate there, so the person who
-pushed cannot approve their own deploy. Before approving, read the run's
-workflow file at the pull request head.
 
 ## Windows signing by OIDC
 
@@ -90,18 +84,6 @@ JSON
 done
 ```
 
-`sift-preview` takes the same reviewers on any branch:
-
-```bash
-gh api -X PUT repos/nteract/nteract/environments/sift-preview --input - <<'JSON'
-{
-  "prevent_self_review": true,
-  "reviewers": [{"type": "User", "id": 836375}, {"type": "User", "id": 6687139}],
-  "deployment_branch_policy": null
-}
-JSON
-```
-
 User ids: 836375 is `rgbkrk`, 6687139 is `intentionally-left-nil`.
 
 Check each one in Settings → Environments. In each environment, leave
@@ -119,7 +101,6 @@ the environment and then deleted at repository level. Use the rotated values.
 | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` | `release-signing`, `release-signing-stable` | `build-notebook-windows-x64`, `build-notebook-windows-arm64`. Identifiers, not credentials. |
 | `CLAUDE_PLUGIN_DEPLOY_TOKEN` | `release-nightly`, `release-stable` | `publish-plugin` |
 | `DISCORD_WEBHOOK` | `release-nightly`, `release-stable` | `prerelease` |
-| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | `sift-preview` | `deploy` |
 
 `AZURE_CLIENT_SECRET` is not set anywhere. NumFOCUS deleted the client secret,
 and Windows signing uses the federated credential instead.
@@ -139,14 +120,16 @@ Tauri key or a base64 certificate, use `< file`.
 Then delete the repository copies:
 
 ```bash
-for name in TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD NUMFOCUS_APPLE_CERTIFICATE NUMFOCUS_APPLE_CERTIFICATE_PASSWORD NUMFOCUS_APPLE_SIGNING_IDENTITY NUMFOCUS_APPLE_API_ISSUER NUMFOCUS_APPLE_API_KEY NUMFOCUS_APPLE_API_PRIVATE_KEY AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET CLAUDE_PLUGIN_DEPLOY_TOKEN DISCORD_WEBHOOK CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do gh secret delete "$name" -R nteract/nteract; done
+for name in TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD NUMFOCUS_APPLE_CERTIFICATE NUMFOCUS_APPLE_CERTIFICATE_PASSWORD NUMFOCUS_APPLE_SIGNING_IDENTITY NUMFOCUS_APPLE_API_ISSUER NUMFOCUS_APPLE_API_KEY NUMFOCUS_APPLE_API_PRIVATE_KEY AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET CLAUDE_PLUGIN_DEPLOY_TOKEN DISCORD_WEBHOOK; do gh secret delete "$name" -R nteract/nteract; done
 ```
 
 No workflow reads these repository secrets. Delete them, and revoke the
-credentials behind them, since they were in the same dump:
+credentials behind them, since they were in the same dump.
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` lose their last reader when
+`sift-preview.yml` is removed; delete them after that removal is on `main`.
 
 ```bash
-for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APT_GPG_KEY_ID APT_GPG_PRIVATE_KEY AZURE_CERT_PROFILE_NAME AZURE_CODE_SIGNING_NAME AZURE_ENDPOINT CF_ACCOUNT_ID R2_AWS_ACCESS_KEY_ID R2_AWS_SECRET_ACCESS_KEY R2_BUCKET_NAME; do gh secret delete "$name" -R nteract/nteract; done
+for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APT_GPG_KEY_ID APT_GPG_PRIVATE_KEY AZURE_CERT_PROFILE_NAME AZURE_CODE_SIGNING_NAME AZURE_ENDPOINT CF_ACCOUNT_ID CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID R2_AWS_ACCESS_KEY_ID R2_AWS_SECRET_ACCESS_KEY R2_BUCKET_NAME; do gh secret delete "$name" -R nteract/nteract; done
 ```
 
 `DISCORD_WEBHOOK_WINDOWS` stays at repository level for `smoke.yml`. It is a
@@ -265,12 +248,11 @@ until these settings exist.
 - [ ] `release-signing-stable`, `release-stable`: deployment branch `main` and
   tag `v*`, required reviewers `rgbkrk` and `intentionally-left-nil`, prevent
   self-review on.
-- [ ] `sift-preview`: all branches, the same reviewers, prevent self-review on.
 - [ ] Admin bypass off in every one of those environments.
 - [ ] Both federated credentials exist on `nteract_signing`:
   `release-signing` and `release-signing-stable`.
 - [ ] Every moved secret is set in its environments and deleted at repository
-  level, `AZURE_CLIENT_SECRET` included. The 15 unused repository secrets are
+  level, `AZURE_CLIENT_SECRET` included. The 17 unused repository secrets are
   deleted.
 - [ ] The organization secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is deleted.
   `secrets: inherit` passes organization secrets to every release job, and any

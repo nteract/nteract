@@ -595,14 +595,6 @@ test("npm OIDC publishers run in npm-publish", () => {
   for (const [id, job] of publishers) assert.equal(job.environment, "npm-publish", `${id} must run in npm-publish`);
 });
 
-test("Sift preview deploys only in its reviewed environment, from a sanitized branch name", () => {
-  const {deploy} = parsedWorkflow("sift-preview").jobs;
-  assert.equal(deploy.environment, "sift-preview");
-  const step = deploy.steps.find(item => item.id === "deploy");
-  assert.match(step.with.command, /--branch=\$\{\{ steps\.branch\.outputs\.name \}\}$/);
-  assert.match(deploy.steps.find(item => item.id === "branch").run, /tr -c 'A-Za-z0-9-' '-'/);
-});
-
 test("no workflow or composite action splices inputs or event fields into a run script", () => {
   const directory = new URL("../../.github/", import.meta.url);
   const files = [
