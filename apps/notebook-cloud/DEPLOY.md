@@ -4,7 +4,8 @@
 
 The app can run on Cloudflare or celld. Managed `*.runtimed.run` previews use
 a separate trusted deployment controller; updating this repository's Wrangler
-configuration does not update that controller's configuration.
+configuration does not update that controller's configuration. This
+repository's CI does not deploy to the controller.
 
 | Deployment | Configuration owner | What must be supplied |
 | --- | --- | --- |
@@ -34,10 +35,10 @@ update and verify each supported deployment path:
 1. Export the entrypoint from the app and configure its bindings/migrations in
    Wrangler and the celld exporter. Include a schedule when recovery depends on
    a scheduled handler.
-2. For managed previews, coordinate the companion `preview-infra` change. The
-   [trusted packaging helpers](../../.github/preview/README.md) include only
-   compiled code, assets and migrations. They deliberately exclude generated
-   `wrangler.json` files, which can contain secrets. An application declaration
+2. For managed previews, coordinate the companion `preview-infra` change. A
+   bundle for the controller carries only compiled code, assets and
+   migrations. It never carries generated `wrangler.json` files, which can
+   contain secrets. An application declaration
    selects a fixed controller-supported capability; it never supplies arbitrary
    deployment configuration or privileges.
 3. Define compatibility for older bundles, then install the reviewed controller
