@@ -3153,7 +3153,7 @@ async fn doctor_command(
                 doctor_version_repair::RepairContext {
                     no_start,
                     dev_mode: runt_workspace::is_dev_mode(),
-                    can_reinstall_from_installed: !cfg!(windows),
+                    service_restart_supported: !cfg!(windows),
                 },
             )
         } else {
@@ -3204,7 +3204,7 @@ async fn doctor_command(
             }
             doctor_version_repair::VersionRepair::HeldByPlatform => {
                 eprintln!(
-                    "The running daemon is stale, but doctor cannot reinstall the installed binary over itself on this platform. Restart the app."
+                    "The daemon is stale, but on Windows the service stop kills every process with the daemon's image name, so doctor does not restart it. Restart the app."
                 );
             }
             doctor_version_repair::VersionRepair::Restart { source } => {
@@ -3632,11 +3632,26 @@ async fn restart_stale_daemon(
     let repaired = doctor_version_repair::run_service_repair(
         source,
         doctor_version_repair::SERVICE_REPAIR_TIMEOUT,
+        &std::env::temp_dir(),
     )
     .await;
     // The repair stops the service, replaces it, and starts it again.
     launches.record(doctor_readiness::ServiceRepair::Upgrade, repaired.is_ok());
-    repaired.map_err(|error| format!("repair failed: {error}"))?;
+    if let Err(failure) = repaired {
+        let now = match tokio::time::timeout(
+            Duration::from_secs(2),
+            runtimed_client::singleton::query_daemon_info(doctor_readiness::service_socket_path()),
+        )
+        .await
+        {
+            Ok(Some(info)) => format!(
+                "daemon pid {} version {} is answering",
+                info.pid, info.version
+            ),
+            _ => "no daemon is answering at the service socket".to_string(),
+        };
+        return Err(format!("{} {failure}. Now: {now}.", source.display()));
+    }
 
     // With no endpoint override and no dev namespace, the checked socket is
     // the service's.
@@ -3649,32 +3664,33 @@ async fn restart_stale_daemon(
     )
 }
 
-/// Probe the daemon endpoint before a restart. Absence needs proof: a
-/// missing or refused endpoint and no live daemon PID.
+/// Probe the daemon before a restart. Absence needs every witness: a missing
+/// or refused endpoint, no live PID from the socket metadata, and no running
+/// process reported by the service manager.
 async fn probe_daemon_presence(
     client: &runtimed::client::PoolClient,
     live_pid: Option<u32>,
 ) -> doctor_version_repair::DaemonPresence {
-    use doctor_version_repair::DaemonPresence;
-    match tokio::time::timeout(Duration::from_secs(2), client.ping()).await {
-        Ok(Ok(())) => DaemonPresence::Answering {
+    use doctor_version_repair::PingOutcome;
+    let ping = match tokio::time::timeout(Duration::from_secs(2), client.ping()).await {
+        Ok(Ok(())) => PingOutcome::Answered {
             running_kernels: count_running_kernels(client).await,
         },
-        Ok(Err(error)) if runtimed::startup::endpoint_absent(&error) => match live_pid {
-            Some(pid) if is_process_running(pid) => DaemonPresence::Inconclusive {
-                reason: format!(
-                    "daemon pid {pid} is alive but its endpoint refused the connection"
-                ),
-            },
-            _ => DaemonPresence::Absent,
-        },
-        Ok(Err(error)) => DaemonPresence::Inconclusive {
+        Ok(Err(error)) if runtimed::startup::endpoint_absent(&error) => PingOutcome::EndpointAbsent,
+        Ok(Err(error)) => PingOutcome::Failed {
             reason: error.to_string(),
         },
-        Err(_) => DaemonPresence::Inconclusive {
+        Err(_) => PingOutcome::Failed {
             reason: "ping timed out".to_string(),
         },
-    }
+    };
+    let socket_pid = live_pid.filter(|pid| is_process_running(*pid));
+    let service_pid = if ping == PingOutcome::EndpointAbsent {
+        runtimed_service::ServiceManager::default().running_pid()
+    } else {
+        Ok(None)
+    };
+    doctor_version_repair::classify_presence(ping, socket_pid, service_pid)
 }
 
 /// Count rooms with a live kernel on the daemon `client` talks to.
@@ -3703,48 +3719,10 @@ fn confirm_kernel_restart(running_kernels: usize) -> bool {
 }
 
 /// Get the version from a runtimed binary by running `--version`.
-/// Returns e.g. `"2.0.0+a1b2c3d"` (crate version + commit hash).
-///
-/// Gives up after five seconds, so a wedged binary cannot hang doctor.
+/// Returns e.g. `"2.0.0+a1b2c3d"` (crate version + commit hash), or `None`
+/// if the binary does not answer within five seconds.
 fn get_binary_version(path: &Path) -> Option<String> {
-    use std::io::Read;
-    const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
-    let mut child = std::process::Command::new(path)
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let started = std::time::Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < VERSION_TIMEOUT => {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    };
-    if !status.success() {
-        return None;
-    }
-    let mut stdout = String::new();
-    child
-        .stdout
-        .take()?
-        .take(4096)
-        .read_to_string(&mut stdout)
-        .ok()?;
-    let version = stdout.trim().trim_start_matches("runtimed ").to_string();
-    if version.is_empty() {
-        return None;
-    }
-    Some(version)
+    doctor_version_repair::binary_version(path, Duration::from_secs(5))
 }
 
 /// Find bundled runtimed binary in common app locations

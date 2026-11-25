@@ -23,29 +23,37 @@
 //! a live daemon itself on this path.
 //!
 //! A clean shutdown still ends every kernel, so the restart is gated on what
-//! the endpoint reports. A confirmed absent daemon restarts. An answering
-//! daemon with no running kernels restarts. Running kernels ask on an
-//! interactive terminal and refuse otherwise. A probe that neither answers nor
-//! proves the daemon absent refuses. `--no-start` never restarts. Dev mode
-//! never restarts either: the socket belongs to the worktree daemon, while the
-//! service definition belongs to the installed app.
+//! the endpoint reports. A daemon counts as absent only when its endpoint is
+//! missing or refused, no PID from the socket is alive, and the service
+//! manager reports no running process for the service. An answering daemon
+//! with no running kernels restarts. Running kernels ask on an interactive
+//! terminal and refuse otherwise. Anything else refuses. The gate covers this
+//! restart only; the `--no-start` staging path and doctor's older plist
+//! repairs stop the service without it.
+//!
+//! `--no-start` never restarts. Dev mode never restarts either: the socket
+//! belongs to the worktree daemon, while the service definition belongs to
+//! the installed app. Windows never restarts: its service stop kills every
+//! process with the daemon's image name, including daemons doctor never
+//! checked for kernels.
 
 use std::cmp::Ordering;
-use std::path::Path;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use runtimed_client::versions_match_ignoring_dirty;
 
-/// Deadline for `<target> install`. The repair's own bounds add up to about
-/// six minutes in the worst case: two minutes of clean shutdown, two minutes
-/// for the service to exit, and about a minute and a half of readiness
-/// probes. Doctor gives it seven.
+/// How long doctor waits for `<target> install`. The repair's own bounds add
+/// up to about six minutes in the worst case: two minutes of clean shutdown,
+/// two minutes for the service to exit, and about a minute and a half of
+/// readiness probes. Doctor waits seven, then reports without stopping it.
 pub(crate) const SERVICE_REPAIR_TIMEOUT: Duration = Duration::from_secs(420);
-/// Trailing bytes of the repair's stderr kept for the error message. All of
-/// it is read, so the child never blocks on a full pipe.
-const REPAIR_STDERR_CAP: usize = 16 * 1024;
-/// Lines of captured stderr quoted in an error.
-const REPAIR_STDERR_LINES: usize = 5;
+/// Trailing bytes of the repair's log read back for an error.
+const REPAIR_LOG_TAIL_BYTES: u64 = 16 * 1024;
+/// Lines of the repair's log quoted in an error.
+const REPAIR_LOG_TAIL_LINES: usize = 5;
+/// Bytes of `--version` output read before giving up on a line.
+const VERSION_OUTPUT_CAP: u64 = 4096;
 
 /// Versions read by doctor before it repairs anything.
 #[derive(Debug, Clone, Copy, Default)]
@@ -62,9 +70,9 @@ pub(crate) struct VersionInputs<'a> {
 pub(crate) struct RepairContext {
     pub no_start: bool,
     pub dev_mode: bool,
-    /// `<installed> install` replaces its own executable. Windows cannot
-    /// replace a running image, so this is false there.
-    pub can_reinstall_from_installed: bool,
+    /// The service stop can be scoped to the daemon doctor checked. False on
+    /// Windows, where it kills by image name.
+    pub service_restart_supported: bool,
 }
 
 /// Binary that `<binary> install` runs from.
@@ -94,8 +102,7 @@ pub(crate) enum VersionRepair {
     /// Two versions differ but have no order: same release, different build,
     /// or a version string that does not parse.
     HeldUnordered,
-    /// The restart would have to replace the running installed executable,
-    /// which this platform does not allow.
+    /// The platform's service stop cannot be scoped to the checked daemon.
     HeldByPlatform,
 }
 
@@ -166,25 +173,70 @@ pub(crate) fn decide_version_repair(
             VersionRepair::HeldByNoStart
         };
     }
-    if source == RepairSource::Installed && !context.can_reinstall_from_installed {
+    if !context.service_restart_supported {
         return VersionRepair::HeldByPlatform;
     }
     VersionRepair::Restart { source }
 }
 
-/// What the daemon endpoint showed when doctor probed it before a restart.
+/// The result of pinging the daemon endpoint before a restart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PingOutcome {
+    /// The daemon answered. `running_kernels` is `Err` when the room list
+    /// could not be read.
+    Answered {
+        running_kernels: Result<usize, String>,
+    },
+    /// The endpoint is missing or refused the connection.
+    EndpointAbsent,
+    /// A timeout or any other error.
+    Failed { reason: String },
+}
+
+/// What doctor knows about the daemon before a restart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DaemonPresence {
-    /// The endpoint is missing or refused, and no daemon PID is alive.
+    /// The endpoint is missing or refused, no daemon PID is alive, and the
+    /// service manager reports no running process.
     Absent,
     /// The daemon answered. `running_kernels` is `Err` when the room list
     /// could not be read.
     Answering {
         running_kernels: Result<usize, String>,
     },
-    /// Neither an answer nor proof of absence: a busy or wedged daemon, a
-    /// probe timeout, or a live PID without a socket.
+    /// Neither an answer nor proof of absence.
     Inconclusive { reason: String },
+}
+
+/// Combine the endpoint ping with the other evidence of a running daemon.
+///
+/// `socket_pid` is a daemon PID still alive from the last socket metadata.
+/// `service_pid` is what the service manager reports for the service; it is
+/// only consulted when the endpoint looks absent, because a moved or unlinked
+/// socket path hides a daemon from the ping but not from the service manager.
+pub(crate) fn classify_presence(
+    ping: PingOutcome,
+    socket_pid: Option<u32>,
+    service_pid: Result<Option<u32>, String>,
+) -> DaemonPresence {
+    match ping {
+        PingOutcome::Answered { running_kernels } => DaemonPresence::Answering { running_kernels },
+        PingOutcome::Failed { reason } => DaemonPresence::Inconclusive { reason },
+        PingOutcome::EndpointAbsent => match (socket_pid, service_pid) {
+            (Some(pid), _) => DaemonPresence::Inconclusive {
+                reason: format!("daemon pid {pid} is alive but its endpoint refused the connection"),
+            },
+            (None, Ok(Some(pid))) => DaemonPresence::Inconclusive {
+                reason: format!(
+                    "the service manager reports daemon pid {pid} running, but the endpoint is missing; the socket path may differ from the service's"
+                ),
+            },
+            (None, Err(error)) => DaemonPresence::Inconclusive {
+                reason: format!("could not ask the service manager: {error}"),
+            },
+            (None, Ok(None)) => DaemonPresence::Absent,
+        },
+    }
 }
 
 /// Whether a restart may proceed.
@@ -240,73 +292,183 @@ pub(crate) fn restart_gate(
     }
 }
 
-/// Run `<source> install`, the daemon's transactional service repair.
+/// Why `<source> install` did not succeed.
+#[derive(Debug)]
+pub(crate) enum RepairFailure {
+    Spawn(String),
+    Exited {
+        status: String,
+        tail: String,
+        log: PathBuf,
+    },
+    /// Still running at the deadline. Doctor leaves it running: stopping it
+    /// between the service stop and start would leave no daemon.
+    StillRunning {
+        pid: Option<u32>,
+        tail: String,
+        log: PathBuf,
+    },
+}
+
+impl std::fmt::Display for RepairFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Spawn(error) => write!(f, "{error}"),
+            Self::Exited { status, tail, log } => write!(
+                f,
+                "install exited with {status}: {tail} (full log: {})",
+                log.display()
+            ),
+            Self::StillRunning { pid, tail, log } => write!(
+                f,
+                "install was still running at the deadline (pid {}) and was left to finish; last output: {tail} (full log: {})",
+                pid.map_or_else(|| "unknown".to_string(), |pid| pid.to_string()),
+                log.display()
+            ),
+        }
+    }
+}
+
+/// Run `<source> install`, the daemon's transactional service repair, and
+/// wait up to `deadline` for it.
 ///
 /// The child inherits no endpoint override or dev namespace, so it resolves
-/// the service's own endpoint. It is killed if it outlives `deadline`; the
-/// daemon may then be stopped, and the error says so.
-pub(crate) async fn run_service_repair(source: &Path, deadline: Duration) -> Result<(), String> {
-    use tokio::io::AsyncReadExt;
-
+/// the service's own endpoint. Its stdout and stderr go to a log file in
+/// `log_dir` rather than a pipe, so it can outlive doctor without writing
+/// into a closed pipe. The file is removed on success and kept otherwise.
+pub(crate) async fn run_service_repair(
+    source: &Path,
+    deadline: Duration,
+    log_dir: &Path,
+) -> Result<(), RepairFailure> {
+    let log = log_dir.join(format!(
+        "runt-doctor-repair-{}-{}.log",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos())
+    ));
+    let spawn_error = |error: std::io::Error| {
+        RepairFailure::Spawn(format!(
+            "could not run {} install: {error}",
+            source.display()
+        ))
+    };
+    let stdout = std::fs::File::create_new(&log).map_err(spawn_error)?;
+    let stderr = stdout.try_clone().map_err(spawn_error)?;
     let mut child = tokio::process::Command::new(source)
         .arg("install")
         .env_remove("RUNTIMED_SOCKET_PATH")
         .env_remove("RUNTIMED_DEV")
         .env_remove("RUNTIMED_WORKSPACE_PATH")
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
+        .stdout(stdout)
+        .stderr(stderr)
+        .kill_on_drop(false)
         .spawn()
-        .map_err(|error| format!("could not run {} install: {error}", source.display()))?;
-    let stderr = child.stderr.take();
-    let run = async {
-        // Keep the last REPAIR_STDERR_CAP bytes: the error is at the end.
-        let mut captured = Vec::new();
-        if let Some(mut stderr) = stderr {
-            let mut chunk = [0u8; 8192];
-            loop {
-                let read = stderr.read(&mut chunk).await?;
-                if read == 0 {
-                    break;
-                }
-                captured.extend_from_slice(&chunk[..read]);
-                if captured.len() > REPAIR_STDERR_CAP {
-                    captured.drain(..captured.len() - REPAIR_STDERR_CAP);
-                }
-            }
+        .map_err(spawn_error)?;
+
+    match tokio::time::timeout(deadline, child.wait()).await {
+        Ok(Ok(status)) if status.success() => {
+            let _ = std::fs::remove_file(&log);
+            Ok(())
         }
-        let status = child.wait().await?;
-        Ok::<_, std::io::Error>((status, captured))
-    };
-    let (status, captured) = match tokio::time::timeout(deadline, run).await {
-        Ok(Ok(done)) => done,
-        Ok(Err(error)) => {
-            return Err(format!("{} install failed: {error}", source.display()));
-        }
-        Err(_) => {
-            let _ = child.start_kill();
-            return Err(format!(
-                "{} install did not finish within {} seconds and was stopped; the daemon may be down. Rerun the doctor with --fix.",
-                source.display(),
-                deadline.as_secs()
-            ));
-        }
-    };
-    if status.success() {
-        return Ok(());
+        Ok(Ok(status)) => Err(RepairFailure::Exited {
+            status: status.to_string(),
+            tail: read_log_tail(&log),
+            log,
+        }),
+        Ok(Err(error)) => Err(RepairFailure::Exited {
+            status: format!("an unknown status ({error})"),
+            tail: read_log_tail(&log),
+            log,
+        }),
+        Err(_) => Err(RepairFailure::StillRunning {
+            pid: child.id(),
+            tail: read_log_tail(&log),
+            log,
+        }),
     }
-    let stderr = String::from_utf8_lossy(&captured);
-    let lines: Vec<&str> = stderr
-        .lines()
+}
+
+/// The last non-empty lines of a repair log, reading at most
+/// `REPAIR_LOG_TAIL_BYTES` from its end.
+fn read_log_tail(path: &Path) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let len = file.metadata().map_or(0, |metadata| metadata.len());
+    let start = len.saturating_sub(REPAIR_LOG_TAIL_BYTES);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut bytes = Vec::new();
+    if (&mut file)
+        .take(REPAIR_LOG_TAIL_BYTES)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return String::new();
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if start > 0 && !lines.is_empty() {
+        // The read began mid-line.
+        lines.remove(0);
+    }
+    let lines: Vec<&str> = lines
+        .into_iter()
         .filter(|line| !line.trim().is_empty())
         .collect();
-    let tail = &lines[lines.len().saturating_sub(REPAIR_STDERR_LINES)..];
-    Err(format!(
-        "{} install exited with {status}: {}",
-        source.display(),
-        tail.join(" | ")
-    ))
+    lines[lines.len().saturating_sub(REPAIR_LOG_TAIL_LINES)..].join(" | ")
+}
+
+/// Run `<path> --version` and return its first line without the binary name,
+/// e.g. `"2.0.0+a1b2c3d"`. One deadline covers the exit and the read, so a
+/// wedged binary, or a wrapper whose child keeps stdout open, cannot hang
+/// doctor.
+pub(crate) fn binary_version(path: &Path, deadline: Duration) -> Option<String> {
+    use std::io::{BufRead, BufReader, Read};
+    let started = Instant::now();
+    let mut child = std::process::Command::new(path)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let stdout = child.stdout.take()?;
+    let (line_tx, line_rx) = std::sync::mpsc::channel();
+    // A reader blocked on a pipe held open by a grandchild ends when that
+    // process closes it; doctor does not wait for it.
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let read = BufReader::new(stdout.take(VERSION_OUTPUT_CAP)).read_line(&mut line);
+        let _ = line_tx.send(read.map(|_| line));
+    });
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    if !status.success() {
+        return None;
+    }
+    let line = line_rx
+        .recv_timeout(deadline.saturating_sub(started.elapsed()))
+        .ok()?
+        .ok()?;
+    let version = line.trim().trim_start_matches("runtimed ").to_string();
+    (!version.is_empty()).then_some(version)
 }
 
 /// Confirm the daemon answering after a repair is a new process running the
@@ -356,7 +518,7 @@ mod tests {
         RepairContext {
             no_start: false,
             dev_mode: false,
-            can_reinstall_from_installed: true,
+            service_restart_supported: true,
         }
     }
 
@@ -560,9 +722,9 @@ mod tests {
     }
 
     #[test]
-    fn platform_without_self_replacement_holds_installed_source() {
+    fn windows_never_restarts() {
         let windows = RepairContext {
-            can_reinstall_from_installed: false,
+            service_restart_supported: false,
             ..start()
         };
         assert_eq!(
@@ -571,8 +733,82 @@ mod tests {
         );
         assert_eq!(
             decide_version_repair(inputs(Some(NEW), Some(OLD), Some(NEW)), windows),
-            RESTART_FROM_BUNDLE
+            VersionRepair::HeldByPlatform
         );
+        // The NSIS hook stages with --no-start, which stays available.
+        assert_eq!(
+            decide_version_repair(
+                inputs(Some(OLD), Some(OLD), Some(NEW)),
+                RepairContext {
+                    no_start: true,
+                    ..windows
+                }
+            ),
+            VersionRepair::StageBundled
+        );
+    }
+
+    #[test]
+    fn absence_needs_every_witness_to_agree() {
+        assert_eq!(
+            classify_presence(PingOutcome::EndpointAbsent, None, Ok(None)),
+            DaemonPresence::Absent
+        );
+        assert!(matches!(
+            classify_presence(PingOutcome::EndpointAbsent, Some(7), Ok(None)),
+            DaemonPresence::Inconclusive { reason } if reason.contains("pid 7 is alive")
+        ));
+        // Socket unlinked or moved: only the service manager still sees it.
+        assert!(matches!(
+            classify_presence(PingOutcome::EndpointAbsent, None, Ok(Some(9))),
+            DaemonPresence::Inconclusive { reason } if reason.contains("reports daemon pid 9")
+        ));
+        assert!(matches!(
+            classify_presence(PingOutcome::EndpointAbsent, None, Err("no systemd".into())),
+            DaemonPresence::Inconclusive { reason } if reason.contains("no systemd")
+        ));
+    }
+
+    #[test]
+    fn failed_ping_is_inconclusive_and_answers_carry_kernels() {
+        assert_eq!(
+            classify_presence(
+                PingOutcome::Failed {
+                    reason: "ping timed out".into()
+                },
+                None,
+                Ok(None)
+            ),
+            DaemonPresence::Inconclusive {
+                reason: "ping timed out".into()
+            }
+        );
+        assert_eq!(
+            classify_presence(
+                PingOutcome::Answered {
+                    running_kernels: Ok(3)
+                },
+                None,
+                Ok(None)
+            ),
+            answering(Ok(3))
+        );
+    }
+
+    #[test]
+    fn busy_daemon_cannot_reach_proceed() {
+        // End to end through both functions: a timed-out ping never restarts.
+        let presence = classify_presence(
+            PingOutcome::Failed {
+                reason: "ping timed out".into(),
+            },
+            None,
+            Ok(None),
+        );
+        assert!(matches!(
+            restart_gate(presence, true, "runt"),
+            RestartGate::Refuse { .. }
+        ));
     }
 
     fn answering(kernels: Result<usize, String>) -> DaemonPresence {
@@ -659,48 +895,154 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn service_repair_passes_install_and_reports_success() {
-        let dir = tempfile::tempdir().unwrap();
-        let marker = dir.path().join("args");
-        let source = script(
-            &dir,
-            &format!("echo \"$@\" > '{}'; exit 0", marker.display()),
-        );
-        assert_eq!(
-            run_service_repair(&source, Duration::from_secs(10)).await,
-            Ok(())
-        );
-        assert_eq!(std::fs::read_to_string(marker).unwrap().trim(), "install");
+    fn logs_in(dir: &Path) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "log"))
+            .collect()
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn service_repair_stops_at_the_deadline() {
+    async fn service_repair_passes_install_and_removes_its_log() {
+        let bin = tempfile::tempdir().unwrap();
+        let logs = tempfile::tempdir().unwrap();
+        let marker = bin.path().join("args");
+        let source = script(
+            &bin,
+            &format!(
+                "echo \"$@\" > '{}'; echo progress; exit 0",
+                marker.display()
+            ),
+        );
+        run_service_repair(&source, Duration::from_secs(10), logs.path())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(marker).unwrap().trim(), "install");
+        assert!(logs_in(logs.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn service_repair_failure_keeps_the_log_tail() {
+        let bin = tempfile::tempdir().unwrap();
+        let logs = tempfile::tempdir().unwrap();
+        let source = script(&bin, "echo starting; echo 'Error: socket busy' >&2; exit 3");
+        let failure = run_service_repair(&source, Duration::from_secs(10), logs.path())
+            .await
+            .unwrap_err();
+        match &failure {
+            RepairFailure::Exited { tail, log, .. } => {
+                assert_eq!(tail, "starting | Error: socket busy");
+                assert!(log.exists());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn service_repair_is_left_running_at_the_deadline() {
+        let bin = tempfile::tempdir().unwrap();
+        let logs = tempfile::tempdir().unwrap();
+        let finished = bin.path().join("finished");
+        let source = script(
+            &bin,
+            &format!(
+                "echo stopping old daemon; sleep 3; echo done > '{}'",
+                finished.display()
+            ),
+        );
+        let started = std::time::Instant::now();
+        let failure = run_service_repair(&source, Duration::from_secs(1), logs.path())
+            .await
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(3));
+        match &failure {
+            RepairFailure::StillRunning { pid, tail, .. } => {
+                assert!(pid.is_some());
+                assert_eq!(tail, "stopping old daemon");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // Doctor did not stop the repair; it finishes on its own.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !finished.exists() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(finished.exists(), "repair was stopped at the deadline");
+    }
+
+    #[test]
+    fn log_tail_reads_a_bounded_suffix() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repair.log");
+        let mut file = std::fs::File::create(&path).unwrap();
+        // 1 MiB of noise, then the error.
+        for _ in 0..10_000 {
+            writeln!(file, "{}", "x".repeat(100)).unwrap();
+        }
+        writeln!(file, "Error: final").unwrap();
+        drop(file);
+        let tail = read_log_tail(&path);
+        assert!(tail.ends_with("Error: final"), "{tail}");
+        assert!(
+            tail.len() <= REPAIR_LOG_TAIL_BYTES as usize,
+            "tail was {} bytes",
+            tail.len()
+        );
+        // The partial first line of the window is dropped.
+        assert!(tail
+            .split(" | ")
+            .all(|line| line == "Error: final" || line.len() == 100));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binary_version_reads_the_first_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = script(&dir, "echo 'runtimed 2.11.0+abc1234'");
+        assert_eq!(
+            binary_version(&source, Duration::from_secs(5)).as_deref(),
+            Some("2.11.0+abc1234")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binary_version_gives_up_on_a_wedged_binary() {
         let dir = tempfile::tempdir().unwrap();
         let source = script(&dir, "exec sleep 30");
         let started = std::time::Instant::now();
-        let error = run_service_repair(&source, Duration::from_millis(200))
-            .await
-            .unwrap_err();
-        assert!(error.contains("did not finish"), "{error}");
-        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(binary_version(&source, Duration::from_millis(200)), None);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn service_repair_caps_captured_stderr() {
+    #[test]
+    fn binary_version_is_not_held_by_a_child_keeping_stdout_open() {
         let dir = tempfile::tempdir().unwrap();
-        // 200 KiB of stderr, more than a pipe buffer, then a final error line.
-        let source = script(
-            &dir,
-            "i=0; while [ $i -lt 2048 ]; do printf '%0100d\\n' 0 >&2; i=$((i+1)); done; echo 'Error: final' >&2; exit 3",
+        // The wrapper prints and exits, leaving a background child that
+        // still holds stdout.
+        let source = script(&dir, "sleep 5 & echo 'runtimed 2.11.0+abc1234'");
+        let started = std::time::Instant::now();
+        assert_eq!(
+            binary_version(&source, Duration::from_secs(2)).as_deref(),
+            Some("2.11.0+abc1234")
         );
-        let error = run_service_repair(&source, Duration::from_secs(20))
-            .await
-            .unwrap_err();
-        assert!(error.contains("exited with"), "{error}");
-        assert!(error.contains("Error: final"), "{error}");
-        assert!(error.len() < 2048, "error was {} bytes", error.len());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binary_version_misses_a_line_that_never_arrives() {
+        let dir = tempfile::tempdir().unwrap();
+        // Exits zero without printing while a child keeps stdout open.
+        let source = script(&dir, "sleep 5 &");
+        let started = std::time::Instant::now();
+        assert_eq!(binary_version(&source, Duration::from_millis(500)), None);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }
