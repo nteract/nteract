@@ -658,6 +658,56 @@ impl ServiceManager {
         }
     }
 
+    /// The daemon process the service manager reports for this service.
+    ///
+    /// `Ok(None)` means the service manager knows the service and reports no
+    /// running process, or does not know the service at all. `Err` means the
+    /// service manager could not be asked. This does not go through the
+    /// daemon's socket, so it still sees a daemon whose socket path moved or
+    /// whose socket file was removed.
+    pub fn running_pid(&self) -> Result<Option<u32>, String> {
+        #[cfg(target_os = "macos")]
+        {
+            let output = std::process::Command::new("launchctl")
+                .args(["list", daemon_launchd_label()])
+                .output()
+                .map_err(|e| format!("could not run launchctl list: {e}"))?;
+            if !output.status.success() {
+                // `launchctl list <label>` fails for an unknown label.
+                return match runt_workspace::launchd_is_loaded() {
+                    Ok(false) => Ok(None),
+                    Ok(true) => Err("launchctl list failed for a loaded service".to_string()),
+                    Err(error) => Err(error),
+                };
+            }
+            Ok(parse_launchctl_list_pid(&String::from_utf8_lossy(
+                &output.stdout,
+            )))
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            ensure_linux_user_systemd_available().map_err(|e| e.to_string())?;
+            let output = systemctl_command()
+                .args(["--user", "show", "--property=MainPID", "--value"])
+                .arg(systemd_service_unit_name())
+                .output()
+                .map_err(|e| format!("could not run systemctl: {e}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "systemctl show failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            parse_systemd_main_pid(&String::from_utf8_lossy(&output.stdout))
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            Err("the Windows Startup entry does not track a daemon process".to_string())
+        }
+    }
+
     /// Check if the service is installed.
     ///
     /// On macOS, checks the legacy plist in `~/Library/LaunchAgents/`.
@@ -1225,6 +1275,27 @@ fn windows_stop_args(image_name: &str, caller_pid: u32) -> [String; 5] {
     ]
 }
 
+/// The `"PID" = <n>;` entry of `launchctl list <label>`. A loaded job that
+/// is not running has no PID entry.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_launchctl_list_pid(output: &str) -> Option<u32> {
+    output.lines().find_map(|line| {
+        let value = line.trim().strip_prefix("\"PID\" = ")?;
+        value.trim_end_matches(';').trim().parse().ok()
+    })
+}
+
+/// `systemctl show --property=MainPID --value`: `0` when the unit has no
+/// running main process.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_systemd_main_pid(output: &str) -> Result<Option<u32>, String> {
+    match output.trim().parse::<u32>() {
+        Ok(0) => Ok(None),
+        Ok(pid) => Ok(Some(pid)),
+        Err(_) => Err(format!("unexpected MainPID value {:?}", output.trim())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1249,6 +1320,21 @@ mod tests {
             windows_stop_args("runtimed.exe", 4242),
             ["/F", "/IM", "runtimed.exe", "/FI", "PID ne 4242"].map(String::from)
         );
+    }
+
+    #[test]
+    fn launchctl_list_pid_reads_running_jobs_only() {
+        let running = "{\n\t\"LimitLoadToSessionType\" = \"Aqua\";\n\t\"Label\" = \"io.nteract.runtimed\";\n\t\"PID\" = 89394;\n\t\"Program\" = \"/x/runtimed\";\n};";
+        assert_eq!(parse_launchctl_list_pid(running), Some(89394));
+        let stopped = "{\n\t\"Label\" = \"io.nteract.runtimed\";\n\t\"LastExitStatus\" = 0;\n};";
+        assert_eq!(parse_launchctl_list_pid(stopped), None);
+    }
+
+    #[test]
+    fn systemd_main_pid_zero_is_not_running() {
+        assert_eq!(parse_systemd_main_pid("0\n"), Ok(None));
+        assert_eq!(parse_systemd_main_pid("4242\n"), Ok(Some(4242)));
+        assert!(parse_systemd_main_pid("\n").is_err());
     }
 
     #[test]
