@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { outputFrameAssets } from "./output-frame-config.mjs";
-import { outputFrameUrl } from "../shared/output-frame-config.mjs";
+import { libraryOrigin, outputFrameUrl } from "../shared/output-frame-config.mjs";
+import { OUTPUT_FRAME_URL } from "../shared/anywidget-view.mjs";
 import { VIEWER_CSP } from "../scripts/viewer-chunks.mjs";
 import worker from "./index.mjs";
 
@@ -120,6 +121,70 @@ test("gateway applies runtime frame configuration to root, bare and slugged Page
       path,
     );
   }
+});
+
+test("PAGES_LIBRARY_ORIGIN is a bare HTTPS origin", () => {
+  for (const value of ["https://libraries.example", "https://libraries.example/"])
+    assert.equal(libraryOrigin(value), "https://libraries.example");
+  for (const value of [
+    "libraries.example",
+    "http://libraries.example",
+    "http://127.0.0.1:9447",
+    "https://libraries.example/catalog/",
+    "https://u:p@libraries.example",
+    "https://libraries.example?x=1",
+    "https://libraries.example#x",
+    "https://LIBRARIES.example",
+  ])
+    assert.throws(() => libraryOrigin(value), /PAGES_LIBRARY_ORIGIN/, value);
+});
+
+test("a shell with a library origin names it and lets the viewer read its manifests", async () => {
+  const tailnet = "https://pages.tailnet.example:8443";
+  const library = "https://libraries.example";
+  const response = await outputFrameAssets(
+    { fetch: async () => asset() },
+    undefined,
+    tailnet,
+    library,
+  ).fetch(new Request(tailnet + "/"));
+  const body = await response.text();
+  assert.match(body, /name="pages-library-origin" content="https:\/\/libraries.example"/);
+  // Without a frame URL the shell keeps the default frame.
+  assert.ok(body.includes(`name="pages-output-frame-url" content="${OUTPUT_FRAME_URL}"`));
+  assert.equal(
+    response.headers.get("content-security-policy"),
+    VIEWER_CSP.replace("connect-src 'self'", `connect-src 'self' ${library}`),
+  );
+  // A frame URL alone names no library origin and reads only its own origin.
+  const plain = await outputFrameAssets({ fetch: async () => asset() }, frame, origin).fetch(
+    new Request(origin),
+  );
+  assert.doesNotMatch(await plain.text(), /pages-library-origin/);
+  assert.match(plain.headers.get("content-security-policy"), /connect-src 'self';/);
+});
+
+test("gateway applies PAGES_LIBRARY_ORIGIN to Page shells and refuses a malformed one", async (t) => {
+  for (const level of ["log", "info", "warn", "error"]) t.mock.method(console, level, () => {});
+  const env = {
+    NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
+    PAGES_LIBRARY_ORIGIN: "https://libraries.example",
+    ASSETS: { fetch: async () => asset() },
+    PAGES: { getByName: () => ({ fetch: async () => Response.json(null) }) },
+  };
+  const path = "/p/1a160b47-6df1-4983-81eb-489ca5a26812";
+  const named = await worker.fetch(new Request(origin + path), env);
+  assert.equal(named.status, 200);
+  assert.match(await named.text(), /pages-library-origin/);
+  assert.match(
+    named.headers.get("content-security-policy"),
+    /connect-src 'self' https:\/\/libraries.example;/,
+  );
+  const malformed = await worker.fetch(new Request(origin + path), {
+    ...env,
+    PAGES_LIBRARY_ORIGIN: "https://libraries.example/catalog/",
+  });
+  assert.equal(malformed.status, 500);
 });
 
 test("non-reading asset requests retain their method and body", async () => {

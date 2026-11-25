@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { standardImports } from "../shared/widget-imports.mjs";
 
 /** The catalog's directory in a build's dist, and its URL path prefix. */
@@ -29,6 +30,12 @@ const nameOf = (id) => id.replace(/^@/, "").replaceAll("/", "-");
  */
 export async function buildLibraryCatalog(app, { entries = standardImports } = {}) {
   const requireFromApp = createRequire(path.join(app, "package.json"));
+  const siftWasm = await readFile(requireFromApp.resolve("@nteract/sift/sift.wasm"));
+  const siftWasmIntegrity = "sha256-" + createHash("sha256").update(siftWasm).digest("base64");
+  const verifiedWasm = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../shared/verified-wasm.mjs",
+  );
   const result = await build({
     absWorkingDir: app,
     entryPoints: entries.map((id) => ({ in: `catalog:${id}`, out: nameOf(id) })),
@@ -56,8 +63,19 @@ export async function buildLibraryCatalog(app, { entries = standardImports } = {
           plugin.onLoad({ filter: /.*/, namespace: "catalog" }, ({ path: id }) => {
             let contents;
             if (id === "@nteract/sift/parquet") {
-              contents =
-                "import {setWasmUrl} from '@nteract/sift'; setWasmUrl(new URL('./sift.wasm', import.meta.url).href); export {loadTableFile} from '@nteract/sift';";
+              // The wasm loads from the library origin, outside import map
+              // integrity, so the entry checks it against the hash it
+              // carries before Sift sees it (shared/verified-wasm.mjs).
+              contents = [
+                "import {setWasmUrl, loadTableFile as load} from '@nteract/sift';",
+                `import {verifiedWasmUrl} from ${JSON.stringify(verifiedWasm)};`,
+                "let ready;",
+                "export async function loadTableFile(...args) {",
+                `  ready ??= verifiedWasmUrl(new URL('./sift.wasm', import.meta.url).href, ${JSON.stringify(siftWasmIntegrity)}).then(setWasmUrl, (error) => { ready = undefined; throw error; });`,
+                "  await ready;",
+                "  return load(...args);",
+                "}",
+              ].join("\n");
             } else if (id.startsWith("react")) {
               // Publish CJS React entry points as real named ESM exports. All
               // importers resolve the same React module within the split graph.
@@ -75,7 +93,7 @@ export async function buildLibraryCatalog(app, { entries = standardImports } = {
     ],
   });
   const files = new Map(result.outputFiles.map((f) => [path.basename(f.path), f.contents]));
-  files.set("sift.wasm", await readFile(requireFromApp.resolve("@nteract/sift/sift.wasm")));
+  files.set("sift.wasm", siftWasm);
   for (const name of files.keys())
     if (!LIBRARY_FILE.test(name) || name === LIBRARY_MANIFEST)
       throw new Error(`The library catalog cannot hold a file named ${name}`);

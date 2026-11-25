@@ -55,16 +55,17 @@ Every output host serves the same bytes.
 
 A view's libraries arrive in its mount payload, never in the frame document.
 
-- **`payload.libraries`**: maps bare names (such as `d3` or `@observablehq/plot`) to absolute ES module URLs served on the embedder's origin.
-- **Host validation (`checkLibraries` in `src/payload.mjs`)**: allows at most 64 entries. Each URL must match `<origin>/catalog/<revision>/<file>.js` on the embedder's origin, sharing one revision across the map. URLs must use HTTPS, or HTTP only on a loopback host.
+- **`payload.libraries`**: maps bare names (such as `d3` or `@observablehq/plot`) to absolute ES module URLs on the library origin: the embedder's own origin, or the one it passes as `libraryOrigin`.
+- **Host validation (`checkLibraries` in `src/payload.mjs`)**: allows at most 64 entries. Each URL must match `<origin>/catalog/<revision>/<file>.js` on the library origin, sharing one revision across the map. URLs must use HTTPS, or HTTP only on a loopback host.
 - **`payload.libraryIntegrity`**: maps up to 256 module URLs in the same catalog revision (libraries and imported chunks) to `sha256-<base64>` hashes.
 - **Import map (`src/import-map.mjs`)**: the runtime builds one import map from `payload.libraries`, then adds bound imports and `data/` files as blob URLs, attaching the integrity map as `integrity`. Chromium, Firefox, and WebKit all refuse library modules whose bytes differ. A bound name that duplicates a library fails the mount.
 
 Because the frame has an opaque origin, it loads library modules in CORS mode:
 
 - Each library response must include `Access-Control-Allow-Origin: *`.
-- The output host's CSP must allow the embedder's origin in `script-src` (`https:` covers any HTTPS embedder).
+- The output host's CSP must allow the library origin in `script-src` (`https:` covers any HTTPS origin).
 - A local HTTP embedder must add its origin to its local frame server's CSP and serve that frame on a loopback address. Chromium blocks a public-origin frame from loading loopback resources.
+- An embedder on a private address, such as a tailnet or LAN host, with a public output host passes a public `libraryOrigin`. Chromium's Local Network Access blocks a public-origin frame from loading resources on private addresses too.
 
 ## Handshake, lifecycle, and isolation
 

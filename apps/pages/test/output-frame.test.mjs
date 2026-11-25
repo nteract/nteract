@@ -182,6 +182,39 @@ test("frame startup timeout and teardown use an injected clock", async (t) => {
   assert.deepEqual(states, ["connecting", "failed", "disposed"]);
 });
 
+test("a library map must name the library origin the embedder passes", async (t) => {
+  const { JSDOM } = await import("jsdom");
+  const { mountModuleOutput } = await import("@nteract/output-frame");
+  const dom = new JSDOM("<main></main>", { url: "https://pages.tailnet.example/" });
+  t.after(() => dom.window.close());
+  const revision = "a".repeat(64);
+  const mountWith = (libraryOrigin, origin) =>
+    mountModuleOutput(
+      dom.window.document.querySelector("main"),
+      {
+        kind: "module",
+        assets: { entry: { bytes: new Uint8Array(), mediaType: ESM_MEDIA_TYPE } },
+        libraries: { d3: `${origin}/catalog/${revision}/d3.js` },
+      },
+      {
+        frameUrl: "https://outputs.example/frame/v2/",
+        runtime: "runtime text",
+        hostContext: { theme: "light" },
+        ...(libraryOrigin && { libraryOrigin }),
+      },
+    );
+  mountWith(undefined, "https://pages.tailnet.example").destroy();
+  mountWith("https://libraries.example", "https://libraries.example").destroy();
+  assert.throws(
+    () => mountWith(undefined, "https://libraries.example"),
+    /library catalog: https:\/\/pages.tailnet.example\/catalog/,
+  );
+  assert.throws(
+    () => mountWith("https://libraries.example", "https://pages.tailnet.example"),
+    /library catalog: https:\/\/libraries.example\/catalog/,
+  );
+});
+
 test("binary transport does not expose bytes outside an authorized subarray", async () => {
   const { preparePayload } = await import("../../../packages/output-frame/src/payload.mjs");
   const backing = new Uint8Array([99, 1, 2, 99]);

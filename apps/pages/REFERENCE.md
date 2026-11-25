@@ -2325,17 +2325,28 @@ bundle carries the build's revision, as the Worker does
 ([shared/library-catalog.mjs](shared/library-catalog.mjs)), and uses it as the
 host's current revision on every host, with or without an output frame URL. A
 run from source carries the unbuilt revision and has no current revision.
-A host serves its own build's catalog and the revisions in its archive. To
-mount an executable view, the viewer fetches a manifest from its own origin,
-checks its sha256, and sends the frame a library map of absolute URLs on that
-origin, with each catalog module's integrity from the manifest
-([viewer/library-catalog.mjs](viewer/library-catalog.mjs)):
+A host serves its own build's catalog and the revisions in its archive. A
+deployment with `PAGES_LIBRARY_ORIGIN` names another origin for the catalog
+instead: the gateway puts it in the app shell as
+`<meta name="pages-library-origin">` and adds it to the shell's `connect-src`
+([worker/output-frame-config.mjs](worker/output-frame-config.mjs)). The value
+is a bare HTTPS origin; any other value answers 500 for app shells. To mount an
+executable view, the viewer fetches a manifest from the library origin (that
+one, or its own), checks its sha256, and sends the frame a library map of
+absolute URLs on that origin, with each catalog module's integrity from the
+manifest ([viewer/library-catalog.mjs](viewer/library-catalog.mjs)). The frame
+host accepts a map only on the library origin it is given
+(`@nteract/output-frame` `libraryOrigin`). The catalog's
+`@nteract/sift/parquet` entry carries `sift.wasm`'s sha256 and fetches the wasm
+with that integrity before Sift loads it
+([shared/verified-wasm.mjs](shared/verified-wasm.mjs)), since import map
+integrity covers only modules. The map holds:
 
-- the view's `catalog_revision` while this host serves it (200 and a matching
-  sha256);
+- the view's `catalog_revision` while the library origin serves it (200 and a
+  matching sha256);
 - otherwise, or for a view with no `catalog_revision`, the host's current
   revision;
-- when this host serves neither (an unbundled host names the all-zero
+- when the library origin serves neither (an unbundled host names the all-zero
   revision), no library map: the view mounts, and a view that imports no
   library runs.
 

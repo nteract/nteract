@@ -16,9 +16,9 @@ const SHA256_INTEGRITY = /^sha256-[A-Za-z0-9+/]{43}=$/;
 
 const isRecord = (value) => value && typeof value === "object" && !Array.isArray(value);
 
-/** The catalog revision of `value`, a module URL in the embedder's catalog:
- * `<origin>/catalog/<revision>/<file>.js`, exactly as written, over https or
- * over http on a loopback host. Throws, naming `label`, otherwise. */
+/** The catalog revision of `value`, a module URL in the library origin's
+ * catalog: `<origin>/catalog/<revision>/<file>.js`, exactly as written, over
+ * https or over http on a loopback host. Throws, naming `label`, otherwise. */
 function catalogRevision(value, origin, label) {
   let url;
   try {
@@ -39,18 +39,18 @@ function catalogRevision(value, origin, label) {
     !(url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK.has(url.hostname)))
   )
     throw Error(
-      `${label} must be a module in the page's catalog: ${origin}/catalog/<revision>/<file>.js over https.`,
+      `${label} must be a module in the library catalog: ${origin}/catalog/<revision>/<file>.js over https.`,
     );
   return path[1];
 }
 
 /**
  * A view's library map, checked: `libraries`, bare name → absolute URL of
- * the module, and `integrity`, module URL → its sha256 integrity value. The
- * embedder serves its library catalog on its own origin, so every URL is
- * `<origin>/catalog/<revision>/<file>.js` with the embedding document's
- * `origin` and one revision for both maps, over https, or over http only on a
- * loopback host. At most MAX_LIBRARIES names and MAX_LIBRARY_FILES integrity
+ * the module, and `integrity`, module URL → its sha256 integrity value. One
+ * library origin serves the catalog, the embedder's own or the one its
+ * deployment names, so every URL is `<origin>/catalog/<revision>/<file>.js`
+ * with that `origin` and one revision for both maps, over https, or over http
+ * only on a loopback host. At most MAX_LIBRARIES names and MAX_LIBRARY_FILES integrity
  * entries; integrity needs libraries. Returns copies, each undefined when
  * empty.
  */
@@ -96,8 +96,8 @@ export function checkLibraries(libraries, origin, integrity) {
 
 // Copy exactly the authorized view, never the unseen tail of a shared buffer.
 // Only dedicated buffers are transferred; callers retain their data.
-// `origin` is the embedding document's origin, the one origin a library map
-// may name (checkLibraries).
+// `origin` is the library origin, the one origin a library map may name
+// (checkLibraries).
 export function preparePayload(payload, { origin } = {}) {
   const module = payload.kind === "module";
   const checked = module ? { ok: true, names: ["entry"] } : checkAnywidgetSpec(payload.spec);

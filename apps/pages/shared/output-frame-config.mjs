@@ -1,5 +1,31 @@
 import { OUTPUT_FRAME_URL } from "./anywidget-view.mjs";
 
+/** PAGES_LIBRARY_ORIGIN: the public origin that serves this deployment's view
+ * libraries at /catalog/<revision>/. HTTPS, with no path, credentials, query
+ * or fragment: the output frame's CSP admits `https:` scripts only. Returns
+ * the origin. */
+export function libraryOrigin(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw Error("PAGES_LIBRARY_ORIGIN must be an absolute HTTPS origin");
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash ||
+    value.replace(/\/$/, "") !== url.origin
+  )
+    throw Error(
+      "PAGES_LIBRARY_ORIGIN must be an HTTPS origin, without credentials, path, query or fragment",
+    );
+  return url.origin;
+}
+
 // The shell and its CSP must agree. This is deployment configuration, never
 // Page content; a Page cannot choose which host receives its widget inputs.
 export function outputFrameUrl(value = OUTPUT_FRAME_URL, pageOrigin) {

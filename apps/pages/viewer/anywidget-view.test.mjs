@@ -102,8 +102,10 @@ function viewRecord(catalogRevision, entrySource = "entry") {
   return readView(doc, "daily");
 }
 
-async function mountView(view, { libraryMap } = {}) {
-  const { window } = new JSDOM("<!doctype html><body></body>");
+async function mountView(view, { libraryMap, head = "" } = {}) {
+  const { window } = new JSDOM(`<!doctype html><head>${head}</head><body></body>`, {
+    url: "https://pages.tailnet.example/",
+  });
   const requested = [];
   const request = async (url) => {
     requested.push(url);
@@ -126,7 +128,7 @@ async function mountView(view, { libraryMap } = {}) {
       theme: { subscribe: () => () => {}, getSnapshot: () => ({ resolved: "light" }) },
       ...(libraryMap && { libraryMap }),
       mountOutput(_container, payload, options) {
-        resolve({ payload, frameUrl: options.frameUrl });
+        resolve({ payload, frameUrl: options.frameUrl, libraryOrigin: options.libraryOrigin });
         return { destroy() {}, setHostContext() {} };
       },
     });
@@ -277,6 +279,40 @@ function moduleViewWriter() {
 }
 
 const plan = (key, data, title = "T") => ({ key, data, view: { title } });
+
+// A deployment on a private address names a public library origin
+// (worker/output-frame-config.mjs); the frame host checks the library map
+// against it.
+test("a view's libraries come from the shell's library origin, else the page's", async () => {
+  const libraryMap = () => of({ kind: "none" });
+  for (const [head, expected] of [
+    ["", "https://pages.tailnet.example"],
+    [
+      '<meta name="pages-library-origin" content="https://libraries.example">',
+      "https://libraries.example",
+    ],
+  ]) {
+    const mounted = await mountView(viewRecord(null), { libraryMap, head });
+    assert.equal(mounted.failed, undefined, mounted.failed);
+    assert.equal(mounted.libraryOrigin, expected, head);
+  }
+});
+
+test("a view reads its pinned catalog manifest from the shell's library origin", async (t) => {
+  forgetLibraryMaps();
+  const asked = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    asked.push(String(url));
+    return new Response(null, { status: 404 });
+  });
+  const pin = "a".repeat(64);
+  const mounted = await mountView(viewRecord(pin), {
+    head: '<meta name="pages-library-origin" content="https://libraries.example">',
+  });
+  assert.equal(mounted.failed, undefined, mounted.failed);
+  assert.deepEqual(asked, [`https://libraries.example/catalog/${pin}/manifest.json`]);
+  assert.equal(mounted.libraryOrigin, "https://libraries.example");
+});
 
 test("a plan change is a remount, a data change, a title change or nothing", () => {
   const a = { asset_id: "a".repeat(64), media_type: "application/octet-stream" };
