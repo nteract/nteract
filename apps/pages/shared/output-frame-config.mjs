@@ -1,10 +1,9 @@
 import { OUTPUT_FRAME_URL } from "./anywidget-view.mjs";
 
-const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
-
-/** PAGES_LIBRARY_ORIGIN: the origin that serves this deployment's view
- * libraries at /catalog/<revision>/. HTTPS, or HTTP on a loopback host, with
- * no path, credentials, query or fragment. Returns the origin. */
+/** PAGES_LIBRARY_ORIGIN: the public origin that serves this deployment's view
+ * libraries at /catalog/<revision>/. HTTPS, with no path, credentials, query
+ * or fragment: the output frame's CSP admits `https:` scripts only. Returns
+ * the origin. */
 export function libraryOrigin(value) {
   let url;
   try {
@@ -13,7 +12,7 @@ export function libraryOrigin(value) {
     throw Error("PAGES_LIBRARY_ORIGIN must be an absolute HTTPS origin");
   }
   if (
-    !(url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK.has(url.hostname))) ||
+    url.protocol !== "https:" ||
     url.username ||
     url.password ||
     url.pathname !== "/" ||

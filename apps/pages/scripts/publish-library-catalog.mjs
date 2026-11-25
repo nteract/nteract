@@ -8,8 +8,11 @@
 // header. A revision names its bytes, so publishing one again writes the same
 // objects. Uploads run through wrangler and its current login.
 import { execFileSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { LIBRARY_REVISION } from "../shared/library-catalog.mjs";
 import { LIBRARY_CATALOG_DIRECTORY, LIBRARY_FILE } from "./library-catalog.mjs";
 
@@ -46,13 +49,14 @@ export async function catalogUploads(dist) {
   return uploads;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const args = process.argv.slice(2);
-  const dist = args.includes("--dist") ? args[args.indexOf("--dist") + 1] : "dist";
-  const bucket = args.find(
-    (arg, i) => !arg.startsWith("--") && !(args[i - 1] === "--dist" && arg === dist),
-  );
-  if (!bucket) {
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const { values, positionals } = parseArgs({
+    allowPositionals: true,
+    options: { dist: { type: "string", default: "dist" }, "dry-run": { type: "boolean" } },
+  });
+  const [bucket, ...extra] = positionals;
+  const dist = values.dist;
+  if (!bucket || extra.length) {
     console.error(
       "usage: node scripts/publish-library-catalog.mjs <bucket> [--dist dist] [--dry-run]",
     );
@@ -71,6 +75,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       `--cache-control=${CATALOG_CACHE_CONTROL}`,
     ];
     console.log(command.join(" "));
-    if (!args.includes("--dry-run")) execFileSync("npx", command, { stdio: "inherit" });
+    if (!values["dry-run"]) execFileSync("npx", command, { stdio: "inherit" });
   }
 }

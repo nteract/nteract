@@ -123,13 +123,13 @@ test("gateway applies runtime frame configuration to root, bare and slugged Page
   }
 });
 
-test("PAGES_LIBRARY_ORIGIN is a bare HTTPS origin, or HTTP on loopback", () => {
+test("PAGES_LIBRARY_ORIGIN is a bare HTTPS origin", () => {
   for (const value of ["https://libraries.example", "https://libraries.example/"])
     assert.equal(libraryOrigin(value), "https://libraries.example");
-  assert.equal(libraryOrigin("http://127.0.0.1:9447"), "http://127.0.0.1:9447");
   for (const value of [
     "libraries.example",
     "http://libraries.example",
+    "http://127.0.0.1:9447",
     "https://libraries.example/catalog/",
     "https://u:p@libraries.example",
     "https://libraries.example?x=1",

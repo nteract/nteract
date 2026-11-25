@@ -298,6 +298,22 @@ test("a view's libraries come from the shell's library origin, else the page's",
   }
 });
 
+test("a view reads its pinned catalog manifest from the shell's library origin", async (t) => {
+  forgetLibraryMaps();
+  const asked = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    asked.push(String(url));
+    return new Response(null, { status: 404 });
+  });
+  const pin = "a".repeat(64);
+  const mounted = await mountView(viewRecord(pin), {
+    head: '<meta name="pages-library-origin" content="https://libraries.example">',
+  });
+  assert.equal(mounted.failed, undefined, mounted.failed);
+  assert.deepEqual(asked, [`https://libraries.example/catalog/${pin}/manifest.json`]);
+  assert.equal(mounted.libraryOrigin, "https://libraries.example");
+});
+
 test("a plan change is a remount, a data change, a title change or nothing", () => {
   const a = { asset_id: "a".repeat(64), media_type: "application/octet-stream" };
   const b = { asset_id: "b".repeat(64), media_type: "application/octet-stream" };

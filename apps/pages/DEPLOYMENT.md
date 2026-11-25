@@ -2661,7 +2661,9 @@ Set `PAGES_LIBRARY_ORIGIN` to a public origin that serves the catalog, such as
 it to the shell's `connect-src`. Each view reads the catalog's `manifest.json`
 from that origin, accepts it only when its sha256 is the revision the view
 asks for, and imports the libraries from there with the manifest's hashes as
-import map integrity. The library host stores bytes; it can't change them. A
+import map integrity. Sift's `sift.wasm` loads outside the import map, so the
+catalog's `@nteract/sift/parquet` entry carries the wasm's sha256 and fetches
+it with that integrity. The library host stores bytes; it can't change them. A
 view pinned to a revision the library origin doesn't serve uses this build's
 revision, and a build whose revision isn't there mounts views without
 libraries, so publish each new revision before deploying a build that carries
@@ -2670,7 +2672,11 @@ it. Unset, views use the deployment's own origin.
 Any static host can be a library origin. It must answer
 `GET /catalog/<revision>/<file>` with the file's bytes,
 `Access-Control-Allow-Origin: *` and its content type (`text/javascript` for
-`.js`, `application/wasm` for `.wasm`, `application/json` for `.json`). The
+`.js`, `application/wasm` for `.wasm`, `application/json` for `.json`). A file
+it doesn't hold must be a 404 that also carries
+`Access-Control-Allow-Origin: *`; any other answer, such as an object store's
+403, reads as a failure, and the view offers Retry instead of falling back to
+this build's revision. The
 catalog is in a build at `dist/public/catalog/<revision>/`; copy that
 directory. For an R2 bucket behind a custom domain, with a CORS rule that
 allows `GET` and `HEAD` from any origin:
