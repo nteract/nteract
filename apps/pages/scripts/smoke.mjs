@@ -133,10 +133,16 @@ await tool(cookie, "edit_page", {
   page_id: page.page_id,
   revision: beforeInsert.revision,
   nonce: crypto.randomUUID(),
-  operations: [{ op: "insert_markdown", after_node_id: null, markdown: "A second block." }],
+  operations: [
+    {
+      op: "insert_markdown",
+      after_node_id: current.blocks[0].node_id,
+      markdown: "A second block.",
+    },
+  ],
 });
 const beforeMove = await tool(cookie, "read_page", { page_id: page.page_id });
-assert.equal(beforeMove.blocks[0].markdown, "A second block.");
+assert.equal(beforeMove.blocks[1].markdown, "A second block.");
 const moveResponse = await fetch(origin + "/mcp", {
   method: "POST",
   headers: {
@@ -155,7 +161,9 @@ const moveResponse = await fetch(origin + "/mcp", {
         page_id: page.page_id,
         revision: beforeMove.revision,
         nonce: crypto.randomUUID(),
-        operations: [{ op: "move_block", node_id: current.blocks[0].node_id, after_node_id: null }],
+        operations: [
+          { op: "move_block", node_id: beforeMove.blocks[1].node_id, after_node_id: null },
+        ],
       },
     },
   }),
@@ -163,9 +171,9 @@ const moveResponse = await fetch(origin + "/mcp", {
 const movedResult = await moveResponse.json();
 assert.equal(movedResult.result?.isError, undefined, JSON.stringify(movedResult));
 const moved = await tool(cookie, "read_page", { page_id: page.page_id });
-assert.equal(moved.blocks[0].node_id, current.blocks[0].node_id);
-assert.equal(moved.blocks[0].markdown, "The **otter** crossed the garden.");
-assert.equal(moved.blocks[1].markdown, "A second block.");
+assert.equal(moved.blocks[1].node_id, current.blocks[0].node_id);
+assert.equal(moved.blocks[1].markdown, "The **otter** crossed the garden.");
+assert.equal(moved.blocks[0].markdown, "A second block.");
 assert.equal(moved.comments[0].selectionContext.status, "attached");
 
 console.log(

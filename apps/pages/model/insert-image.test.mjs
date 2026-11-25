@@ -32,12 +32,20 @@ function apply(doc, operations) {
 /** The key of the block `address` names. */
 const keyOf = (doc, address) =>
   orderedBlockIds(doc).find((key) => blockAddress(doc, key) === address);
+/** `operation` with the last block's id as its anchor, so it makes a block
+ * of its own. */
+const ownBlock = (doc, operation) => ({
+  ...operation,
+  after_node_id: blockAddress(doc, orderedBlockIds(doc).at(-1)),
+});
 test("image insertion creates a native embed without interpreting alt text as Markdown", () => {
   const before = fixture();
   const first = orderedBlockIds(before)[0];
   const identity = A.getObjectId(before.blocks[first], "richText");
   const alt = "A cat ](https://elsewhere.example) ![other] — **bold** & <tag> 🐈";
-  const { after, result } = apply(before, [{ op: "insert_image", asset_id, alt }]);
+  const { after, result } = apply(before, [
+    ownBlock(before, { op: "insert_image", asset_id, alt }),
+  ]);
   const [inserted] = result.edits;
   assert.equal(inserted.op, "insert_image");
   const key = keyOf(after, inserted.node_id);
@@ -58,31 +66,53 @@ test("image insertion creates a native embed without interpreting alt text as Ma
   assert.equal(reparsed.param.alt, alt);
   assertDocumentLimits(after);
 });
-test("image placement reuses append, prepend and explicit fractional block anchors", () => {
+test("an image with no anchor writes into the last or first block; a block's id makes a new block", () => {
   const before = fixture();
   const first = orderedBlockIds(before)[0];
-  for (const [placement, expected] of [
-    [{}, "last"],
-    [{ after_node_id: null }, "first"],
-    [{ after_node_id: blockAddress(before, first) }, "last"],
+  const block = blockAddress(before, first);
+  const identity = A.getObjectId(before.blocks[first], "richText");
+  for (const [placement, index] of [
+    [{}, -1],
+    [{ after_node_id: null }, 0],
   ]) {
     const { after, result } = apply(before, [
       { op: "insert_image", asset_id, alt: "", ...placement },
     ]);
-    const ids = orderedBlockIds(after);
-    const key = keyOf(after, result.edits[0].node_id);
-    assert.equal(expected === "first" ? ids[0] : ids.at(-1), key);
-    assert.equal(A.isRawString(after.blocks[key].position), true);
+    const [entry] = result.edits;
+    assert.deepEqual(orderedBlockIds(after), [first]);
+    assert.equal(A.getObjectId(after.blocks[first], "richText"), identity);
+    assert.equal(entry.node_id, undefined);
+    assert.equal(entry.block, block);
+    assert.equal(nodeAddresses(after, first).length, 2);
+    assert.deepEqual(entry.nodes, [nodeAddresses(after, first).at(index)]);
+    assert.equal(entry.image, imageIds(after, first)[0].id);
   }
-  const { result } = apply(before, [
+  const { after, result } = apply(before, [
+    { op: "insert_image", asset_id, alt: "", after_node_id: block },
+  ]);
+  const key = keyOf(after, result.edits[0].node_id);
+  assert.deepEqual(orderedBlockIds(after), [first, key]);
+  assert.equal(A.isRawString(after.blocks[key].position), true);
+  // Two in one batch each go after the last node, in order.
+  const both = apply(before, [
     { op: "insert_image", asset_id, alt: "one" },
     { op: "insert_image", asset_id, alt: "two" },
   ]);
-  assert.equal(new Set(result.edits.map((edit) => edit.node_id)).size, 2);
+  assert.deepEqual(orderedBlockIds(both.after), [first]);
+  assert.deepEqual(
+    both.result.edits.map((edit) => edit.image),
+    imageIds(both.after, first).map((entry) => entry.id),
+  );
+  assert.equal(new Set(both.result.edits.map((edit) => edit.image)).size, 2);
+  assert.match(
+    projectPage(both.after).blocks[0].markdown,
+    /^Keep \*\*this\*\* prose\.\n\n!\[one\]\([^)]*\)\n\n!\[two\]\([^)]*\)$/,
+  );
 });
 test("ordinary inserted images remain editable through Markdown", () => {
-  const { after, result } = apply(fixture(), [
-    { op: "insert_image", asset_id, alt: "Diagram", title: "Title" },
+  const before = fixture();
+  const { after, result } = apply(before, [
+    ownBlock(before, { op: "insert_image", asset_id, alt: "Diagram", title: "Title" }),
   ]);
   const { node_id, asset_url } = result.edits[0];
   const key = keyOf(after, node_id);
@@ -130,8 +160,15 @@ test("malformed or unplaceable images reject the entire structural batch", () =>
 });
 
 test("two sources share metadata, preserve marker identity and stamp monotonically", () => {
-  const { after, result } = apply(fixture(), [
-    { op: "insert_image", asset_id, dark_asset_id: "b".repeat(64), alt: "", title: "Chart" },
+  const before = fixture();
+  const { after, result } = apply(before, [
+    ownBlock(before, {
+      op: "insert_image",
+      asset_id,
+      dark_asset_id: "b".repeat(64),
+      alt: "",
+      title: "Chart",
+    }),
   ]);
   const { node_id: block, image } = result.edits[0];
   const key = keyOf(after, block);

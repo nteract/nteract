@@ -36,13 +36,22 @@ const edit = (doc, operations) => {
   });
   return { doc: next, result };
 };
+// A new Page with `operations` in a block of their own after "Intro".
+const ownBlock = (operations) => {
+  const doc = fresh();
+  const after_node_id = blockAddress(doc, orderedBlockIds(doc)[0]);
+  return edit(
+    doc,
+    operations.map((operation) => ({ ...operation, after_node_id })),
+  );
+};
 const view = (view_id = "daily") => ({
   op: "insert_node",
   node: { type: "view", attrs: { view_id } },
 });
 
 test("insert_node writes one view marker with its view_id and stamps the feature", () => {
-  const { doc, result } = edit(fresh(), [view()]);
+  const { doc, result } = ownBlock([view()]);
   const [, id] = orderedBlockIds(doc);
   assert.equal(result.edits[0].type, "view");
   assert.deepEqual(result.edits[0].attrs, { view_id: "daily" });
@@ -69,15 +78,26 @@ test("insert_node writes one view marker with its view_id and stamps the feature
 // The two recipes /llms/views.txt gives for a view between two passages.
 test("a view lands between two passages: after a node in its block, or appended in order", () => {
   const markdowns = (doc) => projectPage(doc).blocks.map((block) => block.markdown);
-  // A new Page: appends apply in order.
-  const built = edit(fresh(), [view(), { op: "insert_markdown", markdown: "After" }]).doc;
-  assert.deepEqual(markdowns(built), ["Intro", line("daily"), "After"]);
+  // A new Page: appends apply in order, into its one block.
+  const built = edit(fresh(), [view(), { op: "insert_markdown", markdown: "After" }]);
+  assert.deepEqual(markdowns(built.doc), [`Intro\n\n${line("daily")}\n\nAfter`]);
+  const [only] = orderedBlockIds(built.doc);
+  assert.deepEqual(
+    built.result.edits.map((entry) => entry.block),
+    [blockAddress(built.doc, only), blockAddress(built.doc, only)],
+  );
   // One block holding all the prose: one insert after the paragraph the view
   // follows writes it into that block, and a later block stays after it.
   const start = A.change(A.from(createPageData({ pageId })), (draft) =>
     initializePage(draft, "Intro\n\nAfter"),
   );
-  const { doc } = edit(start, [{ op: "insert_markdown", markdown: "Tail" }]);
+  const { doc } = edit(start, [
+    {
+      op: "insert_markdown",
+      markdown: "Tail",
+      after_node_id: blockAddress(start, orderedBlockIds(start)[0]),
+    },
+  ]);
   const [first] = orderedBlockIds(doc);
   const intro = projectReadContent(doc, {}).outline[0].node_id;
   const placed = edit(doc, [{ ...view(), after_node_id: intro }]);
@@ -126,11 +146,11 @@ test("insert_node refuses a malformed view node, naming the attr and its rule", 
 });
 
 test("a view reads back as its line, from the node alone", () => {
-  const { doc } = edit(fresh(), [view()]);
+  const { doc } = ownBlock([view()]);
   assert.equal(projectPage(doc).blocks[1].markdown, line("daily"));
   assert.equal(projectPage(doc).blocks[1].markdown.includes("/view/"), false);
   // Markdown never creates one: the same line inserted is text.
-  const linked = edit(fresh(), [{ op: "insert_markdown", markdown: line("daily") }]).doc;
+  const linked = ownBlock([{ op: "insert_markdown", markdown: line("daily") }]).doc;
   const [, id] = orderedBlockIds(linked);
   assert.equal(
     A.spans(linked, textPath(id)).some((span) => String(span.value?.type) === "view"),
@@ -140,7 +160,7 @@ test("a view reads back as its line, from the node alone", () => {
 });
 
 test("replace_block_markdown keeps a view whose line is unchanged, and refuses dropping or faking one", () => {
-  const { doc } = edit(fresh(), [view()]);
+  const { doc } = ownBlock([view()]);
   const [, id] = orderedBlockIds(doc);
   const node = blockAddress(doc, id);
   const kept = edit(doc, [
@@ -181,7 +201,7 @@ const dataframeNode = {
   node: { type: "dataframe", attrs: { asset_id: "d".repeat(64), title: "Usage" } },
 };
 const withProse = (insert, markdown) => {
-  const { doc } = edit(fresh(), [insert]);
+  const { doc } = ownBlock([insert]);
   const [, id] = orderedBlockIds(doc);
   const node = blockAddress(doc, id);
   const keep = projectPage(doc).blocks[1].markdown;
@@ -477,7 +497,7 @@ test("a stored view whose line is edited or dropped is still refused", () => {
 });
 
 test("a view's outline entry carries its view_id and its view's title and media type", () => {
-  const { doc } = edit(fresh(), [view()]);
+  const { doc } = ownBlock([view()]);
   const summaries = {
     viewSummary: (id) =>
       id === "daily"
@@ -538,7 +558,7 @@ test("comments refuse a view node", () => {
 });
 
 test("cards and previews show a view as a figure naming it", async () => {
-  const { doc } = edit(fresh(), [view()]);
+  const { doc } = ownBlock([view()]);
   const card = await pageCard(doc);
   assert.deepEqual(card.blocks[1].content, [["div", { "data-card-placeholder": "view" }, "daily"]]);
   assert.equal(card.rich, true);

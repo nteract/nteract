@@ -201,10 +201,24 @@ test("a retried patch replays its receipt without publishing a new caret", async
 
 test("block operations target the block; targeted reads show reading markers", async (t) => {
   const f = await fixture(t);
-  await f.patch([{ op: "insert_markdown", markdown: "A new block." }]);
+  // An insert with no anchor writes into the last block: a text range there.
+  await f.patch([{ op: "insert_markdown", markdown: "More words." }]);
   let [agent] = f.agents();
+  assert.equal(agent.targets[0].kind, "text");
+  assert.equal(agent.targets[0].block_id, f.blockId());
+  assert.equal(resolvePeerSelection(f.doc(), agent.targets[0]).quote, "\nMore words.");
+  // A block's id makes a new block, and the target is that block.
+  await f.patch([
+    {
+      op: "insert_markdown",
+      markdown: "A new block.",
+      after_node_id: blockAddress(f.doc(), f.blockId()),
+    },
+  ]);
+  [agent] = f.agents();
   assert.deepEqual(Object.keys(agent.targets[0]).sort(), ["block_id", "kind"]);
   assert.equal(agent.targets[0].kind, "block");
+  assert.equal(agent.targets[0].block_id, orderedBlockIds(f.doc())[1]);
 
   await f.call("read_page", { search: ["fade"] });
   [agent] = f.agents();

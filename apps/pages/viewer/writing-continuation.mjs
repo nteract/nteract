@@ -1,6 +1,7 @@
 import { GardState } from "wordgard/state";
 import { applyPageOperation } from "../model/page.mjs";
 import { orderedBlockIds } from "../model/order.mjs";
+import { blockAddress } from "../model/addresses.mjs";
 import { isBlankBlock } from "../model/richtext-format.mjs";
 import { elements } from "./wordgard-model.mjs";
 import { createWordgardBinding } from "./wordgard-binding.mjs";
@@ -15,12 +16,23 @@ export function isEmptyPage(doc) {
   return ids.length === 1 && isBlankBlock(doc.blocks[ids[0]]);
 }
 
+/** A new empty block after the last one. An insert with no anchor writes
+ * into the last block, so this names the last block's id. */
 function newBlock(session) {
   let id;
   session.change((doc) => {
+    const last = orderedBlockIds(doc).at(-1);
     applyPageOperation(doc, {
       operation: "edit_page",
-      arguments: { operations: [{ op: "insert_markdown", markdown: "" }] },
+      arguments: {
+        operations: [
+          {
+            op: "insert_markdown",
+            markdown: "",
+            ...(last && { after_node_id: blockAddress(doc, last) }),
+          },
+        ],
+      },
     });
     id = orderedBlockIds(doc).at(-1);
   });

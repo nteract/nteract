@@ -12,33 +12,47 @@ import {
   sourcesPanelStore,
   sourcePlacements,
 } from "./sources-panel-store.mjs";
-import { createPageData, initializePage, applyPageOperation } from "../model/page.mjs";
+import {
+  createPageData,
+  initializePage,
+  applyPageOperation,
+  orderedBlockIds,
+} from "../model/page.mjs";
+import { blockAddress } from "../model/addresses.mjs";
+
+/** Each insert in `operations` in a block of its own, after the last block. */
+function appendBlocks(draft, operations) {
+  for (const operation of operations)
+    applyPageOperation(draft, {
+      operation: "edit_page",
+      arguments: {
+        operations: [
+          { ...operation, after_node_id: blockAddress(draft, orderedBlockIds(draft).at(-1)) },
+        ],
+      },
+    });
+}
 
 function pageWithViews() {
   return A.change(
     A.from(createPageData({ pageId: crypto.randomUUID(), title: "Sources" })),
     (draft) => {
       initializePage(draft, "An introduction", "intro");
-      applyPageOperation(draft, {
-        operation: "edit_page",
-        arguments: {
-          operations: [
-            {
-              op: "insert_node",
-              node: {
-                type: "dataframe",
-                attrs: {
-                  binding: { source_id: "usage" },
-                  media_type: "application/vnd.apache.parquet",
-                  title: "Data",
-                },
-              },
+      appendBlocks(draft, [
+        {
+          op: "insert_node",
+          node: {
+            type: "dataframe",
+            attrs: {
+              binding: { source_id: "usage" },
+              media_type: "application/vnd.apache.parquet",
+              title: "Data",
             },
-            { op: "insert_node", node: { type: "view", attrs: { view_id: "chart" } } },
-            { op: "insert_node", node: { type: "view", attrs: { view_id: "chart" } } },
-          ],
+          },
         },
-      });
+        { op: "insert_node", node: { type: "view", attrs: { view_id: "chart" } } },
+        { op: "insert_node", node: { type: "view", attrs: { view_id: "chart" } } },
+      ]);
     },
   );
 }
@@ -61,22 +75,20 @@ test("attached tables appear without named sources and never become named-source
   const src = `/api/pages/${pageId}/assets/${"a".repeat(64)}`;
   const doc = A.change(A.from(createPageData({ pageId, title: "Attachments" })), (draft) => {
     initializePage(draft, "Tables", "intro");
-    applyPageOperation(draft, {
-      operation: "edit_page",
-      arguments: {
-        operations: ["Results", "Second placement"].map((title) => ({
-          op: "insert_node",
-          node: {
-            type: "dataframe",
-            attrs: {
-              asset_id: "a".repeat(64),
-              title,
-              media_type: "application/vnd.apache.parquet",
-            },
+    appendBlocks(
+      draft,
+      ["Results", "Second placement"].map((title) => ({
+        op: "insert_node",
+        node: {
+          type: "dataframe",
+          attrs: {
+            asset_id: "a".repeat(64),
+            title,
+            media_type: "application/vnd.apache.parquet",
           },
-        })),
-      },
-    });
+        },
+      })),
+    );
   });
   const cache = new WeakMap();
   const placements = sourcePlacements(doc, cache);

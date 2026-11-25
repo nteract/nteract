@@ -143,12 +143,19 @@ test("a Markdown operation without Markdown is refused", () => {
   );
   // A rewrite still works, and so does an explicit empty string: Page
   // transfer empties a block that way (scripts/project-transfer.mjs).
+  // An empty insert after a block's id makes an empty block; with no anchor
+  // it adds an empty paragraph to the last block.
   const { after } = apply(doc, [
     { op: "replace_block_markdown", node_id, markdown: "Rewritten." },
-    { op: "insert_markdown", markdown: "" },
+    { op: "insert_markdown", markdown: "", after_node_id: node_id },
   ]);
   assert.equal(md(after, id).trim(), "Rewritten.");
   assert.equal(orderedBlockIds(after).length, 2);
+  assert.equal(md(after, orderedBlockIds(after)[1]), "");
+  const appended = apply(doc, [{ op: "insert_markdown", markdown: "" }]).after;
+  assert.deepEqual(orderedBlockIds(appended), [id]);
+  assert.equal(nodeAddresses(appended, id).length, nodeAddresses(doc, id).length + 1);
+  assert.equal(md(appended, id).trim(), md(doc, id).trim());
   const emptied = apply(doc, [{ op: "replace_block_markdown", node_id, markdown: "" }]).after;
   assert.equal(md(emptied, id).trim(), "");
 });

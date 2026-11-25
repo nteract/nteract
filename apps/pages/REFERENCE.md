@@ -2898,11 +2898,13 @@ For agents, importing bytes and inserting content are separate operations:
    CSV uses the same named and unnamed forms with `media_type: "text/csv"` in the node attrs.
 2. Read the current Page, then call guarded `edit_page` with that `insert`
    operation: for an image, `insert_image`, `asset_id`, alt text, and optional
-   `after_node_id` (omitted appends; `null` prepends). The host verifies the asset belongs to this Page and writes a
-   paragraph holding the image: in a new block, or inside a node's block
-   directly after it when `after_node_id` is a top-level node's id. Its
-   `result.edits` entry returns the new block's `node_id` and its `nodes` (or,
-   inside a node's block, that block as `block` and the new node in `nodes`),
+   `after_node_id`. The host verifies the asset belongs to this Page and writes a
+   paragraph holding the image: inside a node's block directly after it when
+   `after_node_id` is a top-level node's id, after the Page's last node when
+   it is omitted, before its first when it is `null`, or in a new block after
+   a block whose id it names. Its `result.edits` entry returns the new block's
+   `node_id` and its `nodes` (or, inside an existing block, that block as
+   `block` and the new node in `nodes`),
    the image's id as `image`, and the asset reference; the receipt adds
    updated heads and the Page URL. Exact retries reuse that result.
 3. Read back the block. Upload success alone is not insertion or proof of rendering.
@@ -4256,12 +4258,34 @@ still replay the recorded receipt; these guards run only for new intents.
 `edit_page` supports structural operations including `insert_markdown`,
 `move_block`, and `insert_image`:
 
-- **Block vs. in-place placement:** `after_node_id` accepts a block's `node_id`,
-  `null` (prepend), or omission (append); fractional positions are internal.
-  `insert_markdown`, `insert_image`, and `insert_node` also accept a top-level
-  node's `node_id` to insert directly after it inside the same block (after a
-  list's or quote's last item) without creating a new block
+- **Block vs. in-place placement:** `after_node_id` accepts a block's
+  `node_id`, which puts the content in a new block after that block, `null`,
+  or omission; fractional positions are internal. `insert_markdown`,
+  `insert_image`, and `insert_node` also accept a top-level node's `node_id`
+  to insert directly after it inside the same block (after a list's or
+  quote's last item) without creating a new block
   ([model/insert-in-place.mjs](model/insert-in-place.mjs)).
+- **Inserts at the ends of the Page:** an omitted `after_node_id` writes after
+  the last top-level node of the last block, and `null` before the first node
+  of the first block, in place
+  ([model/flow-placement.mjs](model/flow-placement.mjs)). The batch repairs
+  that block's markers first, and the receipt reports `block` and `nodes`. A
+  blank edge block (a new Page's empty paragraph) takes the content in place
+  of its empty paragraph. The insert makes a new block at that end instead
+  when the Page has no block, the edge block would pass
+  `MAX_PASSAGE_BLOCK_LENGTH` or the batch's in-place budget, it holds
+  content this build reads lossily or nodes it can't name, or the new
+  content would join a list of the same kind at that end. It does the same
+  when a later operation in the batch names the edge block by its own id, in
+  `node_id` or `after_node_id` (`delete_block`, `replace_block_markdown`,
+  `move_block`, an insert after the block), so no later operation drops the
+  insert, moves it with the block or places content before it, and for `null` when the first block opens with unmarked text the
+  batch didn't repair. The receipt then reports the new block's `node_id` and
+  `nodes`. The batch repairs the edge block's markers before any operation
+  runs, whether or not the insert lands there. Concurrent writers that
+  append at the same end share the last block: two lists of the same kind
+  appended at once merge into one, and text a person types at the end of the
+  last paragraph can land inside the agent's last new node.
 - **Splice & mark preservation:** in-place inserts repair block markers, then
   run one `splitBlock` per marker and one `splice` per text run at the end of
   the anchor's range without rewriting existing characters or markers, keeping

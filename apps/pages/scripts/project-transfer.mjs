@@ -973,8 +973,8 @@ const pageBlocks = (page) => (page.blocks ?? [page.markdown]).map(importable);
  * between blank lines and outside a code fence; anywhere else (in a quote or
  * list, say) it stays Markdown, and so a link.
  *
- * Each dataframe unit becomes its own block on the target, so a dataframe
- * that sat inside a block splits it there.
+ * Each unit becomes its own insert on the target, in order. A host that
+ * writes anchorless inserts in place keeps them in one block.
  */
 export function bodyUnits(blocks, page, assets = {}) {
   // Frames by src, in outline order. Two dataframes can show one asset under
@@ -1021,10 +1021,13 @@ export function bodyUnits(blocks, page, assets = {}) {
 
 /** The edit_page operations that make a Page with `blocks` hold `units`, in
  * order. The first existing block with no dataframe takes the first Markdown
- * unit; units before it are put first; every other block is deleted; the
- * rest append. A block holding a dataframe is never rewritten (the server
- * refuses to drop one), so a rerun over a body an earlier run wrote,
- * dataframes first, converges instead of being refused. */
+ * unit, and every other block is deleted; then the units before it go first
+ * and the rest append. The rewrite and the deletes run before any insert: an
+ * insert with no node anchor writes into the first or last block, and none
+ * may land in a block the batch deletes or rewrites. A block holding a
+ * dataframe is never rewritten (the server refuses to drop one), so a rerun
+ * over a body an earlier run wrote, dataframes first, converges instead of
+ * being refused. */
 export function bodyOperations(blocks, units) {
   const write = (unit, after) =>
     unit.dataframe
@@ -1049,12 +1052,10 @@ export function bodyOperations(blocks, units) {
   const target = blocks.find((block) => !HOLDS_DATAFRAME.test(block.markdown ?? ""));
   const operations = [];
   if (first === -1 || !target) {
-    for (const unit of units) operations.push(write(unit));
     for (const block of blocks) operations.push({ op: "delete_block", node_id: block.node_id });
+    for (const unit of units) operations.push(write(unit));
     return operations;
   }
-  // Each goes first, so the leading units go in reverse.
-  for (const unit of units.slice(0, first).reverse()) operations.push(write(unit, null));
   operations.push({
     op: "replace_block_markdown",
     node_id: target.node_id,
@@ -1062,6 +1063,8 @@ export function bodyOperations(blocks, units) {
   });
   for (const block of blocks)
     if (block !== target) operations.push({ op: "delete_block", node_id: block.node_id });
+  // Each goes first, so the leading units go in reverse.
+  for (const unit of units.slice(0, first).reverse()) operations.push(write(unit, null));
   for (const unit of units.slice(first + 1)) operations.push(write(unit));
   return operations;
 }

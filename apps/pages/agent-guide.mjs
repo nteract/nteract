@@ -693,8 +693,8 @@ ${part.uploadPathItems}
    phone but looks large on a desktop; export it at 1x if desktop matters more.
 ${part.uploadStep}
 3. Insert it. Call read_page, then edit_page with the upload's insert
-   operation (insert_image and the asset_id) and descriptive alt text added. after_node_id is optional (omitted appends; null
-   prepends). For a dark-theme variant, upload the dark file to the same Page
+   operation (insert_image and the asset_id) and descriptive alt text added. after_node_id is optional (omitted appends at the end
+   of the Page; null puts it first). For a dark-theme variant, upload the dark file to the same Page
    and pass its asset_id as dark_asset_id; that marks the Page with the
    image-theme-variants schema feature.
 4. Interleave images with text. Give insert_image the node_id of the
@@ -761,7 +761,7 @@ revision from read_page. Add alt for an image. For an image it is
 insert_image with the asset_id, which writes a paragraph holding the image
 after the node or block after_node_id names; for a Parquet file it is the
 dataframe insert_node under Datasets. Supply descriptive alt text; after_node_id
-is optional (omitted appends; null prepends). The asset must already exist in
+is optional (omitted appends at the end of the Page; null puts it first). The asset must already exist in
 this Page's private storage; an asset from another Page must be copied first.
 
 \`\`\`json
@@ -796,8 +796,9 @@ required. Duplicate image targets in a batch are refused. Unknown native attrs
 are preserved. Comments accept baseline images, not theme variants.
 
 The receipt's result.edits has an entry per insert_image, in operation order:
-the new block's node_id and its nodes, or for an insert after a node the
-block it went into as block and the new node in nodes; then the image's id as
+the new block's node_id and its nodes, or for an insert that went into an
+existing block, after a node or at either end of the Page, that block as
+block and the new node in nodes; then the image's id as
 image, asset_id, asset_url and alt, plus the new revision and the Page url. The MCP structured
 result matches its text receipt. Save the exact edit request and retry it after
 an uncertain result: it returns the original receipt without another block or
@@ -1287,16 +1288,22 @@ Each field takes only the kinds named here. replace_block_markdown, delete_block
 take a block's id as node_id, and move_block's after_node_id is a block's id.
 An insert's after_node_id takes a top-level node's id, which writes the new
 content into that node's block directly after it, or a block's id, which puts
-it in a new block after that block.
+it in a new block after that block. With after_node_id omitted the content
+goes after the Page's last node, and with null before its first, inside the
+Page's last or first block: a Page built by appends stays one block. It gets
+a block of its own only where it can't go inside: the Page has no block, it
+would join a list of the same kind at that end, a later operation in the
+same batch names that block by its id, or that block is too long or holds content this version
+can't write in.
 delete_node takes a node's id, set_image an image's. move_nodes takes node ids
 for node_id, through_node_id and after_node_id; see Move a section.
 replace_match, format_match
 and set_node take a node's id to match inside that node, or a block's to match
 anywhere in the block. Another kind is refused with wrong_address_kind; an id
 that names nothing live is node_not_found. Each insert's result.edits entry
-gives the new block's node_id and its nodes, or, for an insert after a node,
-the block it went into as block and the new nodes' ids as nodes, so the next
-request needs no read.
+gives the new block's node_id and its nodes, or, for an insert that went into
+an existing block, the block it went into as block and the new nodes' ids as
+nodes, so the next request needs no read.
 
 ### Move a section
 
@@ -1676,7 +1683,8 @@ reconcile first.
 For move_block, after_node_id is the preceding block's id. For insert_markdown,
 insert_image and insert_node it is the id of the top-level node the new content
 follows, inside that node's block, or the preceding block's id for a new block.
-null places it first, and omission appends it.
+null places it before the Page's first node and omission after its last, both
+inside an existing block where they can go.
 For a comment, use action add with a block's node_id and body. Add
 selected_text to anchor it to a passage in that block; a node's id instead finds
 selected_text in that node. occurrence is one-based and defaults to 1. Replies use thread_id and body;

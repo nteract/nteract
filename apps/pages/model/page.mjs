@@ -17,6 +17,7 @@ import {
 } from "./richtext-page.mjs";
 import { insertInPlace, spendInPlaceRead } from "./insert-in-place.mjs";
 import { moveNodes } from "./move-nodes.mjs";
+import { flowAnchor, flowBlock, flowEdge } from "./flow-placement.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import { imageIds, spanImageIds } from "./image-ids.mjs";
 import { addressIndex, blockAddress, nodeAddresses, resolveAddressFor } from "./addresses.mjs";
@@ -317,7 +318,9 @@ export function validateEditFields(op) {
 // block that holds a node it was given. An insert's after_node_id takes a
 // block's id, which puts the new content in a block of its own after it, or a
 // top-level node's id, which writes it into that node's block directly after
-// the node (model/insert-in-place.mjs); omitted appends and null prepends.
+// the node (model/insert-in-place.mjs). Omitted writes after the Page's last
+// node and null before its first, inside the edge block where they can go
+// (model/flow-placement.mjs).
 // move_block's takes a block's id only.
 const BLOCK = ["block"];
 const PLACE = ["block", "node"];
@@ -378,6 +381,24 @@ function writeInPlace(doc, anchor, spans, op, { trace, touched, budget, reads })
   return placed;
 }
 
+/** Where an insert's `spans` go: the node `at.after_node_id` names, the
+ * edge of the Page for an omitted or null one (model/flow-placement.mjs),
+ * or null for a new block. */
+function insertAnchor(doc, op, at, spans, context) {
+  if (inPlace(at.after_node_id)) return at.after_node_id;
+  const edge = flowEdge(op);
+  return edge ? flowAnchor(doc, spans, edge, context) : null;
+}
+/** Write into a blank edge block in place of its empty paragraph, with
+ * `write(doc, key)`, reporting the block and its nodes as an in-place insert
+ * does. */
+function writeBlank(doc, key, write, { trace, touched }) {
+  write(doc, key);
+  touched.push(key);
+  trace?.push({ type: "block", block_id: key });
+  return { block: blockAddress(doc, key), nodes: nodeAddresses(doc, key) };
+}
+
 /** A new block's addresses, as an insert reports them so the next request
  * can name the block and its nodes without a read. */
 const insertedBlock = (doc, op, key) => ({
@@ -419,9 +440,17 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
     return;
   }
   if (op.op === "insert_markdown") {
-    if (inPlace(at.after_node_id)) {
-      const spans = markdownSpans(op.markdown);
-      const { block, nodes } = writeInPlace(doc, at.after_node_id, spans, op.op, {
+    const spans = markdownSpans(op.markdown);
+    const anchor = insertAnchor(doc, op, at, spans, context);
+    if (anchor?.blank) {
+      const placed = writeBlank(doc, anchor.key, (d, k) => setRichMarkdown(d, k, op.markdown), {
+        trace,
+        touched,
+      });
+      return withListWarning({ op: "insert_markdown", ...placed }, op.markdown);
+    }
+    if (anchor) {
+      const { block, nodes } = writeInPlace(doc, anchor, spans, op.op, {
         trace,
         touched,
         budget: context.budget,
@@ -442,15 +471,22 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
     const dark_src = op.dark_asset_id ? imageAssetUrl(doc.page_id, op.dark_asset_id) : null;
     const image = { src: asset_url, dark_src, alt: op.alt, title: op.title };
     let placed;
-    if (inPlace(at.after_node_id)) {
-      const { block, nodes, start, end } = writeInPlace(
-        doc,
-        at.after_node_id,
-        imageSpans(image),
-        op.op,
-        { trace, touched, budget: context.budget, reads: context.reads },
-      );
-      const key = at.after_node_id.key;
+    const spans = imageSpans(image);
+    const anchor = insertAnchor(doc, op, at, spans, context);
+    if (anchor?.blank) {
+      const { block, nodes } = writeBlank(doc, anchor.key, (d, k) => setRichImage(d, k, image), {
+        trace,
+        touched,
+      });
+      placed = { op: "insert_image", block, nodes, image: imageIds(doc, anchor.key)[0].id };
+    } else if (anchor) {
+      const { block, nodes, start, end } = writeInPlace(doc, anchor, spans, op.op, {
+        trace,
+        touched,
+        budget: context.budget,
+        reads: context.reads,
+      });
+      const key = anchor.key;
       const id = spanImageIds(doc, textPath(key), context.reads.spans(key)).find(
         (entry) => entry.at >= start && entry.at < end,
       ).id;
@@ -477,8 +513,16 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
     const attrs = NODE_INSERTIONS[op.node.type].stored(doc.page_id, input);
     const node = { type: op.node.type, attrs };
     let placed;
-    if (inPlace(at.after_node_id)) {
-      const { block, nodes } = writeInPlace(doc, at.after_node_id, nodeSpans(node), op.op, {
+    const spans = nodeSpans(node);
+    const anchor = insertAnchor(doc, op, at, spans, context);
+    if (anchor?.blank) {
+      const { block, nodes } = writeBlank(doc, anchor.key, (d, k) => setRichNode(d, k, node), {
+        trace,
+        touched,
+      });
+      placed = { op: "insert_node", block, nodes };
+    } else if (anchor) {
+      const { block, nodes } = writeInPlace(doc, anchor, spans, op.op, {
         trace,
         touched,
         budget: context.budget,
@@ -725,9 +769,12 @@ function applyOperation(doc, { operation, arguments: args = {}, trace, comments 
       op.op === "delete_block"
         ? undefined
         : INSERTS.has(op.op)
-          ? nodeBlockOf(index, op.after_node_id)
+          ? (nodeBlockOf(index, op.after_node_id) ?? flowBlock(doc, op))
           : blockOf(index, op.node_id);
-    // A move writes into its anchor's block as well as its own. A null
+    // An insert with no anchor has its edge block repaired here even when it
+    // then falls back to a new block; the repair is the same normalization
+    // any edit to that block makes. A move writes into its anchor's block as
+    // well as its own. A null
     // anchor is the start of the Page, in its first block.
     const keys =
       op.op === "move_nodes"
@@ -765,6 +812,20 @@ function applyOperation(doc, { operation, arguments: args = {}, trace, comments 
     const target = starts[i].node_id;
     return forOperation(i, op, () => anchorOccurrence(doc, target.key, scoped(op, target), reads));
   });
+  // For each operation, the blocks a later operation in the batch names by
+  // the block's own id, in node_id or after_node_id: an insert with no anchor
+  // never writes into one. That later operation acts on the whole block, so
+  // content appended into it would be deleted, rewritten, moved with it, or
+  // put before what the later operation places after the block.
+  const replaced = operations.map(() => new Set());
+  for (let i = operations.length - 1; i > 0; i--) {
+    const op = operations[i];
+    for (const key of replaced[i]) replaced[i - 1].add(key);
+    for (const address of [op.node_id, op.after_node_id]) {
+      const key = typeof address === "string" ? index.block(address) : undefined;
+      if (key !== undefined) replaced[i - 1].add(key);
+    }
+  }
   const budget = { writes: 0 };
   const edits = [];
   for (const [i, op] of operations.entries()) {
@@ -779,6 +840,7 @@ function applyOperation(doc, { operation, arguments: args = {}, trace, comments 
         budget,
         comments,
         reads,
+        replaced: replaced[i],
       }),
     );
     reads.settle(touched);

@@ -24,10 +24,17 @@ function edit(doc, operations) {
 const entry = (doc) =>
   projectReadContent(doc, { include_content: false }).outline.find((n) => n.type === "dataframe");
 const insert = (attrs) => ({ op: "insert_node", node: { type: "dataframe", attrs } });
+/** The fixture with a dataframe in a block of its own after the prose. */
+function withFrame(attrs) {
+  const doc = fixture();
+  return edit(doc, [
+    { ...insert(attrs), after_node_id: blockAddress(doc, orderedBlockIds(doc)[0]) },
+  ]);
+}
 
 test("follow and pin survive storage, decode, admission and Markdown read-back without a resolved asset", () => {
   for (const binding of [{ source_id: "usage" }, { source_id: "usage", revision: "1" }]) {
-    const doc = edit(fixture(), [insert({ binding, title: "Usage" })]);
+    const doc = withFrame({ binding, title: "Usage" });
     const read = entry(doc);
     assert.deepEqual(read.attrs, { binding, media_type: PARQUET_MEDIA_TYPE, title: "Usage" });
     assert.ok(doc.schema.features.includes("dataframe-source"));
@@ -62,7 +69,7 @@ test("follow and pin survive storage, decode, admission and Markdown read-back w
 });
 
 test("set_node moves a table to a CSV source and refuses a media type no table reads", () => {
-  const doc = edit(fixture(), [insert({ asset_id, title: "Usage" })]);
+  const doc = withFrame({ asset_id, title: "Usage" });
   const { node_id } = entry(doc);
   const moved = edit(doc, [
     {
@@ -83,7 +90,7 @@ test("set_node moves a table to a CSV source and refuses a media type no table r
 });
 
 test("in-place asset/follow/pin edits preserve marker cursor, surrounding text and comment cursor", () => {
-  let doc = edit(fixture(), [insert({ asset_id, title: "Usage" })]);
+  let doc = withFrame({ asset_id, title: "Usage" });
   const initial = entry(doc);
   const key = orderedBlockIds(doc).at(-1);
   const cursor = A.getCursor(doc, textPath(key), 0);
@@ -127,9 +134,7 @@ test("dataframe references reject ambiguous or malformed bindings", () => {
 });
 
 test("a concurrent caption edit and source rebind preserve both changes and the node identity", () => {
-  const base = edit(fixture(), [
-    insert({ binding: { source_id: "usage", revision: "1" }, title: "Usage" }),
-  ]);
+  const base = withFrame({ binding: { source_id: "usage", revision: "1" }, title: "Usage" });
   const node_id = entry(base).node_id;
   const rebind = edit(base, [
     { op: "set_node", node_id, attrs: { binding: { source_id: "daily" } } },
@@ -142,7 +147,7 @@ test("a concurrent caption edit and source rebind preserve both changes and the 
 });
 
 test("a source table's Markdown refuses a shifted container with node guidance", () => {
-  const base = edit(fixture(), [insert({ binding: { source_id: "usage" }, title: "Usage" })]);
+  const base = withFrame({ binding: { source_id: "usage" }, title: "Usage" });
   const key = orderedBlockIds(base).at(-1);
   const doc = A.change(A.clone(base), (draft) => {
     const [frame] = A.spans(draft, textPath(key));

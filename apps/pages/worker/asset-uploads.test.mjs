@@ -882,7 +882,8 @@ test("the llms.txt image workflow: upload light and dark, interleave with text, 
   const dark = (await upload(w, grant, { body: webp })).body.asset_id;
   const read = (await w.call("owner", "read_page", { page_id: pageId, comments: "none" })).body;
   const [first] = read.blocks;
-  // The guide's batch: rewrite the first block, then append in order.
+  // The guide's batch: rewrite the first block, then append in order. Each
+  // append writes after the last node of the Page's one block.
   const edit = await w.call("owner", "edit_page", {
     page_id: pageId,
     revision: read.revision,
@@ -898,30 +899,39 @@ test("the llms.txt image workflow: upload light and dark, interleave with text, 
   assert.equal(edit.status, 200, JSON.stringify(edit.body));
   const after = (await w.call("owner", "read_page", { page_id: pageId, comments: "none" })).body;
   assert.ok(after.schema_features.includes("image-theme-variants"));
-  // summary.images rides on each outline entry, in block order. A block's
-  // first entry names it; the entries after it belong to the same block.
-  const imagesIn = (body, block) => {
-    let current = null;
-    return body.outline.entries
-      .filter((entry) => (current = entry.block ?? current) === block.node_id)
-      .flatMap((entry) => entry.summary?.images ?? []);
-  };
-  const order = after.blocks.map((block) => {
-    const images = imagesIn(after, block);
-    return images.length
-      ? images.map(({ asset_id, dark_asset_id, alt }) => ({ asset_id, dark_asset_id, alt }))
-      : block.markdown.trim();
-  });
-  assert.deepEqual(order, [
-    "Intro paragraph.",
+  assert.deepEqual(
+    after.blocks.map((block) => block.node_id),
+    [first.node_id],
+  );
+  const image = (alt, asset) => `!\\[${alt}\\]\\(/api/pages/${pageId}/assets/${asset}\\)`;
+  assert.match(
+    after.blocks[0].markdown,
+    new RegExp(
+      `^Intro paragraph\\.\\n\\n${image("Home screen", light)}\\n\\nBetween the images\\.\\n\\n${image("Settings screen", dark)}\\n\\nClosing paragraph\\.$`,
+    ),
+  );
+  // summary.images rides on each outline entry, in reading order: a
+  // paragraph entry for each text, and one with its image for each image.
+  const order = (body) =>
+    body.outline.entries.map((entry) =>
+      entry.summary?.images
+        ? entry.summary.images.map(({ asset_id, dark_asset_id, alt }) => ({
+            asset_id,
+            dark_asset_id,
+            alt,
+          }))
+        : entry.type,
+    );
+  assert.deepEqual(order(after), [
+    "paragraph",
     [{ asset_id: light, dark_asset_id: dark, alt: "Home screen" }],
-    "Between the images.",
+    "paragraph",
     [{ asset_id: dark, dark_asset_id: undefined, alt: "Settings screen" }],
-    "Closing paragraph.",
+    "paragraph",
   ]);
-  // Mid-Page, every operation names the same preceding block, so list them
+  // Mid-Page, every operation names the same preceding node, so list them
   // in reverse: each lands directly after it, ahead of the one before.
-  const anchor = after.blocks[0].node_id;
+  const anchor = after.outline.entries[0].node_id;
   const middle = await w.call("owner", "edit_page", {
     page_id: pageId,
     revision: after.revision,
@@ -933,11 +943,12 @@ test("the llms.txt image workflow: upload light and dark, interleave with text, 
   });
   assert.equal(middle.status, 200, JSON.stringify(middle.body));
   const final = (await w.call("owner", "read_page", { page_id: pageId, comments: "none" })).body;
-  assert.deepEqual(
-    final.blocks
-      .slice(0, 4)
-      .map((block) => (imagesIn(final, block).length ? "image" : block.markdown.trim())),
-    ["Intro paragraph.", "image", "Second inserted.", "image"],
+  assert.equal(final.blocks.length, 1);
+  assert.match(
+    final.blocks[0].markdown,
+    new RegExp(
+      `^Intro paragraph\\.\\n\\n${image("First inserted", light)}\\n\\nSecond inserted\\.\\n\\n${image("Home screen", light)}\\n\\n`,
+    ),
   );
 });
 

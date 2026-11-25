@@ -1302,7 +1302,14 @@ test("Page image insertion validates storage once and journals actual block iden
     page_id: pageId,
     revision: before.revision,
     nonce: "insert-image-once",
-    operations: [{ op: "insert_image", asset_id: assetId, alt: "A cat" }],
+    operations: [
+      {
+        op: "insert_image",
+        asset_id: assetId,
+        alt: "A cat",
+        after_node_id: before.blocks.at(-1).node_id,
+      },
+    ],
   };
   const response = await f.request("edit_page", args);
   assert.equal(response.status, 200);
@@ -1465,6 +1472,7 @@ test("Page dataframe insertion checks storage once and replays without it", asyn
       {
         op: "insert_node",
         node: { type: "dataframe", attrs: { asset_id: assetId, title: "Usage" } },
+        after_node_id: before.blocks.at(-1).node_id,
       },
     ],
   };
@@ -1589,4 +1597,23 @@ test("recovery-blocked Page keeps accepted content readable and rejects tool and
     code: "page_recovery_blocked",
   });
   assert.equal(f.page.handle.doc().title, "Accepted content");
+});
+
+test("a warning on an append in place names the block it went into", async (t) => {
+  const f = richMutationFixture(t, "Opening paragraph.");
+  const receipt = await documentMutation(
+    f.context(
+      {
+        nonce: "append-warning-block",
+        revision: await f.revision(),
+        operations: [{ op: "insert_markdown", markdown: "3. third\n4. fourth" }],
+      },
+      "edit_page",
+    ),
+  );
+  const [edit] = receipt.result.edits;
+  assert.equal(edit.block, f.block);
+  const warning = receipt.warnings.find(({ code }) => code === "list_numbers_reset");
+  assert.equal(warning.edit_index, 0);
+  assert.equal(warning.node_id, f.block);
 });

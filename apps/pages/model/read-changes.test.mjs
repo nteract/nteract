@@ -12,6 +12,7 @@ import { comment, newCommentsDoc } from "./comments-test-support.mjs";
 import { blockAddress, nodeAddresses } from "./addresses.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
+import { positionForInsertion } from "./order.mjs";
 import { pageWithSpans, SHAPES } from "../test/address-inputs.mjs";
 
 const author = { principal: "user", displayName: "Collaborator", driver: "Browser" };
@@ -808,26 +809,63 @@ test("inserted and moved blocks carry before_node_id, so the feed rebuilds block
     A.change(A.clone(current), (draft) =>
       applyPageOperation(draft, { operation: "edit_page", arguments: { operations } }),
     );
-  doc = edit(doc, [
-    { op: "insert_markdown", markdown: "Two" },
-    { op: "insert_markdown", markdown: "Three" },
-  ]);
+  for (const markdown of ["Two", "Three"]) {
+    const last = blockAddress(doc, orderedBlockIds(doc).at(-1));
+    doc = edit(doc, [{ op: "insert_markdown", markdown, after_node_id: last }]);
+  }
   const blocks = (current) => orderedBlockIds(current).map((key) => blockAddress(current, key));
   const baseline = blocks(doc);
   const heads = A.getHeads(doc);
+  // No edit_page insert makes a block at the front of the Page, so that case
+  // writes one directly, as a peer can.
+  const front = A.change(A.clone(doc), (draft) => {
+    const key = "front-block";
+    draft.blocks[key] = { position: positionForInsertion(draft, null), richText: "" };
+    setRichMarkdown(draft, key, "Front");
+  });
   const cases = {
-    "insert at the front": [{ op: "insert_markdown", markdown: "Front", after_node_id: null }],
+    "a block at the front": front,
     "insert between": [{ op: "insert_markdown", markdown: "Between", after_node_id: baseline[0] }],
-    "insert at the end": [{ op: "insert_markdown", markdown: "End" }],
+    "insert after the last block": [
+      { op: "insert_markdown", markdown: "End", after_node_id: baseline[2] },
+    ],
     "a move": [{ op: "move_block", node_id: baseline[2], after_node_id: null }],
     "insert next to a deletion": [
       { op: "delete_block", node_id: baseline[1] },
       { op: "insert_markdown", markdown: "Replacement", after_node_id: baseline[0] },
     ],
   };
-  for (const [name, operations] of Object.entries(cases)) {
-    const after = edit(doc, operations);
+  for (const [name, change] of Object.entries(cases)) {
+    const after = Array.isArray(change) ? edit(doc, change) : change;
     const feed = read(after, heads).changes.filter((entry) => entry.scope === "block");
+    assert.ok(
+      feed.some((entry) => entry.change === "inserted" || entry.change === "moved" || entry.moved),
+      name,
+    );
     assert.deepEqual(reconstruct(baseline, feed), blocks(after), name);
+  }
+  // Null and an omitted after_node_id write into the first and last blocks:
+  // the feed places no block, and the order stands.
+  for (const [name, after_node_id] of [
+    ["insert into the first block", null],
+    ["insert into the last block", undefined],
+  ]) {
+    const after = edit(doc, [
+      {
+        op: "insert_markdown",
+        markdown: "Flow",
+        ...(after_node_id !== undefined && { after_node_id }),
+      },
+    ]);
+    assert.deepEqual(blocks(after), baseline, name);
+    const feed = read(after, heads).changes.filter((entry) => entry.scope === "block");
+    assert.deepEqual(
+      feed.filter(
+        (entry) => entry.change === "inserted" || entry.change === "moved" || entry.moved,
+      ),
+      [],
+      name,
+    );
+    assert.deepEqual(reconstruct(baseline, feed), baseline, name);
   }
 });

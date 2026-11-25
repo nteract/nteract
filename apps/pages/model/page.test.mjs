@@ -32,8 +32,10 @@ test("a stored block holds exactly position and richText, and its key is its id"
       },
     }),
   );
+  // The block's id makes a block; the insert with no anchor writes into it.
   const ids = orderedBlockIds(doc);
-  assert.equal(ids.length, 3);
+  assert.equal(ids.length, 2);
+  assert.equal(projectPage(doc).blocks[1].markdown, "Inserted.\n\nAppended.");
   for (const id of ids)
     assert.deepEqual(Object.keys(doc.blocks[id]).sort(), ["position", "richText"], id);
   assert.deepEqual(

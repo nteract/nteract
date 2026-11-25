@@ -145,7 +145,15 @@ test("a deletion is a caret, format_match selects its range, block ops target th
     { op: "format_match", node_id: block, match_text: "Keep", add: { highlight: "green" } },
   ]));
   assert.equal(resolve(after, targets[0]).quote, "Keep");
-  ({ after, targets } = edit(after, [{ op: "insert_markdown", markdown: "New block" }]));
+  // An insert with no anchor writes into the last block: its target is the
+  // inserted range there, from the new paragraph's marker.
+  const appended = edit(A.clone(after), [{ op: "insert_markdown", markdown: "More words" }]);
+  assert.equal(appended.targets[0].kind, "text");
+  assert.equal(appended.targets[0].block_id, id);
+  assert.equal(resolve(appended.after, appended.targets[0]).quote, "\nMore words");
+  ({ after, targets } = edit(after, [
+    { op: "insert_markdown", markdown: "New block", after_node_id: block },
+  ]));
   assert.equal(targets[0].kind, "block");
   assert.notEqual(targets[0].block_id, id);
   // The last operation of a batch wins; a trailing delete keeps nothing new.

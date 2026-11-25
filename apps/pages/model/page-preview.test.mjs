@@ -3,6 +3,7 @@ import { test } from "node:test";
 import * as A from "@automerge/automerge";
 import { applyPageOperation, createPageData, initializePage, orderedBlockIds } from "./page.mjs";
 import { PREVIEW_MAX_BYTES, pagePreview } from "./page-preview.mjs";
+import { blockAddress } from "./addresses.mjs";
 
 const asset = `/api/pages/5f0c4a5e-6c1e-4b0e-9a8f-0d0d4c5e6f70/assets/${"a".repeat(64)}`;
 const page = (markdown) =>
@@ -79,7 +80,15 @@ function pageOf(title, blocks) {
     doc = A.change(doc, (draft) =>
       applyPageOperation(draft, {
         operation: "edit_page",
-        arguments: { operations: [{ op: "insert_markdown", markdown }] },
+        arguments: {
+          operations: [
+            {
+              op: "insert_markdown",
+              markdown,
+              after_node_id: blockAddress(draft, orderedBlockIds(draft).at(-1)),
+            },
+          ],
+        },
         identity: { principal: "owner", displayName: "Owner", driver: "Browser" },
       }),
     );

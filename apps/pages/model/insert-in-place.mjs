@@ -164,7 +164,7 @@ export function insertInPlace(doc, target, spans, op, reads = blockReads(doc)) {
   if (!kept) {
     const first = readKind(expected.nodes[0]);
     const last = readKind(expected.nodes.at(-1));
-    const anchor = readKind(before.tree.nodes[index]);
+    const anchor = index >= 0 ? readKind(before.tree.nodes[index]) : null;
     const next = before.tree.nodes[index + 1];
     const joined =
       LISTS.has(first) && first === anchor

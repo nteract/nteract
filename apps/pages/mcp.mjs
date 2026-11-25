@@ -311,7 +311,7 @@ const editOperation = {
       ...address,
       type: ["string", "null"],
       description:
-        "Inserts: after a block's id in a new block, or after a top-level node's id inside its block. move_block: a block's id. move_nodes: required, a node's id or null for the start of the Page. null prepends, omitted appends.",
+        "Inserts: after a block's id in a new block, or after a top-level node's id inside its block. move_block: a block's id. move_nodes: required, a node's id or null for the start of the Page. For inserts, null writes before the Page's first node and omitted after its last, inside the first or last block where they can go.",
     },
     asset_id: {
       ...assetId,

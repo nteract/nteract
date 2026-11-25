@@ -769,7 +769,16 @@ test("deleting an insert_image block by hand leaves an empty, exportable block",
     doc = A.change(doc, (d) => {
       result = applyPageOperation(d, {
         operation: "edit_page",
-        arguments: { operations: [{ op: "insert_image", asset_id: "a".repeat(64), alt: "cat" }] },
+        arguments: {
+          operations: [
+            {
+              op: "insert_image",
+              asset_id: "a".repeat(64),
+              alt: "cat",
+              after_node_id: blockAddress(d, orderedBlockIds(d)[0]),
+            },
+          ],
+        },
       });
     });
     // The viewer names blocks by key; the result names the new block by id.

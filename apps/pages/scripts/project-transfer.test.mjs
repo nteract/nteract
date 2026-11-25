@@ -1979,7 +1979,7 @@ test("bodyUnits takes a dataframe line only alone, outside fences, quotes and li
   assert.deepEqual(bodyUnits([""], page, assets), [{ markdown: "" }]);
 });
 
-test("bodyOperations puts leading dataframes first and replaces the first block", () => {
+test("bodyOperations rewrites and deletes blocks before any insert, leading dataframes first", () => {
   const blocks = [{ node_id: "b1" }, { node_id: "b2" }];
   const frame = (asset_id) => ({ dataframe: { asset_id, src: "/x", media_type: PARQUET } });
   const node = (asset_id, after) => ({
@@ -1990,18 +1990,19 @@ test("bodyOperations puts leading dataframes first and replaces the first block"
   assert.deepEqual(
     bodyOperations(blocks, [frame("f1"), frame("f2"), { markdown: "M" }, frame("f3")]),
     [
-      node("f2", null),
-      node("f1", null),
       { op: "replace_block_markdown", node_id: "b1", markdown: "M" },
       { op: "delete_block", node_id: "b2" },
+      node("f2", null),
+      node("f1", null),
       node("f3"),
     ],
   );
-  // Only dataframes: append them all, then delete every old block.
+  // Only dataframes: delete every old block, then append them all, so no
+  // append lands in a block the batch deletes.
   assert.deepEqual(bodyOperations(blocks, [frame("f1")]), [
-    node("f1"),
     { op: "delete_block", node_id: "b1" },
     { op: "delete_block", node_id: "b2" },
+    node("f1"),
   ]);
 });
 

@@ -84,7 +84,7 @@ async function signIn(email, contextOptions = {}) {
   return page;
 }
 async function editPage(operations) {
-  const read = (await tool(owner, "read_page", { page_id: pageId })).body;
+  const afterInsert = (await tool(owner, "read_page", { page_id: pageId })).body;
   return tool(owner, "edit_page", {
     page_id: pageId,
     revision: read.revision,
@@ -162,11 +162,16 @@ try {
     media_type: PARQUET,
     title: "Usage by day",
   });
-  const blocks = (await tool(owner, "read_page", { page_id: pageId })).body.blocks;
-  assert.equal(
-    blocks.find((block) => block.node_id === node.node_id).markdown,
-    `[Dataframe: Usage by day](${dataset.asset_url})`,
+  // An append returns the block it went into, or a new block's node_id
+  // when it got one, and the new node's id in nodes.
+  const afterInsert = (await tool(owner, "read_page", { page_id: pageId })).body;
+  const holder = afterInsert.blocks.find((block) => block.node_id === (node.block ?? node.node_id));
+  assert.ok(
+    holder.markdown.includes(`[Dataframe: Usage by day](${dataset.asset_url})`),
+    holder.markdown,
   );
+  const entry = afterInsert.outline.entries.find((item) => item.node_id === node.nodes[0]);
+  assert.equal(entry?.type, "dataframe", JSON.stringify(afterInsert.outline.entries));
   for (const page of [owner, viewer]) {
     await page.goto(`${origin}/p/${pageId}`);
     await expect(tables(page)).toHaveCount(1, { timeout: 15000 });
