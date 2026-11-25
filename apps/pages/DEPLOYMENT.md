@@ -1796,6 +1796,9 @@ The output frame host can't be another name on the same tailnet. `ts.net` is
 a public suffix, so every host in a tailnet is one site, and the
 [output host](#interactive-output-host) should be another registrable domain.
 
+Module views need a public [library origin](#library-origin): set
+`PAGES_LIBRARY_ORIGIN`, or Chrome refuses their library imports.
+
 ### Company domains
 
 An owner can share a Page with everyone who signs in with a verified email at
@@ -2633,6 +2636,60 @@ the release, with a message that names the path, unless the service answers
 200 with one attribute-free script, the bootstrap, whose sha256 is the
 receipt's `output_frame_bootstrap_sha256`. Update the output service first.
 The output service serves no view libraries: the Pages Worker serves its own
-build's catalog at `/catalog/<revision>/`.
+build's catalog at `/catalog/<revision>/`, and views load it from there unless
+the deployment names a [library origin](#library-origin).
 A Cloudflare deployment of `output/worker.js` has no such check in this
 repository; its operator runs step 4 of the release package's shell steps.
+
+### Library origin
+
+A module view imports the libraries in the build's catalog (`d3`,
+`@observablehq/plot`, React, Sift) from `/catalog/<revision>/`. The view's
+frame loads them itself, from the frame's opaque origin. A deployment reached
+at a public address serves them from its own origin, and needs nothing set.
+
+A deployment at a private address, such as a tailnet host behind Tailscale
+Serve or a LAN address, can't. Its frame comes from the public output host,
+and Chrome's [Local Network Access](https://developer.chrome.com/blog/local-network-access)
+refuses a public document's requests to a private address: "Permission was
+denied for this request to access the `local` address space". Every view that
+imports a library then fails. A view's `data/` files and bound imports reach
+the frame as bytes, so they keep working.
+
+Set `PAGES_LIBRARY_ORIGIN` to a public origin that serves the catalog, such as
+`https://libraries.example.net`. The gateway names it in the app shell and adds
+it to the shell's `connect-src`. Each view reads the catalog's `manifest.json`
+from that origin, accepts it only when its sha256 is the revision the view
+asks for, and imports the libraries from there with the manifest's hashes as
+import map integrity. The library host stores bytes; it can't change them. A
+view pinned to a revision the library origin doesn't serve uses this build's
+revision, and a build whose revision isn't there mounts views without
+libraries, so publish each new revision before deploying a build that carries
+it. Unset, views use the deployment's own origin.
+
+Any static host can be a library origin. It must answer
+`GET /catalog/<revision>/<file>` with the file's bytes,
+`Access-Control-Allow-Origin: *` and its content type (`text/javascript` for
+`.js`, `application/wasm` for `.wasm`, `application/json` for `.json`). The
+catalog is in a build at `dist/public/catalog/<revision>/`; copy that
+directory. For an R2 bucket behind a custom domain, with a CORS rule that
+allows `GET` and `HEAD` from any origin:
+
+```sh
+npm run build
+node scripts/publish-library-catalog.mjs <bucket>
+```
+
+It uploads each file with its content type and
+`Cache-Control: public, max-age=31536000, immutable`, using wrangler's current
+login. A public Pages deployment is also a library origin for builds that carry
+the same catalog revision: it already serves `/catalog/` this way.
+
+Whoever can write to the library host can add catalog revisions, and a view's
+pin names a revision, so keep only catalogs from builds you trust there.
+
+A deployment with no public host at all, frame or libraries, isn't supported
+yet. Its frame would need a private address on a host that isn't the Pages
+host, so its imports stay inside one address space. Chrome doesn't gate
+requests between two private addresses today, but every tailnet host shares
+the `ts.net` site, so that host needs a domain of its own.

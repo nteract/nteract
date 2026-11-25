@@ -2131,13 +2131,14 @@ const gateway = {
       // (link-previews.mjs). Only /p/<id>/{meta,card}.json and
       // /project/<id>/{meta,card}.json; everything else under /p/, /project/
       // and /s/ is the app's.
-      if (env.PAGES_OUTPUT_FRAME_URL !== undefined) {
+      if (env.PAGES_OUTPUT_FRAME_URL !== undefined || env.PAGES_LIBRARY_ORIGIN !== undefined) {
         env = Object.create(env, {
           ASSETS: {
             value: outputFrameAssets(
               env.ASSETS,
               env.PAGES_OUTPUT_FRAME_URL,
               env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || url.origin,
+              env.PAGES_LIBRARY_ORIGIN,
             ),
           },
         });

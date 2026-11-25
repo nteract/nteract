@@ -190,6 +190,11 @@ export interface OutputOptions {
    * and only for a declared data name. Mount the view again to show it.
    */
   onUnhandledData?: (name: string) => void;
+  /**
+   * The origin that serves `payload.libraries` at
+   * `/catalog/<revision>/<file>.js`. Default: the embedding document's origin.
+   */
+  libraryOrigin?: string;
 }
 export interface OutputHandle {
   readonly frame: HTMLIFrameElement;

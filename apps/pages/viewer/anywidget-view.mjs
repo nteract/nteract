@@ -138,12 +138,16 @@ export function mount(
     // Resolves with the decoder `sources.sharedResolver` decodes Parquet
     // files and converted CSV files to ColumnSets with (parquet-columns.mjs).
     columnDecoder = loadColumnDecoder,
+    // The origin that serves the library catalog: the one the deployment
+    // names (worker/output-frame-config.mjs), else this page's own.
+    libraryOrigin = container.ownerDocument.head?.querySelector('meta[name="pages-library-origin"]')
+      ?.content ?? container.ownerDocument.location.origin,
     // Resolves a view's pin to the library map it mounts with
-    // (library-catalog.mjs libraryMap$): the pinned catalog while this
+    // (library-catalog.mjs libraryMap$): the pinned catalog while the library
     // origin serves it, otherwise the one this build carries.
     libraryMap = (pin) =>
       libraryMap$(pin, {
-        origin: container.ownerDocument.location.origin,
+        origin: libraryOrigin,
         current: hostLibraryRevision(),
       }),
   },
@@ -431,6 +435,7 @@ export function mount(
                                   {
                                     files,
                                     frameUrl,
+                                    libraryOrigin,
                                     runtime: frameRuntime,
                                     hostContext: readHostContext(
                                       root,

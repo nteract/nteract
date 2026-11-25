@@ -63,7 +63,11 @@ test("a library map names modules on the page's origin, from one catalog revisio
 });
 
 for (const [name, integrity, message] of [
-  ["a URL on another origin", { [url("d3.js", "https://cdn.example")]: hash(1) }, /page's catalog/],
+  [
+    "a URL on another origin",
+    { [url("d3.js", "https://cdn.example")]: hash(1) },
+    /library catalog/,
+  ],
   ["another revision", { [url("d3.js", origin, "b".repeat(64))]: hash(1) }, /one catalog revision/],
   ["a value that is not sha256", { [url("d3.js")]: "sha384-" + "A".repeat(64) }, /sha256-<base64>/],
   ["a hex value", { [url("d3.js")]: "sha256-" + "a".repeat(64) }, /sha256-<base64>/],
@@ -82,8 +86,8 @@ test("library integrity needs libraries", () => {
 });
 
 for (const [name, libraries, at, message] of [
-  ["another origin", { d3: url("d3.js", "https://cdn.example") }, origin, /page's catalog/],
-  ["a page without an origin", { d3: url("d3.js") }, undefined, /page's catalog/],
+  ["another origin", { d3: url("d3.js", "https://cdn.example") }, origin, /library catalog/],
+  ["a page without an origin", { d3: url("d3.js") }, undefined, /library catalog/],
   [
     "two revisions",
     { d3: url("d3.js"), react: url("react.js", origin, "b".repeat(64)) },
@@ -96,22 +100,22 @@ for (const [name, libraries, at, message] of [
     "http://pages.example",
     /over https/,
   ],
-  ["a path outside the catalog", { d3: `${origin}/assets/d3.js` }, origin, /page's catalog/],
-  ["a short revision", { d3: `${origin}/catalog/abc/d3.js` }, origin, /page's catalog/],
-  ["a stylesheet", { d3: url("d3.css") }, origin, /page's catalog/],
-  ["a query", { d3: url("d3.js") + "?v=1" }, origin, /page's catalog/],
-  ["a fragment", { d3: url("d3.js") + "#x" }, origin, /page's catalog/],
+  ["a path outside the catalog", { d3: `${origin}/assets/d3.js` }, origin, /library catalog/],
+  ["a short revision", { d3: `${origin}/catalog/abc/d3.js` }, origin, /library catalog/],
+  ["a stylesheet", { d3: url("d3.css") }, origin, /library catalog/],
+  ["a query", { d3: url("d3.js") + "?v=1" }, origin, /library catalog/],
+  ["a fragment", { d3: url("d3.js") + "#x" }, origin, /library catalog/],
   [
     "credentials",
     { d3: url("d3.js").replace("https://", "https://user:pw@") },
     origin,
-    /page's catalog/,
+    /library catalog/,
   ],
   [
     "a URL that is not normalized",
     { d3: `${origin}/catalog/./${revision}/d3.js` },
     origin,
-    /page's catalog/,
+    /library catalog/,
   ],
   ["a relative URL", { d3: `/catalog/${revision}/d3.js` }, origin, /absolute URL/],
   ["a value that is not a string", { d3: 7 }, origin, /absolute URL/],
@@ -136,7 +140,7 @@ test("the payload carries the checked map; mounting checks it against the docume
           modulePayload({ libraries: { d3: url("d3.js", "https://cdn.example") } }),
           { frameUrl: "https://outputs.example/frame/v2/", runtime: "" },
         ),
-      /page's catalog/,
+      /library catalog/,
     );
     assert.equal(window.document.querySelector("iframe"), null);
   } finally {

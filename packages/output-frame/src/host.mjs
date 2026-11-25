@@ -59,9 +59,12 @@ function checkDataInput(value, module) {
 // resolves to it; the host sends it in the boot message, so the runtime always
 // matches this host.
 //
-// `payload.libraries` maps bare names to library modules the embedder serves
-// on its own origin (payload.mjs checkLibraries). The frame's import map
-// resolves them; the frame document itself names none.
+// `payload.libraries` maps bare names to library modules on `libraryOrigin`
+// (payload.mjs checkLibraries): the embedder's own origin unless it names
+// another. The frame's import map resolves them; the frame document itself
+// names none. An embedder on a private address names a public library origin:
+// Chrome refuses a public frame's requests to private addresses (Local Network
+// Access).
 export { mountModuleOutput as mountAnywidgetOutput };
 export function mountModuleOutput(
   container,
@@ -76,13 +79,14 @@ export function mountModuleOutput(
     scheduler,
     onState = () => {},
     onUnhandledData = () => {},
+    libraryOrigin,
   } = {},
 ) {
   if (!frameUrl) throw Error("An output frame URL is required.");
   if (typeof runtime !== "string" && typeof runtime !== "function")
     throw Error("An output frame runtime is required.");
   const doc = container.ownerDocument;
-  payload = preparePayload(payload, { origin: doc.location.origin });
+  payload = preparePayload(payload, { origin: libraryOrigin ?? doc.location.origin });
   const module = payload.kind === "module";
   const names = Object.keys(files);
   if (
