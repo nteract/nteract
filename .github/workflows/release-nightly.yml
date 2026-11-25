@@ -49,3 +49,79 @@ jobs:
       updater_channel_notes: "Rolling release for the nightly auto-update channel. This release always contains the latest updater manifest. Do not delete this release."
       updater_channel_prerelease: true
       publish_plugin_channel: "nightly"
+
+  # PyPI reads two identities from the OIDC token and they must name one file.
+  # The trusted publisher is matched on job_workflow_ref, the file that defines
+  # this job. A PEP 740 attestation is matched on workflow_ref, the workflow
+  # that started the run. Both are this file only while the job lives here, so
+  # it cannot move into release-common.yml. The other release workflow carries
+  # the same job; scripts/tests/release-workflow.test.mjs keeps them identical
+  # apart from the environment and the nightly recovery guard.
+  #
+  # PyPI versions are irreversible, so this is the last step of a release: it
+  # needs the whole pipeline to succeed. Desktop users already have the update
+  # by then. A failed upload is rerun alone with "Re-run failed jobs".
+  publish-pypi:
+    name: Publish runtimed to PyPI
+    needs: release
+    # Runs when the pipeline succeeded, stated on its result. The implicit
+    # success() also reads jobs inside the reusable workflow, and one of them,
+    # recover-nightly-wheel, is skipped on every release. A wheel-recovery run
+    # makes no release and skips this job. Every other run uploads or fails.
+    if: ${{ !cancelled() && needs.release.result == 'success' && (inputs.recovery_run_id || '') == '' }}
+    environment: release-nightly
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.release.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Download Python wheels
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: wheels-*
+          path: ./wheels
+          merge-multiple: true
+
+      - name: Download release checksums
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-checksums
+          path: release-checksums
+
+      # The publish action uploads every distribution in the directory. This
+      # makes that set the wheels on the GitHub release: every wheel SHA256SUMS
+      # lists is here with that hash, and the directory holds no other file. A
+      # `wheels-*` pattern alone would upload a partial set if an artifact had
+      # expired before a late rerun.
+      - name: Verify wheels against release checksums
+        run: |
+          grep '\.whl$' release-checksums/SHA256SUMS > "$RUNNER_TEMP/wheel-sums"
+          test -s "$RUNNER_TEMP/wheel-sums"
+          (cd wheels && sha256sum --check --strict "$RUNNER_TEMP/wheel-sums")
+          listed=$(wc -l < "$RUNNER_TEMP/wheel-sums")
+          present=$(find wheels -type f | wc -l)
+          test "$listed" -eq "$present"
+
+      # A rerun can start long after the pipeline checked the tag.
+      - name: Verify release tag matches built source
+        env:
+          TAG_NAME: v${{ needs.release.outputs.version }}
+          SOURCE_SHA: ${{ needs.release.outputs.source_sha }}
+        run: bash scripts/ci/check-release-tag.sh "$TAG_NAME" "$SOURCE_SHA" --require
+
+      # Trusted publishing, no token. The action signs a PEP 740 attestation
+      # for each wheel and uploads it with the wheel. skip-existing stays off:
+      # it skips on the filename alone. Without it PyPI accepts a wheel it
+      # already holds when the bytes are identical, so a rerun passes, and
+      # rejects different bytes under a used filename.
+      - name: Publish runtimed to PyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: wheels
