@@ -171,6 +171,27 @@ test("an append never lands in a block a later operation deletes or rewrites", (
   assert.equal(all(first), "New body\n\nThen this");
 });
 
+test("an append stays out of a block a later operation moves or inserts after", () => {
+  // The Page holds two blocks: KEY, then `last`.
+  let doc = page("First");
+  doc = edit(doc, [
+    { op: "insert_markdown", markdown: "> Quote", after_node_id: blockAddress(doc, KEY) },
+  ]).doc;
+  const last = orderedBlockIds(doc).at(-1);
+  // A later move of the last block leaves the append at the end of the Page.
+  const moved = edit(doc, [
+    { op: "insert_markdown", markdown: "Tail" },
+    { op: "move_block", node_id: blockAddress(doc, last), after_node_id: null },
+  ]).doc;
+  assert.equal(all(moved), "> Quote\n\nFirst\n\nTail");
+  // A later insert after the last block's id goes after it, then the append.
+  const after = edit(doc, [
+    { op: "insert_markdown", markdown: "Appended" },
+    { op: "insert_markdown", markdown: "After the block", after_node_id: blockAddress(doc, last) },
+  ]).doc;
+  assert.equal(all(after), "First\n\n> Quote\n\nAfter the block\n\nAppended");
+});
+
 test("an agent's first append and a person's first keystrokes in a blank Page both survive", () => {
   const doc = page("");
   const person = A.change(A.clone(doc, { actor: "0e".repeat(16) }), (draft) => {

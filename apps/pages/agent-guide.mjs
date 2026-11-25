@@ -1293,7 +1293,7 @@ goes after the Page's last node, and with null before its first, inside the
 Page's last or first block: a Page built by appends stays one block. It gets
 a block of its own only where it can't go inside: the Page has no block, it
 would join a list of the same kind at that end, a later operation in the
-same batch deletes or rewrites that block, or that block is too long or holds content this version
+same batch names that block by its id, or that block is too long or holds content this version
 can't write in.
 delete_node takes a node's id, set_image an image's. move_nodes takes node ids
 for node_id, through_node_id and after_node_id; see Move a section.

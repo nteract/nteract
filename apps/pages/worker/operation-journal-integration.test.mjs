@@ -1598,3 +1598,22 @@ test("recovery-blocked Page keeps accepted content readable and rejects tool and
   });
   assert.equal(f.page.handle.doc().title, "Accepted content");
 });
+
+test("a warning on an append in place names the block it went into", async (t) => {
+  const f = richMutationFixture(t, "Opening paragraph.");
+  const receipt = await documentMutation(
+    f.context(
+      {
+        nonce: "append-warning-block",
+        revision: await f.revision(),
+        operations: [{ op: "insert_markdown", markdown: "3. third\n4. fourth" }],
+      },
+      "edit_page",
+    ),
+  );
+  const [edit] = receipt.result.edits;
+  assert.equal(edit.block, f.block);
+  const warning = receipt.warnings.find(({ code }) => code === "list_numbers_reset");
+  assert.equal(warning.edit_index, 0);
+  assert.equal(warning.node_id, f.block);
+});

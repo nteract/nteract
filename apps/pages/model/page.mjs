@@ -771,7 +771,10 @@ function applyOperation(doc, { operation, arguments: args = {}, trace, comments 
         : INSERTS.has(op.op)
           ? (nodeBlockOf(index, op.after_node_id) ?? flowBlock(doc, op))
           : blockOf(index, op.node_id);
-    // A move writes into its anchor's block as well as its own. A null
+    // An insert with no anchor has its edge block repaired here even when it
+    // then falls back to a new block; the repair is the same normalization
+    // any edit to that block makes. A move writes into its anchor's block as
+    // well as its own. A null
     // anchor is the start of the Page, in its first block.
     const keys =
       op.op === "move_nodes"
@@ -809,15 +812,17 @@ function applyOperation(doc, { operation, arguments: args = {}, trace, comments 
     const target = starts[i].node_id;
     return forOperation(i, op, () => anchorOccurrence(doc, target.key, scoped(op, target), reads));
   });
-  // For each operation, the blocks a later operation in the batch deletes or
-  // rewrites whole: an insert with no anchor never writes into one, since
-  // that later operation would drop it.
+  // For each operation, the blocks a later operation in the batch names by
+  // the block's own id, in node_id or after_node_id: an insert with no anchor
+  // never writes into one. That later operation acts on the whole block, so
+  // content appended into it would be deleted, rewritten, moved with it, or
+  // put before what the later operation places after the block.
   const replaced = operations.map(() => new Set());
   for (let i = operations.length - 1; i > 0; i--) {
     const op = operations[i];
     for (const key of replaced[i]) replaced[i - 1].add(key);
-    if (op.op === "delete_block" || op.op === "replace_block_markdown") {
-      const key = blockOf(index, op.node_id);
+    for (const address of [op.node_id, op.after_node_id]) {
+      const key = typeof address === "string" ? index.block(address) : undefined;
       if (key !== undefined) replaced[i - 1].add(key);
     }
   }

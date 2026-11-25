@@ -4276,8 +4276,10 @@ still replay the recorded receipt; these guards run only for new intents.
   `MAX_PASSAGE_BLOCK_LENGTH` or the batch's in-place budget, it holds
   content this build reads lossily or nodes it can't name, or the new
   content would join a list of the same kind at that end. It does the same
-  when a later operation in the batch deletes the edge block or rewrites it
-  with `replace_block_markdown`, so no later operation drops the insert, and for `null` when the first block opens with unmarked text the
+  when a later operation in the batch names the edge block by its own id, in
+  `node_id` or `after_node_id` (`delete_block`, `replace_block_markdown`,
+  `move_block`, an insert after the block), so no later operation drops the
+  insert, moves it with the block or places content before it, and for `null` when the first block opens with unmarked text the
   batch didn't repair. The receipt then reports the new block's `node_id` and
   `nodes`. The batch repairs the edge block's markers before any operation
   runs, whether or not the insert lands there. Concurrent writers that
