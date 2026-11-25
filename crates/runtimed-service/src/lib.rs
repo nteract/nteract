@@ -978,9 +978,8 @@ Set WshShell = Nothing
             .and_then(|name| name.to_str())
             .unwrap_or("runtimed.exe");
 
-        // Kill the daemon process by name
         std::process::Command::new("taskkill")
-            .args(["/F", "/IM", image_name])
+            .args(windows_stop_args(image_name, std::process::id()))
             .output()
             .map_err(|e| ServiceError::StopFailed(e.to_string()))?;
 
@@ -1193,6 +1192,24 @@ pub fn service_config_path() -> PathBuf {
     }
 }
 
+/// `taskkill` arguments that stop every process named `image_name` except
+/// `caller_pid`.
+///
+/// The caller can share the daemon's image name: the app's bundled sidecar
+/// is `runtimed.exe`, and so is the installed stable daemon. Without the
+/// filter, `runtimed.exe install` and `runtimed.exe uninstall` kill
+/// themselves when they stop the service.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn windows_stop_args(image_name: &str, caller_pid: u32) -> [String; 5] {
+    [
+        "/F".to_string(),
+        "/IM".to_string(),
+        image_name.to_string(),
+        "/FI".to_string(),
+        format!("PID ne {caller_pid}"),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1209,6 +1226,14 @@ mod tests {
             "binary path should contain 'runtimed': {binary_str}"
         );
         assert!(log.to_string_lossy().contains("runtimed.log"));
+    }
+
+    #[test]
+    fn windows_stop_spares_the_caller() {
+        assert_eq!(
+            windows_stop_args("runtimed.exe", 4242),
+            ["/F", "/IM", "runtimed.exe", "/FI", "PID ne 4242"].map(String::from)
+        );
     }
 
     #[test]
