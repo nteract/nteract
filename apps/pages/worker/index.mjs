@@ -508,7 +508,7 @@ import { agentShellResponse } from "./agent-shell.mjs";
 import { pageShellSlug, slugShellResponse } from "./page-shell.mjs";
 import { SOCIAL_CARD_PATH } from "../shared/social-card.mjs";
 import { siteShellResponse, socialCard, socialCardResponse } from "./site-tags.mjs";
-import { outputFrameAssets } from "./output-frame-config.mjs";
+import { outputFrameAssets, outputFrameLocalNetwork } from "./output-frame-config.mjs";
 import { libraryCatalogResponse } from "./library-catalog.mjs";
 import { titleProjection } from "./title-projection.mjs";
 
@@ -2131,13 +2131,15 @@ const gateway = {
       // (link-previews.mjs). Only /p/<id>/{meta,card}.json and
       // /project/<id>/{meta,card}.json; everything else under /p/, /project/
       // and /s/ is the app's.
-      if (env.PAGES_OUTPUT_FRAME_URL !== undefined) {
+      const frameLocalNetwork = outputFrameLocalNetwork(env.PAGES_OUTPUT_FRAME_LOCAL_NETWORK);
+      if (env.PAGES_OUTPUT_FRAME_URL !== undefined || frameLocalNetwork) {
         env = Object.create(env, {
           ASSETS: {
             value: outputFrameAssets(
               env.ASSETS,
               env.PAGES_OUTPUT_FRAME_URL,
               env.NOTEBOOK_CLOUD_PUBLIC_ORIGIN || url.origin,
+              frameLocalNetwork,
             ),
           },
         });

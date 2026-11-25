@@ -102,8 +102,8 @@ function viewRecord(catalogRevision, entrySource = "entry") {
   return readView(doc, "daily");
 }
 
-async function mountView(view, { libraryMap } = {}) {
-  const { window } = new JSDOM("<!doctype html><body></body>");
+async function mountView(view, { libraryMap, head = "" } = {}) {
+  const { window } = new JSDOM(`<!doctype html><head>${head}</head><body></body>`);
   const requested = [];
   const request = async (url) => {
     requested.push(url);
@@ -126,7 +126,7 @@ async function mountView(view, { libraryMap } = {}) {
       theme: { subscribe: () => () => {}, getSnapshot: () => ({ resolved: "light" }) },
       ...(libraryMap && { libraryMap }),
       mountOutput(_container, payload, options) {
-        resolve({ payload, frameUrl: options.frameUrl });
+        resolve({ payload, frameUrl: options.frameUrl, localNetwork: options.localNetwork });
         return { destroy() {}, setHostContext() {} };
       },
     });
@@ -277,6 +277,22 @@ function moduleViewWriter() {
 }
 
 const plan = (key, data, title = "T") => ({ key, data, view: { title } });
+
+// A shell the deployment marks for a private address
+// (worker/output-frame-config.mjs) asks for local-network on every frame;
+// any other shell does not.
+test("a view delegates local-network to its frame only when the shell asks for it", async () => {
+  const libraryMap = () => of({ kind: "none" });
+  for (const [head, expected] of [
+    ["", false],
+    ['<meta name="pages-output-frame-local-network" content="true">', true],
+    ['<meta name="pages-output-frame-local-network" content="false">', false],
+  ]) {
+    const mounted = await mountView(viewRecord(null), { libraryMap, head });
+    assert.equal(mounted.failed, undefined, mounted.failed);
+    assert.equal(mounted.localNetwork, expected, head);
+  }
+});
 
 test("a plan change is a remount, a data change, a title change or nothing", () => {
   const a = { asset_id: "a".repeat(64), media_type: "application/octet-stream" };

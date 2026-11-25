@@ -65,6 +65,7 @@ Because the frame has an opaque origin, it loads library modules in CORS mode:
 - Each library response must include `Access-Control-Allow-Origin: *`.
 - The output host's CSP must allow the embedder's origin in `script-src` (`https:` covers any HTTPS embedder).
 - A local HTTP embedder must add its origin to its local frame server's CSP and serve that frame on a loopback address. Chromium blocks a public-origin frame from loading loopback resources.
+- An HTTPS embedder on a private address, such as a tailnet or LAN host, with a public output host needs Chrome's Local Network Access permission. Mount with `localNetwork: true`: the host sets `allow="local-network"` on the frame, and Chrome asks the user once whether the embedder's origin may reach the local network. Without it, Chromium refuses the import with "Permission was denied for this request to access the `local` address space". The permission covers every local address, so the frame's code can reach them too. Chrome before 145 doesn't know the `local-network` feature and keeps refusing.
 
 ## Handshake, lifecycle, and isolation
 

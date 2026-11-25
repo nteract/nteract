@@ -62,6 +62,14 @@ function checkDataInput(value, module) {
 // `payload.libraries` maps bare names to library modules the embedder serves
 // on its own origin (payload.mjs checkLibraries). The frame's import map
 // resolves them; the frame document itself names none.
+//
+// `localNetwork` delegates Chrome's `local-network` permission to the frame.
+// An embedder on a private address (a tailnet or LAN host) needs it when its
+// output host is public: the frame's library imports then go from a public
+// document to a local one, which Chrome blocks unless the embedder's origin
+// holds that permission and the frame is allowed to use it. The grant reaches
+// every local address, not only the embedder, so it is off unless the
+// deployment turns it on.
 export { mountModuleOutput as mountAnywidgetOutput };
 export function mountModuleOutput(
   container,
@@ -76,6 +84,7 @@ export function mountModuleOutput(
     scheduler,
     onState = () => {},
     onUnhandledData = () => {},
+    localNetwork = false,
   } = {},
 ) {
   if (!frameUrl) throw Error("An output frame URL is required.");
@@ -107,6 +116,7 @@ export function mountModuleOutput(
   const frame = doc.createElement("iframe");
   frame.title = payload.title || "Interactive output";
   frame.setAttribute("sandbox", "allow-scripts");
+  if (localNetwork) frame.setAttribute("allow", "local-network");
   frame.referrerPolicy = "no-referrer";
   frame.style.cssText = "display:block;width:100%;height:440px;border:0;visibility:hidden";
   const channel = new MessageChannel();
