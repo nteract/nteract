@@ -1,8 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { outputFrameAssets, outputFrameLocalNetwork } from "./output-frame-config.mjs";
+import { outputFrameAssets } from "./output-frame-config.mjs";
 import { outputFrameUrl } from "../shared/output-frame-config.mjs";
-import { OUTPUT_FRAME_URL } from "../shared/anywidget-view.mjs";
 import { VIEWER_CSP } from "../scripts/viewer-chunks.mjs";
 import worker from "./index.mjs";
 
@@ -121,48 +120,6 @@ test("gateway applies runtime frame configuration to root, bare and slugged Page
       path,
     );
   }
-});
-
-test("PAGES_OUTPUT_FRAME_LOCAL_NETWORK is true, false or unset", () => {
-  for (const value of [undefined, "", "false"]) assert.equal(outputFrameLocalNetwork(value), false);
-  assert.equal(outputFrameLocalNetwork("true"), true);
-  for (const value of ["1", "yes", "TRUE", " true"])
-    assert.throws(() => outputFrameLocalNetwork(value), /PAGES_OUTPUT_FRAME_LOCAL_NETWORK/);
-});
-
-test("a private deployment's shell asks views to delegate local-network to the default frame", async () => {
-  const tailnet = "https://pages.tailnet.example:8443";
-  const assets = outputFrameAssets({ fetch: async () => asset() }, undefined, tailnet, true);
-  const response = await assets.fetch(new Request(tailnet + "/"));
-  const body = await response.text();
-  assert.match(body, /name="pages-output-frame-local-network" content="true"/);
-  assert.ok(body.includes(`name="pages-output-frame-url" content="${OUTPUT_FRAME_URL}"`));
-  // The default frame keeps the build's own CSP.
-  assert.equal(response.headers.get("content-security-policy"), VIEWER_CSP);
-  // A configured frame URL alone never marks the shell.
-  const plain = await outputFrameAssets({ fetch: async () => asset() }, frame, origin)
-    .fetch(new Request(origin))
-    .then((r) => r.text());
-  assert.doesNotMatch(plain, /pages-output-frame-local-network/);
-});
-
-test("gateway marks Page shells when PAGES_OUTPUT_FRAME_LOCAL_NETWORK is true", async (t) => {
-  for (const level of ["log", "info", "warn", "error"]) t.mock.method(console, level, () => {});
-  const env = {
-    NOTEBOOK_CLOUD_PUBLIC_ORIGIN: origin,
-    PAGES_OUTPUT_FRAME_LOCAL_NETWORK: "true",
-    ASSETS: { fetch: async () => asset() },
-    PAGES: { getByName: () => ({ fetch: async () => Response.json(null) }) },
-  };
-  const path = "/p/1a160b47-6df1-4983-81eb-489ca5a26812";
-  const marked = await worker.fetch(new Request(origin + path), env);
-  assert.equal(marked.status, 200);
-  assert.match(await marked.text(), /pages-output-frame-local-network/);
-  const unmarked = await worker.fetch(new Request(origin + path), {
-    ...env,
-    PAGES_OUTPUT_FRAME_LOCAL_NETWORK: undefined,
-  });
-  assert.doesNotMatch(await unmarked.text(), /pages-output-frame-local-network/);
 });
 
 test("non-reading asset requests retain their method and body", async () => {

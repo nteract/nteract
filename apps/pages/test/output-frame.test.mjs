@@ -182,31 +182,6 @@ test("frame startup timeout and teardown use an injected clock", async (t) => {
   assert.deepEqual(states, ["connecting", "failed", "disposed"]);
 });
 
-test("a frame asks for local-network only when the embedder delegates it", async (t) => {
-  const { JSDOM } = await import("jsdom");
-  const { mountModuleOutput } = await import("@nteract/output-frame");
-  const dom = new JSDOM("<main></main>", { url: "https://pages.tailnet.example/" });
-  t.after(() => dom.window.close());
-  const mountWith = (options) =>
-    mountModuleOutput(
-      dom.window.document.querySelector("main"),
-      { kind: "module", assets: { entry: { bytes: new Uint8Array(), mediaType: ESM_MEDIA_TYPE } } },
-      {
-        frameUrl: "https://outputs.example/frame/v2/",
-        runtime: "runtime text",
-        hostContext: { theme: "light" },
-        ...options,
-      },
-    );
-  const plain = mountWith({});
-  assert.equal(plain.frame.hasAttribute("allow"), false);
-  plain.destroy();
-  const delegated = mountWith({ localNetwork: true });
-  assert.equal(delegated.frame.getAttribute("allow"), "local-network");
-  assert.equal(delegated.frame.getAttribute("sandbox"), "allow-scripts");
-  delegated.destroy();
-});
-
 test("binary transport does not expose bytes outside an authorized subarray", async () => {
   const { preparePayload } = await import("../../../packages/output-frame/src/payload.mjs");
   const backing = new Uint8Array([99, 1, 2, 99]);

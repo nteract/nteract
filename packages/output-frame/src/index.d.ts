@@ -190,13 +190,6 @@ export interface OutputOptions {
    * and only for a declared data name. Mount the view again to show it.
    */
   onUnhandledData?: (name: string) => void;
-  /**
-   * Delegate Chrome's `local-network` permission to the frame
-   * (`allow="local-network"`), so its library imports can reach an embedder
-   * on a private address. Default false. The grant covers every local
-   * address the user's browser can reach.
-   */
-  localNetwork?: boolean;
 }
 export interface OutputHandle {
   readonly frame: HTMLIFrameElement;

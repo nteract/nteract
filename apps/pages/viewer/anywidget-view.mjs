@@ -127,11 +127,6 @@ export function mount(
     sourcesAnswer$ = of("known"),
     frameUrl = container.ownerDocument.querySelector('meta[name="pages-output-frame-url"]')
       ?.content ?? OUTPUT_FRAME_URL,
-    // The deployment is on a private address with a public output host
-    // (worker/output-frame-config.mjs): delegate local-network to the frame.
-    localNetwork = container.ownerDocument.querySelector(
-      'meta[name="pages-output-frame-local-network"]',
-    )?.content === "true",
     mountOutput = mountModuleOutput,
     // Resolves with the frame runtime's text, which the output host's
     // bootstrap runs.
@@ -436,7 +431,6 @@ export function mount(
                                   {
                                     files,
                                     frameUrl,
-                                    localNetwork,
                                     runtime: frameRuntime,
                                     hostContext: readHostContext(
                                       root,
