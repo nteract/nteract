@@ -1797,7 +1797,8 @@ a public suffix, so every host in a tailnet is one site, and the
 [output host](#interactive-output-host) should be another registrable domain.
 
 Module views need a public [library origin](#library-origin): set
-`PAGES_LIBRARY_ORIGIN`, or Chrome refuses their library imports.
+`PAGES_LIBRARY_ORIGIN`, such as `https://libraries.kilousercontent.com`, or
+Chrome refuses their library imports.
 
 ### Company domains
 
@@ -2688,7 +2689,12 @@ node scripts/publish-library-catalog.mjs <bucket>
 
 It uploads each file with its content type and
 `Cache-Control: public, max-age=31536000, immutable`, using wrangler's current
-login. A public Pages deployment is also a library origin for builds that carry
+login.
+
+Kilo's library origin is `https://libraries.kilousercontent.com`: the R2 bucket
+`nteract-pages-libraries` on the Kilo Code account, published by hand like the
+output shell. Publish a build's revision there before deploying that build to
+a deployment that names it. A public Pages deployment is also a library origin for builds that carry
 the same catalog revision: it already serves `/catalog/` this way.
 
 Whoever can write to the library host can add catalog revisions, and a view's
