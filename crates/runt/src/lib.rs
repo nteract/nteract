@@ -2975,8 +2975,7 @@ async fn doctor_command(
         .map(|r| r.is_ok())
         .unwrap_or(false);
 
-    // Set when a repair asks the service manager to launch the daemon.
-    let mut start_requested = false;
+    let mut launches = doctor_readiness::LaunchTracker::new(no_start);
 
     // Fix issues if requested
     if fix {
@@ -3028,9 +3027,9 @@ async fn doctor_command(
                 } else {
                     migrated_manager.upgrade(&bundled_path)
                 };
+                launches.record(doctor_readiness::ServiceRepair::Upgrade, result.is_ok());
                 match result {
                     Ok(()) => {
-                        start_requested = true;
                         actions_taken.push(format!(
                             "Migrated plist to in-bundle binary at {}",
                             bundled_path.display()
@@ -3063,9 +3062,9 @@ async fn doctor_command(
             } else {
                 manager.upgrade(&binary_path)
             };
+            launches.record(doctor_readiness::ServiceRepair::Upgrade, result.is_ok());
             match result {
                 Ok(()) => {
-                    start_requested = true;
                     actions_taken.push("Regenerated plist with HOME env var".to_string());
                 }
                 Err(e) => {
@@ -3075,12 +3074,23 @@ async fn doctor_command(
         }
 
         // Fix stale launchd registration (macOS only)
-        // This happens when launchctl load/unload leaves corrupted state
+        // This happens when launchctl load/unload leaves corrupted state.
+        // Bootstrapping a RunAtLoad plist launches the daemon, so --no-start
+        // leaves the registration alone.
         #[cfg(target_os = "macos")]
-        if launchd_not_loaded && config_exists && binary_exists && !daemon_running_before {
-            match runt_workspace::launchd_start() {
+        if launchd_not_loaded
+            && config_exists
+            && binary_exists
+            && !daemon_running_before
+            && !no_start
+        {
+            let result = runt_workspace::launchd_start();
+            launches.record(
+                doctor_readiness::ServiceRepair::LaunchdRegister,
+                result.is_ok(),
+            );
+            match result {
                 Ok(()) => {
-                    start_requested = true;
                     actions_taken.push("Ensured launchd service registration".to_string());
                 }
                 Err(e) => {
@@ -3137,9 +3147,9 @@ async fn doctor_command(
                     } else {
                         manager.upgrade(bundled_path)
                     };
+                    launches.record(doctor_readiness::ServiceRepair::Upgrade, result.is_ok());
                     match result {
                         Ok(()) => {
-                            start_requested = true;
                             actions_taken.push(format!(
                                 "Upgraded daemon: {} -> {} (from {})",
                                 inst,
@@ -3165,9 +3175,9 @@ async fn doctor_command(
                     } else {
                         manager.upgrade(bundled_path)
                     };
+                    launches.record(doctor_readiness::ServiceRepair::Upgrade, result.is_ok());
                     match result {
                         Ok(()) => {
-                            start_requested = true;
                             actions_taken.push(format!(
                                 "Reinstalled daemon binary from {}",
                                 bundled_path.display()
@@ -3184,9 +3194,9 @@ async fn doctor_command(
                     } else {
                         manager.install(bundled_path)
                     };
+                    launches.record(doctor_readiness::ServiceRepair::Install, result.is_ok());
                     match result {
                         Ok(()) => {
-                            start_requested = true;
                             actions_taken
                                 .push(format!("Installed daemon from {}", bundled_path.display()));
                         }
@@ -3211,9 +3221,10 @@ async fn doctor_command(
         // Job Object, while Linux packaging smokes use it to stage daemon files
         // without requiring a live user systemd session.
         if manager.is_installed() && !daemon_running_before && !no_start {
-            match manager.start() {
+            let result = manager.start();
+            launches.record(doctor_readiness::ServiceRepair::Start, result.is_ok());
+            match result {
                 Ok(()) => {
-                    start_requested = true;
                     actions_taken.push("Started daemon service".to_string());
                 }
                 Err(e) => {
@@ -3223,25 +3234,27 @@ async fn doctor_command(
         }
     }
 
-    // Re-read daemon info after potential fixes. A repair that started the
-    // service waits for the daemon to answer; other repairs re-read once.
-    let (daemon_info_after, readiness) =
-        if doctor_readiness::should_await_start(fix, no_start, start_requested) {
-            doctor_readiness::await_started_daemon(runt_workspace::default_socket_path()).await
-        } else if fix && !actions_taken.is_empty() {
-            (
-                runtimed_client::singleton::query_daemon_info(
-                    runt_workspace::default_socket_path(),
-                )
-                .await,
-                doctor_readiness::StartReadiness::NotAwaited,
-            )
-        } else {
-            (
-                daemon_info.cloned(),
-                doctor_readiness::StartReadiness::NotAwaited,
-            )
-        };
+    // Re-read daemon info after potential fixes. A repair that launched the
+    // daemon behind the probed socket waits for it to answer; other repairs
+    // re-read once.
+    let probed_socket = runt_workspace::default_socket_path();
+    let (daemon_info_after, readiness) = if doctor_readiness::should_await_launch(
+        launches,
+        &probed_socket,
+        &doctor_readiness::service_socket_path(),
+    ) {
+        doctor_readiness::await_launched_daemon(probed_socket).await
+    } else if fix && !actions_taken.is_empty() {
+        (
+            runtimed_client::singleton::query_daemon_info(probed_socket).await,
+            doctor_readiness::StartReadiness::NotAwaited,
+        )
+    } else {
+        (
+            daemon_info.cloned(),
+            doctor_readiness::StartReadiness::NotAwaited,
+        )
+    };
 
     // Run final checks (after any fixes)
     let report = run_checks(

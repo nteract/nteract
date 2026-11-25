@@ -1,92 +1,140 @@
 //! Readiness wait for `daemon doctor --fix`.
 //!
-//! A repair that installs, upgrades, or starts the service hands the daemon to
-//! the service manager. launchd, systemd, or the Windows Startup entry then
-//! launches it on its own schedule, so the socket can stay silent for a few
-//! seconds after the repair call returns. Doctor polls the socket for daemon
-//! metadata before it writes the final report. It polls only when a repair
-//! asked the service manager to start the daemon; `--no-start` runs and runs
-//! with no start-capable repair go straight to the report.
+//! Some repairs launch the daemon through the service manager: an upgrade
+//! that restarts the service, launchd re-registration of a `RunAtLoad`
+//! plist, and an explicit service start. The service manager brings the
+//! daemon up on its own schedule, so the socket can stay silent for a few
+//! seconds after the repair call returns. Doctor then polls the socket for
+//! daemon metadata before it writes the final report.
 //!
-//! The attempt count and interval match the post-repair check in
-//! `runtimed::service_repair`.
+//! A fresh install does not launch anything by itself: on Linux it enables
+//! the systemd unit without `--now`, on Windows it writes a Startup script,
+//! and on macOS it writes the plist. Only the explicit start that follows it
+//! counts as a launch.
+//!
+//! Doctor waits only for a socket that belongs to the service it launched.
+//! In a dev worktree the probed socket is the worktree daemon's, which the
+//! channel service never binds.
+//!
+//! The interval matches the post-repair check in `runtimed::service_repair`.
 
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use runtimed_client::singleton::{query_daemon_info, DaemonInfo};
 
-const READY_ATTEMPTS: u32 = 40;
 const READY_INTERVAL: Duration = Duration::from_millis(250);
-/// Wall-clock bound on the whole wait. A socket that accepts but never
-/// answers would otherwise stretch each attempt by the probe timeout.
+/// Wall-clock bound on the whole wait, probes included. Each probe runs to
+/// the client's own timeout; this deadline is the only one doctor adds.
 const READY_BUDGET: Duration = Duration::from_secs(10);
-const READY_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// A doctor repair that touches the service registration or process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ServiceRepair {
+    /// Writes the service definition and binary. Launches nothing.
+    Install,
+    /// Stops the service, replaces its definition, and starts it again
+    /// unless `--no-start` staged it instead.
+    Upgrade,
+    /// Re-registers the launchd job; `RunAtLoad` launches the daemon.
+    /// Doctor runs this repair on macOS only.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    LaunchdRegister,
+    /// Asks the service manager to start the daemon.
+    Start,
+}
+
+impl ServiceRepair {
+    fn launches_daemon(self, no_start: bool) -> bool {
+        match self {
+            ServiceRepair::Install => false,
+            ServiceRepair::Upgrade => !no_start,
+            ServiceRepair::LaunchdRegister | ServiceRepair::Start => true,
+        }
+    }
+}
+
+/// Records whether any successful repair launched the daemon.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LaunchTracker {
+    no_start: bool,
+    launched: bool,
+}
+
+impl LaunchTracker {
+    pub(crate) fn new(no_start: bool) -> Self {
+        Self {
+            no_start,
+            launched: false,
+        }
+    }
+
+    /// Record a repair outcome. Failed repairs never count as a launch.
+    pub(crate) fn record(&mut self, repair: ServiceRepair, succeeded: bool) {
+        if succeeded && repair.launches_daemon(self.no_start) {
+            self.launched = true;
+        }
+    }
+
+    pub(crate) fn launched(&self) -> bool {
+        self.launched
+    }
+}
 
 /// Outcome of the post-repair wait, carried into the doctor report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StartReadiness {
-    /// No repair asked the service manager to start the daemon.
+    /// No repair launched the daemon behind the probed socket.
     NotAwaited,
     /// The daemon answered on its socket within the budget.
     Ready,
-    /// A repair started the service, but the daemon never answered.
+    /// A repair launched the service, but the daemon never answered.
     TimedOut,
 }
 
-/// Whether doctor should wait for the daemon before writing the report.
-pub(crate) fn should_await_start(fix: bool, no_start: bool, start_requested: bool) -> bool {
-    fix && !no_start && start_requested
+/// The socket the installed channel service binds. The service runs without
+/// the dev or socket-override environment, so it uses the channel default.
+pub(crate) fn service_socket_path() -> PathBuf {
+    runt_workspace::socket_path_for_context(runt_workspace::build_channel(), None)
 }
 
-/// Call `probe` until it returns a value, sleeping `interval` between
-/// attempts. Gives up after `attempts` probes without a trailing sleep.
-pub(crate) async fn poll_until_ready<T, P, PF, S, SF>(
-    attempts: u32,
-    interval: Duration,
-    mut probe: P,
-    mut sleep: S,
-) -> Option<T>
+/// Whether doctor should wait on `probed` before writing the report.
+pub(crate) fn should_await_launch(launches: LaunchTracker, probed: &Path, service: &Path) -> bool {
+    launches.launched() && probed == service
+}
+
+/// Call `probe` every `READY_INTERVAL` until it returns a value or
+/// `READY_BUDGET` runs out.
+async fn wait_for_ready<T, P, PF>(mut probe: P) -> Option<T>
 where
     P: FnMut() -> PF,
     PF: Future<Output = Option<T>>,
-    S: FnMut(Duration) -> SF,
-    SF: Future<Output = ()>,
 {
-    for attempt in 0..attempts {
-        if let Some(value) = probe().await {
-            return Some(value);
+    let poll = async {
+        loop {
+            if let Some(value) = probe().await {
+                return value;
+            }
+            tokio::time::sleep(READY_INTERVAL).await;
         }
-        if attempt + 1 < attempts {
-            sleep(interval).await;
-        }
-    }
-    None
+    };
+    tokio::time::timeout(READY_BUDGET, poll).await.ok()
 }
 
 /// Wait for the daemon on `socket_path` to answer `GetDaemonInfo` after a
-/// repair started the service.
-pub(crate) async fn await_started_daemon(
+/// repair launched the service.
+pub(crate) async fn await_launched_daemon(
     socket_path: PathBuf,
 ) -> (Option<DaemonInfo>, StartReadiness) {
-    let poll = poll_until_ready(
-        READY_ATTEMPTS,
-        READY_INTERVAL,
-        || {
-            let socket_path = socket_path.clone();
-            async move {
-                tokio::time::timeout(READY_PROBE_TIMEOUT, query_daemon_info(socket_path))
-                    .await
-                    .ok()
-                    .flatten()
-            }
-        },
-        tokio::time::sleep,
-    );
-    match tokio::time::timeout(READY_BUDGET, poll).await {
-        Ok(Some(info)) => (Some(info), StartReadiness::Ready),
-        Ok(None) | Err(_) => (None, StartReadiness::TimedOut),
+    let info = wait_for_ready(|| query_daemon_info(socket_path.clone())).await;
+    readiness_from(info)
+}
+
+fn readiness_from<T>(info: Option<T>) -> (Option<T>, StartReadiness) {
+    match info {
+        Some(info) => (Some(info), StartReadiness::Ready),
+        None => (None, StartReadiness::TimedOut),
     }
 }
 
@@ -109,67 +157,103 @@ pub(crate) fn installed_not_running_diagnosis(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::{Cell, RefCell};
+    use std::cell::Cell;
+
+    fn tracker(no_start: bool, outcomes: &[(ServiceRepair, bool)]) -> LaunchTracker {
+        let mut launches = LaunchTracker::new(no_start);
+        for &(repair, ok) in outcomes {
+            launches.record(repair, ok);
+        }
+        launches
+    }
 
     #[test]
-    fn waits_only_when_a_fix_run_started_the_service() {
-        assert!(should_await_start(true, false, true));
+    fn install_alone_is_not_a_launch() {
+        use ServiceRepair::*;
+        assert!(!tracker(false, &[(Install, true)]).launched());
         assert!(
-            !should_await_start(true, true, true),
-            "--no-start never waits"
+            !tracker(false, &[(Install, true), (Start, false)]).launched(),
+            "a failed start after install does not wait"
         );
-        assert!(
-            !should_await_start(true, false, false),
-            "no start-capable repair"
-        );
-        assert!(!should_await_start(false, false, false), "report-only run");
+        assert!(tracker(false, &[(Install, true), (Start, true)]).launched());
     }
 
-    #[tokio::test]
-    async fn poll_returns_first_ready_value_and_sleeps_between_misses() {
+    #[test]
+    fn upgrade_launches_only_when_it_restarts_the_service() {
+        use ServiceRepair::*;
+        assert!(tracker(false, &[(Upgrade, true)]).launched());
+        assert!(!tracker(false, &[(Upgrade, false)]).launched());
+        assert!(
+            !tracker(true, &[(Upgrade, true)]).launched(),
+            "--no-start stages the upgrade"
+        );
+    }
+
+    #[test]
+    fn launchd_registration_launches_the_daemon() {
+        use ServiceRepair::*;
+        assert!(tracker(false, &[(LaunchdRegister, true)]).launched());
+        assert!(!tracker(false, &[(LaunchdRegister, false)]).launched());
+    }
+
+    #[test]
+    fn waits_only_on_the_launched_service_socket() {
+        let service = Path::new("/cache/runt-nightly/runtimed.sock");
+        let worktree = Path::new("/cache/runt-nightly/worktrees/abc/runtimed.sock");
+        let launched = tracker(false, &[(ServiceRepair::Start, true)]);
+        let idle = tracker(false, &[(ServiceRepair::Install, true)]);
+
+        assert!(should_await_launch(launched, service, service));
+        assert!(
+            !should_await_launch(launched, worktree, service),
+            "dev worktree socket is not the channel service's"
+        );
+        assert!(!should_await_launch(idle, service, service));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_returns_once_the_daemon_answers() {
         let calls = Cell::new(0u32);
-        let sleeps = RefCell::new(Vec::new());
-        let result = poll_until_ready(
-            40,
-            Duration::from_millis(250),
-            || {
-                calls.set(calls.get() + 1);
-                let n = calls.get();
-                async move { (n == 3).then_some("ready") }
-            },
-            |d| {
-                sleeps.borrow_mut().push(d);
-                async {}
-            },
-        )
+        let started = tokio::time::Instant::now();
+        let result = wait_for_ready(|| {
+            calls.set(calls.get() + 1);
+            let n = calls.get();
+            async move { (n == 3).then_some("ready") }
+        })
         .await;
 
-        assert_eq!(result, Some("ready"));
+        assert_eq!(
+            readiness_from(result),
+            (Some("ready"), StartReadiness::Ready)
+        );
         assert_eq!(calls.get(), 3);
-        assert_eq!(*sleeps.borrow(), vec![Duration::from_millis(250); 2]);
+        assert_eq!(started.elapsed(), READY_INTERVAL * 2);
     }
 
-    #[tokio::test]
-    async fn poll_gives_up_after_the_attempt_bound() {
+    #[tokio::test(start_paused = true)]
+    async fn wait_gives_up_at_the_budget_when_probes_never_finish() {
+        let started = tokio::time::Instant::now();
+        let result: Option<()> = wait_for_ready(std::future::pending).await;
+
+        assert_eq!(readiness_from(result), (None, StartReadiness::TimedOut));
+        assert_eq!(started.elapsed(), READY_BUDGET);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_gives_up_at_the_budget_when_probes_keep_failing() {
         let calls = Cell::new(0u32);
-        let sleeps = Cell::new(0u32);
-        let result: Option<()> = poll_until_ready(
-            5,
-            Duration::from_millis(250),
-            || {
-                calls.set(calls.get() + 1);
-                async { None }
-            },
-            |_| {
-                sleeps.set(sleeps.get() + 1);
-                async {}
-            },
-        )
+        let started = tokio::time::Instant::now();
+        let result: Option<()> = wait_for_ready(|| {
+            calls.set(calls.get() + 1);
+            async { None }
+        })
         .await;
 
         assert_eq!(result, None);
-        assert_eq!(calls.get(), 5);
-        assert_eq!(sleeps.get(), 4, "no sleep after the last probe");
+        assert_eq!(started.elapsed(), READY_BUDGET);
+        // One probe per 250 ms; the probe due at the deadline may run before
+        // the timeout fires.
+        assert!((40..=41).contains(&calls.get()), "probes: {}", calls.get());
     }
 
     #[test]
