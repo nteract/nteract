@@ -8023,6 +8023,7 @@ dependencies = [
  "runt-workspace",
  "runtimed-client",
  "runtimed-service",
+ "semver",
  "serde",
  "serde_json",
  "tabled",

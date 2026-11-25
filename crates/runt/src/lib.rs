@@ -3150,8 +3150,11 @@ async fn doctor_command(
                     running: running_ver,
                     bundled: bundled_ver.as_deref(),
                 },
-                no_start,
-                runt_workspace::is_dev_mode(),
+                doctor_version_repair::RepairContext {
+                    no_start,
+                    dev_mode: runt_workspace::is_dev_mode(),
+                    can_reinstall_from_installed: !cfg!(windows),
+                },
             )
         } else {
             doctor_version_repair::VersionRepair::None
@@ -3189,57 +3192,57 @@ async fn doctor_command(
                     "Dev mode: doctor does not restart the worktree daemon or touch the installed service. Restart the dev daemon with 'cargo xtask dev-daemon'."
                 );
             }
+            doctor_version_repair::VersionRepair::HeldOlderTarget => {
+                eprintln!(
+                    "The installed or running daemon is newer than this {command_name} CLI's runtime; doctor does not downgrade it. Use the newest installed app's CLI."
+                );
+            }
+            doctor_version_repair::VersionRepair::HeldUnordered => {
+                eprintln!(
+                    "Daemon versions differ but cannot be ordered (same release, different build). Restart the app to choose the daemon."
+                );
+            }
+            doctor_version_repair::VersionRepair::HeldByPlatform => {
+                eprintln!(
+                    "The running daemon is stale, but doctor cannot reinstall the installed binary over itself on this platform. Restart the app."
+                );
+            }
             doctor_version_repair::VersionRepair::Restart { source } => {
-                let source_path = match source {
-                    doctor_version_repair::RepairSource::Bundled => bundled.clone(),
-                    doctor_version_repair::RepairSource::Installed => Some(binary_path.clone()),
-                };
-                let target_ver = match source {
-                    doctor_version_repair::RepairSource::Bundled => bundled_ver.as_deref(),
-                    doctor_version_repair::RepairSource::Installed => installed_ver.as_deref(),
+                let (source_path, target_ver) = match source {
+                    doctor_version_repair::RepairSource::Bundled => {
+                        (bundled.clone(), bundled_ver.as_deref())
+                    }
+                    doctor_version_repair::RepairSource::Installed => {
+                        (Some(binary_path.clone()), installed_ver.as_deref())
+                    }
                 };
                 if let (Some(source_path), Some(target_ver)) = (source_path, target_ver) {
-                    let running_kernels = if daemon_running_before {
-                        count_running_kernels(client).await
-                    } else if running_ver.is_some() {
-                        Err("the daemon process is alive but did not answer a ping".to_string())
-                    } else {
-                        Ok(0)
-                    };
-                    let interactive = !json
-                        && std::io::IsTerminal::is_terminal(&std::io::stdin())
-                        && std::io::IsTerminal::is_terminal(&std::io::stderr());
-                    let proceed = match doctor_version_repair::restart_gate(
-                        running_kernels,
-                        interactive,
+                    let live_pid = daemon_info
+                        .filter(|_| daemon_state_status == "ok")
+                        .map(|info| info.pid);
+                    match restart_stale_daemon(
+                        client,
+                        &source_path,
+                        target_ver,
+                        live_pid,
+                        json,
                         command_name,
-                    ) {
-                        doctor_version_repair::RestartGate::Proceed => true,
-                        doctor_version_repair::RestartGate::Ask { running_kernels } => {
-                            confirm_kernel_restart(running_kernels)
+                        &mut launches,
+                    )
+                    .await
+                    {
+                        Ok(verified_version) => {
+                            let from = running_ver
+                                .or(installed_ver.as_deref())
+                                .unwrap_or("unknown");
+                            actions_taken.push(format!(
+                                "Restarted daemon: {} -> {} (clean shutdown, from {})",
+                                from,
+                                verified_version,
+                                source_path.display()
+                            ));
                         }
-                        doctor_version_repair::RestartGate::Refuse { reason } => {
-                            eprintln!("Daemon restart skipped: {reason}");
-                            false
-                        }
-                    };
-                    if proceed {
-                        let from = running_ver
-                            .or(installed_ver.as_deref())
-                            .unwrap_or("unknown");
-                        match run_service_repair(&source_path).await {
-                            Ok(()) => {
-                                actions_taken.push(format!(
-                                    "Restarted daemon: {} -> {} (clean shutdown, from {})",
-                                    from,
-                                    target_ver,
-                                    source_path.display()
-                                ));
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to restart daemon: {}", e);
-                            }
-                        }
+                        Err(reason) => eprintln!("Daemon restart skipped: {reason}"),
                     }
                 }
             }
@@ -3571,8 +3574,109 @@ fn is_process_running(pid: u32) -> bool {
     }
 }
 
-/// Get the version from a runtimed binary by running `--version`.
-/// Returns e.g. `"2.0.0+a1b2c3d"` (crate version + commit hash).
+/// Restart the daemon into `source`'s version through its transactional
+/// service repair. Returns the verified version of the new daemon.
+///
+/// Refuses before touching anything unless `source` reports this CLI's
+/// compiled channel, the checked endpoint is the managed service's, and the
+/// endpoint proves there are no running kernels (or the person at the
+/// terminal agrees to stop them).
+async fn restart_stale_daemon(
+    client: &runtimed::client::PoolClient,
+    source: &Path,
+    target_ver: &str,
+    live_pid: Option<u32>,
+    json: bool,
+    command_name: &str,
+    launches: &mut doctor_readiness::LaunchTracker,
+) -> std::result::Result<String, String> {
+    use doctor_version_repair::RestartGate;
+
+    // The repair child resolves the service's own endpoint. An override
+    // would split the socket checked here from the service it restarts.
+    if std::env::var_os("RUNTIMED_SOCKET_PATH").is_some() {
+        return Err(
+            "RUNTIMED_SOCKET_PATH is set, so the checked endpoint may not be the managed service's"
+                .to_string(),
+        );
+    }
+    runtimed::startup::RuntimeLaunch {
+        binary: source.to_path_buf(),
+        channel: runt_workspace::build_channel(),
+        worktree: None,
+    }
+    .verify_binary_identity()
+    .await
+    .map_err(|error| error.to_string())?;
+
+    let presence = probe_daemon_presence(client, live_pid).await;
+    let interactive = !json
+        && std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && std::io::IsTerminal::is_terminal(&std::io::stderr());
+    match doctor_version_repair::restart_gate(presence, interactive, command_name) {
+        RestartGate::Proceed => {}
+        RestartGate::Ask { running_kernels } => {
+            if !confirm_kernel_restart(running_kernels) {
+                return Err("declined at the prompt".to_string());
+            }
+        }
+        RestartGate::Refuse { reason } => return Err(reason),
+    }
+
+    if !json {
+        eprintln!(
+            "Restarting the daemon with {} install. A clean shutdown can take a few minutes...",
+            source.display()
+        );
+    }
+    let repaired = doctor_version_repair::run_service_repair(
+        source,
+        doctor_version_repair::SERVICE_REPAIR_TIMEOUT,
+    )
+    .await;
+    // The repair stops the service, replaces it, and starts it again.
+    launches.record(doctor_readiness::ServiceRepair::Upgrade, repaired.is_ok());
+    repaired.map_err(|error| format!("repair failed: {error}"))?;
+
+    // With no endpoint override and no dev namespace, the checked socket is
+    // the service's.
+    let (after, _) =
+        doctor_readiness::await_launched_daemon(doctor_readiness::service_socket_path()).await;
+    doctor_version_repair::confirm_restarted(
+        after.as_ref().map(|info| (info.version.as_str(), info.pid)),
+        live_pid,
+        target_ver,
+    )
+}
+
+/// Probe the daemon endpoint before a restart. Absence needs proof: a
+/// missing or refused endpoint and no live daemon PID.
+async fn probe_daemon_presence(
+    client: &runtimed::client::PoolClient,
+    live_pid: Option<u32>,
+) -> doctor_version_repair::DaemonPresence {
+    use doctor_version_repair::DaemonPresence;
+    match tokio::time::timeout(Duration::from_secs(2), client.ping()).await {
+        Ok(Ok(())) => DaemonPresence::Answering {
+            running_kernels: count_running_kernels(client).await,
+        },
+        Ok(Err(error)) if runtimed::startup::endpoint_absent(&error) => match live_pid {
+            Some(pid) if is_process_running(pid) => DaemonPresence::Inconclusive {
+                reason: format!(
+                    "daemon pid {pid} is alive but its endpoint refused the connection"
+                ),
+            },
+            _ => DaemonPresence::Absent,
+        },
+        Ok(Err(error)) => DaemonPresence::Inconclusive {
+            reason: error.to_string(),
+        },
+        Err(_) => DaemonPresence::Inconclusive {
+            reason: "ping timed out".to_string(),
+        },
+    }
+}
+
 /// Count rooms with a live kernel on the daemon `client` talks to.
 async fn count_running_kernels(
     client: &runtimed::client::PoolClient,
@@ -3598,40 +3702,45 @@ fn confirm_kernel_restart(running_kernels: usize) -> bool {
     input.trim().eq_ignore_ascii_case("y")
 }
 
-/// Run `<source> install`, the daemon's transactional service repair. It
-/// shuts the live daemon down cleanly, installs `source`, starts it, and exits
-/// zero only after the new daemon reports `source`'s own version.
-async fn run_service_repair(source: &Path) -> Result<()> {
-    let output = tokio::process::Command::new(source)
-        .arg("install")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("could not run {} install: {e}", source.display()))?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let tail: Vec<&str> = stderr.lines().rev().take(5).collect();
-    let tail: Vec<&str> = tail.into_iter().rev().collect();
-    Err(anyhow::anyhow!(
-        "{} install exited with {}: {}",
-        source.display(),
-        output.status,
-        tail.join(" | ")
-    ))
-}
-
+/// Get the version from a runtimed binary by running `--version`.
+/// Returns e.g. `"2.0.0+a1b2c3d"` (crate version + commit hash).
+///
+/// Gives up after five seconds, so a wedged binary cannot hang doctor.
 fn get_binary_version(path: &Path) -> Option<String> {
-    let output = std::process::Command::new(path)
+    use std::io::Read;
+    const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
+    let mut child = std::process::Command::new(path)
         .arg("--version")
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
         .ok()?;
-    if !output.status.success() {
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < VERSION_TIMEOUT => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    if !status.success() {
         return None;
     }
-    let version = String::from_utf8(output.stdout).ok()?;
-    let version = version.trim().trim_start_matches("runtimed ").to_string();
+    let mut stdout = String::new();
+    child
+        .stdout
+        .take()?
+        .take(4096)
+        .read_to_string(&mut stdout)
+        .ok()?;
+    let version = stdout.trim().trim_start_matches("runtimed ").to_string();
     if version.is_empty() {
         return None;
     }

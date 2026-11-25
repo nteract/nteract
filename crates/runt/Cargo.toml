@@ -41,6 +41,7 @@ tar = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 walkdir = "2"
+semver = "1"
 
 [dev-dependencies]
 tempfile = { workspace = true }
