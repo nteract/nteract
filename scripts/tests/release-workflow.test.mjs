@@ -517,10 +517,15 @@ test("every release job that reads a secret or mints an OIDC token runs in its e
   for (const [id, job] of Object.entries(parsedRelease.jobs)) {
     const secrets = [...JSON.stringify(job).matchAll(/secrets\.([A-Z0-9_]+)/g)].map(match => match[1]).filter(name => name !== "GITHUB_TOKEN");
     if (secrets.length === 0 && job.permissions?.["id-token"] !== "write") continue;
-    // Its OIDC token reaches only Sigstore and the attestations API. With no
-    // environment claim, the token cannot satisfy the Azure credentials or
-    // PyPI publishers, which name release environments.
-    if (id === "attest-release-assets") continue;
+    // The attestation job mints an OIDC token with no environment: the token
+    // reaches only Sigstore and the attestations API, and cannot satisfy the
+    // Azure credentials or PyPI publishers, which name release environments.
+    // The exemption covers the environment rule only; it never reads a secret.
+    if (id === "attest-release-assets") {
+      assert.deepEqual(secrets, [], `${id} must not read secrets`);
+      assert.equal(job.environment, undefined, `${id} runs outside the release environments`);
+      continue;
+    }
     gated.push(id);
     const environment = id === "recover-nightly-wheel"
       ? "release-nightly"
@@ -552,13 +557,31 @@ test("release checksums are written before publication, signed apart from publis
   assert.equal(attest.environment, undefined);
   assert.ok(sign.needs.includes("prerelease") && publish.needs.includes("sign-release-checksums") && attest.needs.includes("prerelease"));
 
+  // A public release is signed and attested even when a later prerelease
+  // step fails, and these jobs never fail the run downstream publishers watch.
+  assert.equal(parsedRelease.jobs.prerelease.outputs.release_published, "${{ steps.release-published.outputs.release_published }}");
+  const recorded = prerelease.indexOf("      - name: Record that the GitHub release is published\n");
+  assert.ok(recorded > create && recorded < prerelease.indexOf("      - name: Verify published release tag still matches built source\n"), "the publication output is set right after the release is created");
+  const afterRelease = "${{ !cancelled() && needs.compute-version.result == 'success' && needs.prerelease.outputs.release_published == 'true' }}";
+  assert.equal(sign.if, afterRelease);
+  assert.equal(attest.if, afterRelease);
+  assert.equal(publish.if, "${{ !cancelled() && needs.sign-release-checksums.outputs.signed == 'true' }}");
+  assert.equal(sign.outputs.signed, "${{ steps.signed.outputs.signed }}");
+  assert.equal(sign.steps.at(-2).id, "signed", "the signed output is the last step that can fail");
+  for (const [id, job] of [["sign-release-checksums", sign], ["publish-release-checksums-signature", publish], ["attest-release-assets", attest]]) {
+    assert.equal(job["continue-on-error"], true, `${id} must not fail the release run`);
+    const report = job.steps.at(-1);
+    assert.equal(report.if, "failure()", `${id} reports its failure`);
+    assert.match(report.run, /::error::.*rerun /, `${id} failure names the job to rerun`);
+  }
+
   // Only the sign job reads the checksum key, and it checks the signature
   // against the key the installer pins before anything is published.
   for (const [id, job] of Object.entries(parsedRelease.jobs)) {
     assert.equal(JSON.stringify(job).includes("RELEASE_CHECKSUMS_SIGNING_KEY"), id === "sign-release-checksums", `${id} checksum key access`);
   }
   const signBody = jobs.get("sign-release-checksums");
-  assert.match(signBody, /public-key scripts\/install-linux-release/);
+  assert.match(signBody, /public-key scripts\/install-linux-release "\$RUNT_BUILD_CHANNEL"/);
   assert.match(workflowStep(signBody, "Remove the decoded signing key"), /if: always\(\)/);
   assert.match(workflowStep(jobs.get("publish-release-checksums-signature"), "Confirm the published SHA256SUMS is the signed one"), /cmp signed\/SHA256SUMS published\/SHA256SUMS/);
 

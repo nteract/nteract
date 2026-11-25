@@ -68,33 +68,46 @@ curl -fsSL https://sh.nteract.io | bash
 
 ### Signed checksums
 
-`prerelease` writes `SHA256SUMS` with `scripts/ci/release-checksums.sh write release-assets wheels` just before it creates the GitHub release. The file lists every uploaded file in GNU coreutils format, sorted by name. It ships as a release asset and as the `release-checksums` workflow artifact. Three jobs run after `prerelease`:
+`prerelease` writes `SHA256SUMS` with `scripts/ci/release-checksums.sh write release-assets wheels` just before "Create GitHub Release". It lists every file that step uploads, in GNU coreutils format, sorted by name. It ships as a release asset and as the `release-checksums` workflow artifact. Files attached to the release later are not in it: `publish-editor-assets` adds `notebook-cloud-assets-<channel>.tar.gz` and its `.sha256`.
+
+Right after "Create GitHub Release", `prerelease` sets the output `release_published=true`. Three jobs key off that output, not off the `prerelease` result, so a release that is public gets signed and attested even when a later `prerelease` step, such as PyPI publication, fails:
 
 | Job | Environment | Permissions | Does |
 |-----|-------------|-------------|------|
-| `sign-release-checksums` | `release-signing` (nightly), `release-signing-stable` (stable) | `contents: read` | Installs the pinned minisign binary, signs the artifact with trusted comment `nteract release <tag>`, verifies the signature against the key pinned in `scripts/install-linux-release`, and uploads `SHA256SUMS.minisig` as an artifact. |
-| `publish-release-checksums-signature` | `release-nightly`, `release-stable` | `contents: write` | Confirms the release's `SHA256SUMS` is byte-identical to the signed artifact and lists only release assets, then uploads `SHA256SUMS.minisig` to the release. |
-| `attest-release-assets` | none | `contents: read`, `id-token: write`, `attestations: write` | Creates a build provenance attestation for every file in `SHA256SUMS`. |
+| `sign-release-checksums` | `release-signing` (nightly), `release-signing-stable` (stable) | `contents: read` | Installs the pinned minisign binary, signs the artifact with trusted comment `nteract release <tag>`, verifies the signature against the first key in the channel's list in `scripts/install-linux-release`, uploads `SHA256SUMS.minisig` as an artifact, and sets the output `signed=true`. |
+| `publish-release-checksums-signature` | `release-nightly`, `release-stable` | `contents: write` | Runs only when `signed` is `true`. Confirms the release's `SHA256SUMS` is byte-identical to the signed artifact and lists only release assets, then uploads `SHA256SUMS.minisig` to the release. |
+| `attest-release-assets` | none | `contents: read`, `id-token: write`, `attestations: write` | Creates a build provenance attestation for every file in `SHA256SUMS`. `SHA256SUMS` and its signature are not attested. |
 
-A failure in these jobs leaves the release published without a signature or attestation. The installer still checks checksums and warns that the signature was not checked. Rerun the failed job; the upload replaces any earlier `.minisig`.
+All three jobs use job-level `continue-on-error: true`. Signing is additive hardening: a failure here must not fail the release run, because `publish-npm.yml`, `build-wasm-npm.yml` and `build-editor-assets.yml` start only when that run succeeds. So a release can be published unsigned or unattested while the run shows success.
 
-The signing environments hold two secrets for the checksum key, separate from the Tauri updater key:
+- **How to see it:** the run summary shows the failed job and an `::error::` annotation that names the tag and the job to rerun. The release has `SHA256SUMS` but no `SHA256SUMS.minisig`. The installer warns that the signature was not checked, and `--require-signature` refuses it.
+- **How to fix it:** fix the cause, then rerun the failed job from the run page. If signing failed, rerun `sign-release-checksums` and then `publish-release-checksums-signature`. The upload replaces any earlier `.minisig`.
+
+A stable run waits for two more approvals than the builds and publication: `sign-release-checksums` (`release-signing-stable`) and `publish-release-checksums-signature` (`release-stable`). The run does not conclude until those jobs finish or are rejected, so npm, WASM and editor publishing wait behind them.
+
+Stable and nightly have separate minisign keys, each also separate from the Tauri updater key:
+
+| Channel | Key ID | Public key | Environment holding the secret key |
+|---------|--------|------------|------------------------------------|
+| Stable | `29BB02E597ACF83E` | `RWQ++KyX5QK7Kad7qdUsSgK1wSX8tyP9oi0E9izCzqYTkppp4Gf0UUF8` | `release-signing-stable` |
+| Nightly | `9B6C1654AA61CEBC` | `RWS8zmGqVBZsmzkkrdjXigjInaliPhFjek6RO6+jUxxIzOfAJyo+oHhM` | `release-signing` |
+
+The nightly environment runs unattended on a schedule; the stable one needs a reviewer. Separate keys mean a leaked nightly key cannot sign a release that stable installers accept. Each environment holds the same two secret names with its own values:
 
 - `RELEASE_CHECKSUMS_SIGNING_KEY`: base64 of the minisign secret key file.
 - `RELEASE_CHECKSUMS_SIGNING_KEY_PASSWORD`: its password.
 
-The current key ID is `9B6C1654AA61CEBC`, public key `RWS8zmGqVBZsmzkkrdjXigjInaliPhFjek6RO6+jUxxIzOfAJyo+oHhM`.
+The installer accepts a list of keys per channel, `NTERACT_STABLE_RELEASE_KEYS` and `NTERACT_NIGHTLY_RELEASE_KEYS`. The first entry is the key CI signs that channel with; later entries are older keys still accepted. Neither list holds the other channel's key. The sign job verifies against its own channel's first key, so a nightly key set in the stable environment by mistake fails CI.
 
-To rotate the key:
+To rotate one channel's key:
 
 1. Generate a pair offline with `minisign -G -p release.pub -s release.key`, with a password.
-2. Replace `NTERACT_RELEASE_PUBLIC_KEY` in `scripts/install-linux-release` with the second line of `release.pub`, and update the key in `README.md` and here. Merge that first.
-3. Set both secrets in `release-signing` and `release-signing-stable`: `base64 < release.key | gh secret set RELEASE_CHECKSUMS_SIGNING_KEY --env <environment> -R nteract/nteract`, and the password the same way.
-4. The next release's sign job verifies against the new pinned key. A mismatch fails that job, not user installs.
+2. Add the second line of `release.pub` at the top of that channel's list in `scripts/install-linux-release`. Keep the old key below it while releases signed with it are still installed. Update the key in `README.md` and here. Merge that first.
+3. Set both secrets in that channel's signing environment: `base64 < release.key | gh secret set RELEASE_CHECKSUMS_SIGNING_KEY --env <environment> -R nteract/nteract`, and the password the same way.
+4. The next release's sign job verifies against the new first key. A mismatch fails that job, not user installs.
+5. Remove the old key from the list once no supported release depends on it.
 
-Releases signed by the old key keep verifying with installers from those releases, which pin the key they were signed with.
-
-To move the minisign pin, follow the comment above `MINISIGN_VERSION` in `scripts/ci/release-checksums.sh`: download the new `minisign-<version>-linux.tar.gz` and its `.minisig`, verify them against the key in the minisign README, then replace the version and SHA-256.
+To move the minisign pin, follow the comment above `MINISIGN_VERSION` in `scripts/ci/release-checksums.sh`: download the new `minisign-<version>-linux.tar.gz` and its `.minisig`, verify them against the key in the minisign README, then replace the version and SHA-256. The Release validation workflow installs the pinned binary on Linux and runs a sign and verify round trip on every pull request that touches these files; its error names the check that failed (download, hash, layout or run).
 
 ## Attribution handoff for embedders
 

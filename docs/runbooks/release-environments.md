@@ -36,7 +36,8 @@ stable run asks for approval at each job that enters a reviewed environment: the
 signing builds (`release-signing-stable`), `prerelease` and `publish-plugin`
 (`release-stable`), then `sign-release-checksums` (`release-signing-stable`) and
 `publish-release-checksums-signature` (`release-stable`) after the release is
-published.
+published. The run does not conclude until those two finish, so npm, WASM and
+editor publishing, which start on a successful run, wait behind them.
 
 ## Windows signing by OIDC
 
@@ -113,7 +114,7 @@ the environment and then deleted at repository level. Use the rotated values.
 | Secret | Environments | Read by |
 |---|---|---|
 | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | `release-signing`, `release-signing-stable` | every `build-notebook-*` job |
-| `RELEASE_CHECKSUMS_SIGNING_KEY` (base64 of the minisign secret key file), `RELEASE_CHECKSUMS_SIGNING_KEY_PASSWORD` | `release-signing`, `release-signing-stable` | `sign-release-checksums` only. A separate key from the Tauri updater key. |
+| `RELEASE_CHECKSUMS_SIGNING_KEY` (base64 of the minisign secret key file), `RELEASE_CHECKSUMS_SIGNING_KEY_PASSWORD` | `release-signing` holds the nightly key (ID `9B6C1654AA61CEBC`); `release-signing-stable` holds the stable key (ID `29BB02E597ACF83E`) | `sign-release-checksums` only. Same names, different values per environment. Neither is the Tauri updater key. The nightly environment runs unattended, so a leaked nightly key must not sign a stable release; [RELEASING.md](../../RELEASING.md#signed-checksums) has rotation. |
 | `NUMFOCUS_APPLE_CERTIFICATE`, `NUMFOCUS_APPLE_CERTIFICATE_PASSWORD`, `NUMFOCUS_APPLE_SIGNING_IDENTITY`, `NUMFOCUS_APPLE_API_ISSUER`, `NUMFOCUS_APPLE_API_KEY`, `NUMFOCUS_APPLE_API_PRIVATE_KEY` | `release-signing`, `release-signing-stable` | `build-notebook-macos-arm64`, `build-notebook-macos-x64` |
 | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` | `release-signing`, `release-signing-stable` | `build-notebook-windows-x64`, `build-notebook-windows-arm64`. Identifiers, not credentials. |
 | `CLAUDE_PLUGIN_DEPLOY_TOKEN` | `release-nightly`, `release-stable` | `publish-plugin` |

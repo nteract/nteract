@@ -5,8 +5,10 @@
 #                                  files of every named directory.
 #   install-minisign <dest-dir>    Fetch the pinned minisign release binary
 #                                  for this Linux host into <dest-dir>.
-#   public-key <installer>         Print the public key pinned in
-#                                  scripts/install-linux-release.
+#   public-key <installer> <channel>
+#                                  Print the first key of the channel's
+#                                  list in scripts/install-linux-release:
+#                                  the key that channel is signed with.
 #   sign <SHA256SUMS> <tag>        Write <SHA256SUMS>.minisig. The trusted
 #                                  comment is "nteract release <tag>".
 #   verify <SHA256SUMS> <tag> <public-key>
@@ -46,7 +48,7 @@ die() {
 }
 
 usage() {
-  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"
 }
 
 sha256_of() {
@@ -98,24 +100,39 @@ cmd_install_minisign() {
   local tarball="$work/minisign-$MINISIGN_VERSION-linux.tar.gz"
   curl --fail --location --silent --show-error --retry 3 \
     "https://github.com/jedisct1/minisign/releases/download/$MINISIGN_VERSION/minisign-$MINISIGN_VERSION-linux.tar.gz" \
-    --output "$tarball"
+    --output "$tarball" ||
+    die "download failed for minisign $MINISIGN_VERSION (network or release asset moved)"
   local actual
   actual="$(sha256_of "$tarball")"
   [[ "$actual" == "$MINISIGN_TARBALL_SHA256" ]] ||
-    die "minisign tarball SHA-256 is $actual, expected $MINISIGN_TARBALL_SHA256"
-  tar -xzf "$tarball" -C "$work" "minisign-linux/$arch/minisign"
+    die "hash check failed: minisign tarball SHA-256 is $actual, expected $MINISIGN_TARBALL_SHA256"
+  tar -xzf "$tarball" -C "$work" "minisign-linux/$arch/minisign" ||
+    die "layout check failed: minisign-linux/$arch/minisign is not in the pinned tarball"
   mkdir -p "$dest"
   install -m 0755 "$work/minisign-linux/$arch/minisign" "$dest/minisign"
   rm -rf "$work"
-  "$dest/minisign" -v
+  "$dest/minisign" -v ||
+    die "run check failed: the pinned minisign binary does not run on $(uname -s) $(uname -m)"
 }
 
 cmd_public_key() {
-  [[ $# -eq 1 ]] || die "public-key needs the installer path"
+  [[ $# -eq 2 ]] || die "public-key needs <installer> <channel>"
+  local list
+  case "$2" in
+    stable) list="NTERACT_STABLE_RELEASE_KEYS" ;;
+    nightly) list="NTERACT_NIGHTLY_RELEASE_KEYS" ;;
+    *) die "channel must be stable or nightly, not '$2'" ;;
+  esac
   local key
-  key="$(sed -n 's/^NTERACT_RELEASE_PUBLIC_KEY="\([A-Za-z0-9+/=]*\)"$/\1/p' "$1")"
-  [[ -n "$key" && "$(printf '%s\n' "$key" | wc -l | tr -d ' ')" == 1 ]] ||
-    die "expected exactly one NTERACT_RELEASE_PUBLIC_KEY line in $1"
+  key="$(awk -v list="$list" '
+    $0 == list "=(" { inside = 1; next }
+    inside && /^\)/ { exit }
+    inside && match($0, /^  "[A-Za-z0-9+\/=]+"/) {
+      print substr($0, 4, RLENGTH - 4)
+      exit
+    }
+  ' "$1")"
+  [[ -n "$key" ]] || die "no key found in $list in $1"
   printf '%s\n' "$key"
 }
 
