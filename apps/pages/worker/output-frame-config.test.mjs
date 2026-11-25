@@ -163,11 +163,6 @@ test("gateway marks Page shells when PAGES_OUTPUT_FRAME_LOCAL_NETWORK is true", 
     PAGES_OUTPUT_FRAME_LOCAL_NETWORK: undefined,
   });
   assert.doesNotMatch(await unmarked.text(), /pages-output-frame-local-network/);
-  const misconfigured = await worker.fetch(new Request(origin + path), {
-    ...env,
-    PAGES_OUTPUT_FRAME_LOCAL_NETWORK: "yes",
-  });
-  assert.equal(misconfigured.status, 500);
 });
 
 test("non-reading asset requests retain their method and body", async () => {

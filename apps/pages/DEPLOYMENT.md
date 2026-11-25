@@ -2610,6 +2610,33 @@ profiles can set the variable in `vars`; other hosts pass it to the Worker
 environment. Changing this setting does not grant widgets credentials, Page
 write access, or microphone access.
 
+### Private-network deployments
+
+A deployment reached at a private address (a tailnet host such as
+`https://host.tailnet.ts.net:8443`, or a LAN address) with a public output
+host breaks module views in Chrome. The frame is a public document; its
+imports from `/catalog/<revision>/` go to a private one, and Chrome's
+[Local Network Access](https://developer.chrome.com/blog/local-network-access)
+refuses them: "Permission was denied for this request to access the `local`
+address space". The `Access-Control-Allow-Private-Network` preflight no longer
+applies; Chrome asks the user instead. A view's `data/` files and bound
+imports reach the frame as bytes, so only library imports are affected.
+
+Set `PAGES_OUTPUT_FRAME_LOCAL_NETWORK=true` on such a deployment. The gateway
+marks its shells, and each view's frame carries `allow="local-network"`. The
+first view a person opens makes Chrome ask whether the deployment's origin may
+reach devices on the local network. Once they allow it, the view loads; a view
+that timed out while the prompt was open loads on Retry. The setting takes
+`true` or `false`; unset is `false`, and any other value refuses every request
+until it is fixed.
+
+The permission is the deployment origin's, delegated to every view's frame.
+View code, which Page editors and their agents write, can then reach any
+address on the reader's local network, not only Pages. Turn it on only where
+everyone who edits Pages on that deployment is trusted that far. A public
+deployment never needs it. Chrome before 145 doesn't know the `local-network`
+feature, so views there keep failing.
+
 The output shell is its own Worker, `output/worker.mjs`, on its own domain.
 `npm run build` bundles it into `dist/output/worker.js`, and the
 [release package](#deployment-neutral-release-package) ships that module as
@@ -2641,31 +2668,3 @@ The output service serves no view libraries: the Pages Worker serves its own
 build's catalog at `/catalog/<revision>/`.
 A Cloudflare deployment of `output/worker.js` has no such check in this
 repository; its operator runs step 4 of the release package's shell steps.
-
-### Private-network deployments
-
-A deployment reached at a private address (a tailnet host such as
-`https://host.tailnet.ts.net:8443`, or a LAN address) with a public output
-host breaks module views in Chrome. The frame is a public document; its
-imports from `/catalog/<revision>/` go to a private one, and Chrome's
-[Local Network Access](https://developer.chrome.com/blog/local-network-access)
-refuses them: "Permission was denied for this request to access the `local`
-address space". The `Access-Control-Allow-Private-Network` preflight no longer
-applies; Chrome asks the user instead. A view's `data/` files and bound
-imports reach the frame as bytes, so only library imports are affected.
-
-Set `PAGES_OUTPUT_FRAME_LOCAL_NETWORK=true` on such a deployment. The gateway
-marks its shells, and each view's frame carries `allow="local-network"`. The
-first view a person opens makes Chrome ask whether the deployment's origin may
-reach devices on the local network. Once they allow it, the view loads; a view
-that timed out while the prompt was open loads on Retry. The setting takes
-`true` or `false`; unset is `false`. Any other value makes app pages, link
-previews and published previews answer 500 until it is fixed; `/health`, the
-catalog and the API keep working.
-
-The permission is the deployment origin's, delegated to every view's frame.
-View code, which Page editors and their agents write, can then reach any
-address on the reader's local network, not only Pages. Turn it on only where
-everyone who edits Pages on that deployment is trusted that far. A public
-deployment never needs it. Chrome before 145 doesn't know the `local-network`
-feature, so views there keep failing.
