@@ -34,7 +34,9 @@ impl RuntimeLaunch {
         runt_workspace::socket_path_for_context(self.channel, self.worktree.as_deref())
     }
 
-    async fn verify_binary_identity(&self) -> Result<(), RuntimeStartupError> {
+    /// Confirm `binary` reports this launch's compiled channel and a
+    /// compatible protocol, without starting it.
+    pub async fn verify_binary_identity(&self) -> Result<(), RuntimeStartupError> {
         let mut command = tokio::process::Command::new(&self.binary);
         command
             .arg("runtime-identity")
@@ -186,7 +188,9 @@ pub enum RuntimeStartupError {
     NotReady { endpoint: PathBuf, seconds: u64 },
 }
 
-fn endpoint_absent(error: &ClientError) -> bool {
+/// True only when the endpoint is missing or refused the connection: no
+/// daemon listens there. Timeouts and other errors are not absence.
+pub fn endpoint_absent(error: &ClientError) -> bool {
     matches!(error, ClientError::ConnectionFailed(error)
         if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused))
 }
