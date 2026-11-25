@@ -56,10 +56,10 @@ Triggers `release-stable.yml` which:
 1. Builds desktop app (macOS, Windows, Linux)
 2. Builds `runt` CLI binaries
 3. Builds Python wheels stamped to the base version from `crates/runt/Cargo.toml`
-4. Publishes `runtimed` wheels to PyPI (stable)
-5. Creates GitHub Release with all artifacts
-6. Updates `stable-latest` Tauri updater channel
-7. Posts to Discord
+4. Creates GitHub Release with all artifacts
+5. Updates `stable-latest` Tauri updater channel
+6. Posts to Discord
+7. Publishes `runtimed` wheels to PyPI (stable) from its own job, `publish-pypi`
 
 ### Nightly Release
 
@@ -117,7 +117,7 @@ Desktop version: `{runt version}-{suffix}.{timestamp}` stamped into `tauri.conf.
 
 ### Trusted Publishing
 
-PyPI uses OIDC trusted publishing (no API tokens). GitHub Actions workflow identity registered as trusted publisher on PyPI for `runtimed` package.
+PyPI uses OIDC trusted publishing (no API tokens). The `runtimed` project has two trusted publishers. Both name the workflow `release-common.yml`, where the publish job is defined; one names environment `release-nightly`, the other `release-stable`. A publisher that names `release-nightly.yml` or `release-stable.yml` does not match.
 
 ## Pre-Release Checklist
 
