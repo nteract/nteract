@@ -853,7 +853,8 @@ test("stored usage tables follow or pin in place; deletion is fenced, durable an
     { op: "insert_node", node: { type: "dataframe", attrs: { asset_id: first, title: "Usage" } } },
   ]);
   const node_id = inserted.result.edits[0].nodes[0];
-  const block_id = inserted.result.edits[0].node_id;
+  // The table goes into the Page's last block; the receipt names that block.
+  const block_id = inserted.result.edits[0].block;
   const comment = await h.tool(h.host, "manage_page_comment", {
     action: "add",
     node_id: block_id,

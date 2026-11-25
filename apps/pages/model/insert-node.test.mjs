@@ -27,13 +27,22 @@ const edit = (doc, operations) => {
   });
   return { doc: next, result };
 };
+// A new Page with `operations` in a block of their own after "Intro".
+const ownBlock = (operations) => {
+  const doc = fresh();
+  const after_node_id = blockAddress(doc, orderedBlockIds(doc)[0]);
+  return edit(
+    doc,
+    operations.map((operation) => ({ ...operation, after_node_id })),
+  );
+};
 const dataframe = (attrs = {}) => ({
   op: "insert_node",
   node: { type: "dataframe", attrs: { asset_id: assetId, title: "Usage by day", ...attrs } },
 });
 
 test("insert_node writes one dataframe marker in its own block and stamps the feature", () => {
-  const { doc, result } = edit(fresh(), [dataframe()]);
+  const { doc, result } = ownBlock([dataframe()]);
   const [, id] = orderedBlockIds(doc);
   assert.deepEqual(result.edits, [
     {
@@ -59,15 +68,15 @@ test("insert_node writes one dataframe marker in its own block and stamps the fe
 });
 
 test("a dataframe reads back as a labeled link, never as a code block", () => {
-  const { doc } = edit(fresh(), [dataframe({ title: "Usage [by] day" })]);
+  const { doc } = ownBlock([dataframe({ title: "Usage [by] day" })]);
   const block = projectPage(doc).blocks[1];
   assert.equal(block.markdown, `[Dataframe: Usage \\[by\\] day](${src})`);
-  const untitled = edit(fresh(), [dataframe({ title: undefined })]).doc;
+  const untitled = ownBlock([dataframe({ title: undefined })]).doc;
   assert.equal(projectPage(untitled).blocks[1].markdown, `[Dataframe](${src})`);
 });
 
 test("the editor decodes and re-encodes a dataframe to the same marker", () => {
-  const { doc } = edit(fresh(), [dataframe()]);
+  const { doc } = ownBlock([dataframe()]);
   const [, id] = orderedBlockIds(doc);
   const spans = A.spans(doc, textPath(id));
   const decoded = decode(spans).doc;
@@ -88,7 +97,7 @@ test("the editor decodes and re-encodes a dataframe to the same marker", () => {
 });
 
 test("replace_block_markdown refuses a block holding a dataframe", () => {
-  const { doc } = edit(fresh(), [dataframe()]);
+  const { doc } = ownBlock([dataframe()]);
   const [, id] = orderedBlockIds(doc);
   assert.throws(
     () =>
@@ -103,7 +112,7 @@ test("replace_block_markdown refuses a block holding a dataframe", () => {
 });
 
 test("Markdown never creates a dataframe", () => {
-  const { doc } = edit(fresh(), [
+  const { doc } = ownBlock([
     {
       op: "insert_markdown",
       markdown: `[Dataframe: Usage](${src})\n\n\`\`\`dataframe\n{}\n\`\`\``,
@@ -149,7 +158,7 @@ test("a bad dataframe attr is refused with a message naming the attr", () => {
 });
 
 test("insert_node takes a CSV dataframe, by asset or by source", () => {
-  const { doc, result } = edit(fresh(), [dataframe({ media_type: "text/csv" })]);
+  const { doc, result } = ownBlock([dataframe({ media_type: "text/csv" })]);
   assert.equal(result.edits[0].attrs.media_type, "text/csv");
   const [, id] = orderedBlockIds(doc);
   validateRich(doc.blocks[id]);
@@ -166,7 +175,7 @@ test("insert_node takes a CSV dataframe, by asset or by source", () => {
 });
 
 test("a stored dataframe with a foreign src fails validation", () => {
-  const { doc } = edit(fresh(), [dataframe()]);
+  const { doc } = ownBlock([dataframe()]);
   const [, id] = orderedBlockIds(doc);
   const tampered = A.change(A.clone(doc), (draft) => {
     const spans = A.spans(draft, textPath(id));

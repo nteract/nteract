@@ -192,7 +192,11 @@ function twoBlocks(first, second) {
   const doc = A.change(page(first), (draft) =>
     applyPageOperation(draft, {
       operation: "edit_page",
-      arguments: { operations: [{ op: "insert_markdown", markdown: second }] },
+      arguments: {
+        operations: [
+          { op: "insert_markdown", markdown: second, after_node_id: blockAddress(draft, KEY) },
+        ],
+      },
     }),
   );
   return { doc, second: orderedBlockIds(doc)[1] };

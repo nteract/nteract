@@ -252,7 +252,7 @@ test("the views guide describes the frame, request rules and placement between p
     "nothing else in the block changes, so comment threads stay where they are",
     "An image's id is refused with wrong_address_kind; name the paragraph that holds it.",
     "A block's id puts the view in a block of its own after that block.",
-    "Omit after_node_id to append at the end of the Page, or pass null to put the view first.",
+    "Omit after_node_id to append after the Page's last node, or pass null to put the view before its first; both go inside the Page's last or first block.",
     "There is no eval: eval and new Function throw. WebAssembly compiles.",
     "A server sees Origin: null",
     "up to 100000 px",

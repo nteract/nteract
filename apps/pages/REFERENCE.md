@@ -4256,12 +4256,25 @@ still replay the recorded receipt; these guards run only for new intents.
 `edit_page` supports structural operations including `insert_markdown`,
 `move_block`, and `insert_image`:
 
-- **Block vs. in-place placement:** `after_node_id` accepts a block's `node_id`,
-  `null` (prepend), or omission (append); fractional positions are internal.
-  `insert_markdown`, `insert_image`, and `insert_node` also accept a top-level
-  node's `node_id` to insert directly after it inside the same block (after a
-  list's or quote's last item) without creating a new block
+- **Block vs. in-place placement:** `after_node_id` accepts a block's
+  `node_id`, which puts the content in a new block after that block, `null`,
+  or omission; fractional positions are internal. `insert_markdown`,
+  `insert_image`, and `insert_node` also accept a top-level node's `node_id`
+  to insert directly after it inside the same block (after a list's or
+  quote's last item) without creating a new block
   ([model/insert-in-place.mjs](model/insert-in-place.mjs)).
+- **Inserts at the ends of the Page:** an omitted `after_node_id` writes after
+  the last top-level node of the last block, and `null` before the first node
+  of the first block, in place
+  ([model/flow-placement.mjs](model/flow-placement.mjs)). The batch repairs
+  that block's markers first, and the receipt reports `block` and `nodes`. A
+  blank edge block (a new Page's empty paragraph) takes the content in place
+  of its empty paragraph. The insert makes a new block at that end instead
+  when the Page has no block, the edge block would pass
+  `MAX_PASSAGE_BLOCK_LENGTH` or the batch's in-place budget, it holds
+  content this build reads lossily or nodes it can't name, or the new
+  content would join a list of the same kind at that end; the receipt then
+  reports the new block's `node_id` and `nodes`.
 - **Splice & mark preservation:** in-place inserts repair block markers, then
   run one `splitBlock` per marker and one `splice` per text run at the end of
   the anchor's range without rewriting existing characters or markers, keeping

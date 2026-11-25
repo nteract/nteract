@@ -169,21 +169,44 @@ test("a list or quote is addressed as a whole: the insert goes after its last it
   );
 });
 
-test("a block's id, null and an omitted after_node_id still make a new block", () => {
+test("a block's id makes a new block; null and an omitted after_node_id write into the first and last blocks", () => {
   const doc = page("Alpha\n\nBeta");
   const block = blockAddress(doc, KEY);
-  for (const after_node_id of [block, null, undefined]) {
-    const { doc: next, result } = edit(doc, [
+  const made = edit(doc, [{ op: "insert_markdown", markdown: "Gamma", after_node_id: block }]);
+  const [, second] = orderedBlockIds(made.doc);
+  assert.equal(orderedBlockIds(made.doc).length, 2);
+  assert.equal(markdown(made.doc), "Alpha\n\nBeta");
+  assert.deepEqual(made.result.edits[0], {
+    op: "insert_markdown",
+    node_id: blockAddress(made.doc, second),
+    nodes: ids(made.doc, second),
+  });
+  for (const [after_node_id, key, expected] of [
+    [null, KEY, "New\n\nAlpha\n\nBeta"],
+    [undefined, second, "Gamma\n\nNew"],
+  ]) {
+    const before = ids(made.doc, key);
+    const { doc: next, result } = edit(made.doc, [
       {
         op: "insert_markdown",
         markdown: "New",
         ...(after_node_id !== undefined && { after_node_id }),
       },
     ]);
-    assert.equal(orderedBlockIds(next).length, 2);
-    assert.equal(markdown(next), "Alpha\n\nBeta");
-    assert.ok(result.edits[0].node_id);
-    assert.equal(result.edits[0].block, undefined);
+    assert.deepEqual(orderedBlockIds(next), [KEY, second]);
+    assert.equal(markdown(next, key), expected);
+    const added = ids(next, key).filter((id) => !before.includes(id));
+    assert.equal(added.length, 1);
+    assert.deepEqual(result.edits[0], {
+      op: "insert_markdown",
+      block: blockAddress(next, key),
+      nodes: added,
+    });
+    // The block's other nodes keep their ids.
+    assert.deepEqual(
+      ids(next, key).filter((id) => before.includes(id)),
+      before,
+    );
   }
 });
 

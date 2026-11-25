@@ -526,9 +526,10 @@ test("insert_node places a view the Page holds and refuses one it doesn't", asyn
 
   const read = await h.tool(h.host, "read_page", { comments: "none" });
   const line = String.raw`\[View: daily\]`;
-  assert.ok(
-    read.body.blocks.some((block) => block.markdown === line),
-    JSON.stringify(read.body),
+  // The view goes after the text of the Page's one block.
+  assert.deepEqual(
+    read.body.blocks.map((block) => [block.node_id, block.markdown]),
+    [[edit.block, `Some text\n\n${line}`]],
   );
   const entry = read.body.outline.entries.find((item) => item.type === "view");
   assert.deepEqual(entry.attrs, { view_id: "daily" });
@@ -537,7 +538,7 @@ test("insert_node places a view the Page holds and refuses one it doesn't", asyn
   assert.ok(documentFeatures(h.host.handle.doc()).includes("view"));
 
   // A rewrite that keeps the line keeps the node.
-  const block = read.body.blocks.find((item) => item.markdown === line);
+  const [block] = read.body.blocks;
   const rewritten = await h.edit(h.host, [
     { op: "replace_block_markdown", node_id: block.node_id, markdown: `Intro\n\n${line}` },
   ]);

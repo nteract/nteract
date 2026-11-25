@@ -1302,7 +1302,14 @@ test("Page image insertion validates storage once and journals actual block iden
     page_id: pageId,
     revision: before.revision,
     nonce: "insert-image-once",
-    operations: [{ op: "insert_image", asset_id: assetId, alt: "A cat" }],
+    operations: [
+      {
+        op: "insert_image",
+        asset_id: assetId,
+        alt: "A cat",
+        after_node_id: before.blocks.at(-1).node_id,
+      },
+    ],
   };
   const response = await f.request("edit_page", args);
   assert.equal(response.status, 200);
@@ -1465,6 +1472,7 @@ test("Page dataframe insertion checks storage once and replays without it", asyn
       {
         op: "insert_node",
         node: { type: "dataframe", attrs: { asset_id: assetId, title: "Usage" } },
+        after_node_id: before.blocks.at(-1).node_id,
       },
     ],
   };

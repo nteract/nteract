@@ -196,7 +196,9 @@ test("a node keeps its id through text, mark and attribute edits and edits aroun
 
 test("a block's id and its nodes' ids hold through rewrites, moves, save and load, and merges", () => {
   const { doc: base, id } = fixture("## Plan\n\nFirst words\n\n---\n\nClosing words");
-  const doc = edit(base, [{ op: "insert_markdown", markdown: "Second block" }]).doc;
+  const doc = edit(base, [
+    { op: "insert_markdown", markdown: "Second block", after_node_id: blockAddress(base, id) },
+  ]).doc;
   const [, second] = orderedBlockIds(doc);
   const block = blockAddress(doc, id);
   const nodes = nodeAddresses(doc, id);
@@ -335,7 +337,11 @@ test("delete_node on a block's only node, set_node on its first paragraph, and a
 test("delete_node removes a dataframe and an unknown node, which have no text", () => {
   let { doc } = fixture("Intro");
   doc = edit(doc, [
-    { op: "insert_node", node: { type: "dataframe", attrs: { asset_id: assetId, title: "T" } } },
+    {
+      op: "insert_node",
+      node: { type: "dataframe", attrs: { asset_id: assetId, title: "T" } },
+      after_node_id: blockAddress(doc, orderedBlockIds(doc)[0]),
+    },
   ]).doc;
   const block = orderedBlockIds(doc)[1];
   const [frame] = outline(doc, block);
@@ -433,7 +439,13 @@ test("delete_node refuses an id that doesn't name a live node", () => {
     error.code === "node_not_found" && /read the Page again/i.test(error.message);
   refuses(gone, [{ op: "delete_node", node_id: table }], notFound);
   // An id names its node in whichever block holds it, with no block beside it.
-  const other = edit(doc, [{ op: "insert_markdown", markdown: "## Elsewhere\n\nStays" }]).doc;
+  const other = edit(doc, [
+    {
+      op: "insert_markdown",
+      markdown: "## Elsewhere\n\nStays",
+      after_node_id: blockAddress(doc, id),
+    },
+  ]).doc;
   const otherId = orderedBlockIds(other)[1];
   const elsewhere = edit(other, [
     { op: "delete_node", node_id: outline(other, otherId)[0].node_id },

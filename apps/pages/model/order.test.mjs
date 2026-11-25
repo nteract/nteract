@@ -12,13 +12,16 @@ function edit(doc, operations) {
 function fixture(count = 3) {
   let doc = A.from(createPageData({ pageId: "ordering-test" }));
   doc = A.change(doc, (draft) => initializePage(draft, "Original passage"));
-  return edit(
-    doc,
-    Array.from({ length: count - 1 }, (_, i) => ({
-      op: "insert_markdown",
-      markdown: `Block ${i + 2}`,
-    })),
-  );
+  // Each block goes after the last one, by its id.
+  for (let i = 2; i <= count; i++)
+    doc = edit(doc, [
+      {
+        op: "insert_markdown",
+        markdown: `Block ${i}`,
+        after_node_id: blockAddress(doc, orderedBlockIds(doc).at(-1)),
+      },
+    ]);
+  return doc;
 }
 const positions = (doc) =>
   Object.fromEntries(orderedBlockIds(doc).map((id) => [id, String(doc.blocks[id].position)]));

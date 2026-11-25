@@ -127,8 +127,12 @@ test("Mermaid stays code, and a dataframe becomes a titled placeholder", async (
   ]);
   t.after(() => A.free(frame));
   const card = await pageCard(frame);
-  assert.deepEqual(card.blocks[1].content, [
-    ["div", { "data-card-placeholder": "dataframe" }, "Usage by day"],
+  // The dataframe goes after "Intro", in the Page's one block.
+  assert.equal(card.blocks.length, 1);
+  assert.deepEqual(card.blocks[0].content.at(-1), [
+    "div",
+    { "data-card-placeholder": "dataframe" },
+    "Usage by day",
   ]);
   assert.equal(card.rich, true);
   assert.equal(JSON.stringify(card).includes("/assets/"), false);

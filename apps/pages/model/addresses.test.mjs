@@ -28,9 +28,15 @@ const BLOCKS = [
 function page(blocks = BLOCKS) {
   let doc = A.from(createPageData({ pageId, title: "Addresses" }));
   doc = A.change(doc, (draft) => initializePage(draft, blocks[0]));
-  for (const markdown of blocks.slice(1)) doc = edit(doc, [{ op: "insert_markdown", markdown }]);
+  for (const markdown of blocks.slice(1)) doc = edit(doc, [appendBlock(doc, markdown)]);
   return { doc, keys: orderedBlockIds(doc) };
 }
+/** An insert_markdown that puts `markdown` in a new block after the last. */
+const appendBlock = (doc, markdown) => ({
+  op: "insert_markdown",
+  markdown,
+  after_node_id: blockAddress(doc, orderedBlockIds(doc).at(-1)),
+});
 function edit(doc, operations) {
   return A.change(A.clone(doc), (draft) => {
     applyPageOperation(draft, { operation: "edit_page", arguments: { operations } });
@@ -119,10 +125,10 @@ test("ids are distinct across blocks, texts, nodes and images, with two writers 
   // Two clones change once each from the same heads, so their ops share
   // counters and differ only by actor.
   const left = edit(A.clone(base, { actor: "0a".repeat(16) }), [
-    { op: "insert_markdown", markdown: "Left ![l](https://example.org/l.png)\n\n## Left" },
+    appendBlock(base, "Left ![l](https://example.org/l.png)\n\n## Left"),
   ]);
   const right = edit(A.clone(base, { actor: "0b".repeat(16) }), [
-    { op: "insert_markdown", markdown: "Right ![r](https://example.org/r.png)\n\n## Right" },
+    appendBlock(base, "Right ![r](https://example.org/r.png)\n\n## Right"),
   ]);
   const doc = A.merge(A.clone(left), right);
   const keys = orderedBlockIds(doc);
@@ -488,6 +494,7 @@ test("every operation refuses an id of the wrong kind, naming what takes it", ()
   );
 });
 const ASSET = "a".repeat(64);
+const pick = (entry, names) => Object.fromEntries(names.map((name) => [name, entry[name]]));
 const dataframe = { type: "dataframe", attrs: { asset_id: "b".repeat(64) } };
 
 test("old address fields are refused like any field an operation doesn't take", () => {
@@ -576,40 +583,57 @@ test("inserts return the new ids, and the next request uses them with no read", 
     { op: "insert_node", node: dataframe },
   ]);
   const [markdown, picture, table] = result.edits;
+  // A block's id makes a new block, named by node_id. Null and an omitted
+  // after_node_id write into the first and last blocks, named by block.
   const added = orderedBlockIds(first).filter((key) => !keys.includes(key));
-  const byAddress = new Map(added.map((key) => [blockAddress(first, key), key]));
-  assert.deepEqual(
-    result.edits.map(({ op, node_id, nodes }) => [
-      op,
-      nodesOf(first, byAddress.get(node_id)),
-      nodes,
-    ]),
-    [
-      ["insert_markdown", markdown.nodes, markdown.nodes],
-      ["insert_image", picture.nodes, picture.nodes],
-      ["insert_node", table.nodes, table.nodes],
-    ],
-  );
+  assert.equal(added.length, 1);
+  assert.deepEqual(orderedBlockIds(first), [keys[0], added[0], keys[1], keys[2]]);
+  assert.deepEqual(markdown, {
+    op: "insert_markdown",
+    node_id: blockAddress(first, added[0]),
+    nodes: nodesOf(first, added[0]),
+  });
   assert.equal(markdown.nodes.length, 2);
-  assert.equal(picture.image, imageIds(first, byAddress.get(picture.node_id))[0].id);
-  assert.equal(orderedBlockIds(first)[0], byAddress.get(picture.node_id));
-  assert.equal(orderedBlockIds(first)[2], byAddress.get(markdown.node_id));
-  assert.equal(orderedBlockIds(first).at(-1), byAddress.get(table.node_id));
-  for (const entry of result.edits) assert.match(entry.node_id, ADDRESS_PATTERN);
+  assert.deepEqual(picture, {
+    op: "insert_image",
+    block: blockAddress(first, keys[0]),
+    nodes: [nodesOf(first, keys[0])[0]],
+    image: imageIds(first, keys[0])[0].id,
+    asset_id: ASSET,
+    asset_url: `/api/pages/${pageId}/assets/${ASSET}`,
+    alt: "Picture",
+  });
+  assert.deepEqual(nodesOf(first, keys[0]).slice(1), nodesOf(doc, keys[0]));
+  assert.equal(table.node_id, undefined);
+  assert.equal(table.type, "dataframe");
+  assert.deepEqual(pick(table, ["op", "block", "nodes"]), {
+    op: "insert_node",
+    block: blockAddress(first, keys[2]),
+    nodes: [nodesOf(first, keys[2]).at(-1)],
+  });
+  assert.deepEqual(nodesOf(first, keys[2]).slice(0, -1), nodesOf(doc, keys[2]));
+  for (const id of [markdown.node_id, picture.block, picture.image, table.block])
+    assert.match(id, ADDRESS_PATTERN);
   // The next request, built from the result alone.
   const { doc: second, result: next } = editResult(first, [
     { op: "replace_match", node_id: markdown.nodes[1], match_text: "Body", replacement: "Changed" },
     { op: "set_image", node_id: picture.image, alt: "Retitled" },
-    { op: "move_block", node_id: table.node_id, after_node_id: null },
-    { op: "insert_markdown", markdown: "After the image", after_node_id: picture.node_id },
+    { op: "move_block", node_id: markdown.node_id, after_node_id: null },
+    { op: "insert_markdown", markdown: "After the image", after_node_id: picture.nodes[0] },
+    { op: "delete_node", node_id: table.nodes[0] },
   ]);
-  assert.equal(next.edits.length, 3);
-  assert.equal(orderedBlockIds(second)[0], byAddress.get(table.node_id));
+  assert.equal(next.edits.length, 4);
+  assert.equal(orderedBlockIds(second)[0], added[0]);
+  const blocks = projectReadContent(second, {}).blocks;
   assert.equal(
-    projectReadContent(second, {}).blocks.find((entry) => entry.node_id === markdown.node_id)
-      ?.markdown,
+    blocks.find((entry) => entry.node_id === markdown.node_id)?.markdown,
     "## New\n\nChanged text",
   );
+  assert.match(
+    blocks.find((entry) => entry.node_id === picture.block)?.markdown,
+    /^!\[Retitled\]\([^)]*\)\n\nAfter the image\n\nIntro /,
+  );
+  assert.deepEqual(nodesOf(second, keys[2]), nodesOf(doc, keys[2]));
 });
 
 test("ids resolve again after each operation, so a batch can address what moved", () => {

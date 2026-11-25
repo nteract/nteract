@@ -17,6 +17,7 @@ import {
 } from "./richtext-page.mjs";
 import { insertInPlace, spendInPlaceRead } from "./insert-in-place.mjs";
 import { moveNodes } from "./move-nodes.mjs";
+import { flowAnchor, flowBlock, flowEdge } from "./flow-placement.mjs";
 import { nodeIds } from "./node-ids.mjs";
 import { imageIds, spanImageIds } from "./image-ids.mjs";
 import { addressIndex, blockAddress, nodeAddresses, resolveAddressFor } from "./addresses.mjs";
@@ -378,6 +379,24 @@ function writeInPlace(doc, anchor, spans, op, { trace, touched, budget, reads })
   return placed;
 }
 
+/** Where an insert's `spans` go: the node `at.after_node_id` names, the
+ * edge of the Page for an omitted or null one (model/flow-placement.mjs),
+ * or null for a new block. */
+function insertAnchor(doc, op, at, spans, context) {
+  if (inPlace(at.after_node_id)) return at.after_node_id;
+  const edge = flowEdge(op);
+  return edge ? flowAnchor(doc, spans, edge, context) : null;
+}
+/** Write into a blank edge block in place of its empty paragraph, with
+ * `write(doc, key)`, reporting the block and its nodes as an in-place insert
+ * does. */
+function writeBlank(doc, key, write, { trace, touched }) {
+  write(doc, key);
+  touched.push(key);
+  trace?.push({ type: "block", block_id: key });
+  return { block: blockAddress(doc, key), nodes: nodeAddresses(doc, key) };
+}
+
 /** A new block's addresses, as an insert reports them so the next request
  * can name the block and its nodes without a read. */
 const insertedBlock = (doc, op, key) => ({
@@ -419,9 +438,17 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
     return;
   }
   if (op.op === "insert_markdown") {
-    if (inPlace(at.after_node_id)) {
-      const spans = markdownSpans(op.markdown);
-      const { block, nodes } = writeInPlace(doc, at.after_node_id, spans, op.op, {
+    const spans = markdownSpans(op.markdown);
+    const anchor = insertAnchor(doc, op, at, spans, context);
+    if (anchor?.blank) {
+      const placed = writeBlank(doc, anchor.key, (d, k) => setRichMarkdown(d, k, op.markdown), {
+        trace,
+        touched,
+      });
+      return withListWarning({ op: "insert_markdown", ...placed }, op.markdown);
+    }
+    if (anchor) {
+      const { block, nodes } = writeInPlace(doc, anchor, spans, op.op, {
         trace,
         touched,
         budget: context.budget,
@@ -442,15 +469,22 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
     const dark_src = op.dark_asset_id ? imageAssetUrl(doc.page_id, op.dark_asset_id) : null;
     const image = { src: asset_url, dark_src, alt: op.alt, title: op.title };
     let placed;
-    if (inPlace(at.after_node_id)) {
-      const { block, nodes, start, end } = writeInPlace(
-        doc,
-        at.after_node_id,
-        imageSpans(image),
-        op.op,
-        { trace, touched, budget: context.budget, reads: context.reads },
-      );
-      const key = at.after_node_id.key;
+    const spans = imageSpans(image);
+    const anchor = insertAnchor(doc, op, at, spans, context);
+    if (anchor?.blank) {
+      const { block, nodes } = writeBlank(doc, anchor.key, (d, k) => setRichImage(d, k, image), {
+        trace,
+        touched,
+      });
+      placed = { op: "insert_image", block, nodes, image: imageIds(doc, anchor.key)[0].id };
+    } else if (anchor) {
+      const { block, nodes, start, end } = writeInPlace(doc, anchor, spans, op.op, {
+        trace,
+        touched,
+        budget: context.budget,
+        reads: context.reads,
+      });
+      const key = anchor.key;
       const id = spanImageIds(doc, textPath(key), context.reads.spans(key)).find(
         (entry) => entry.at >= start && entry.at < end,
       ).id;
@@ -477,8 +511,16 @@ function applyEdit(doc, op, at, { trace, touched, ...context }) {
     const attrs = NODE_INSERTIONS[op.node.type].stored(doc.page_id, input);
     const node = { type: op.node.type, attrs };
     let placed;
-    if (inPlace(at.after_node_id)) {
-      const { block, nodes } = writeInPlace(doc, at.after_node_id, nodeSpans(node), op.op, {
+    const spans = nodeSpans(node);
+    const anchor = insertAnchor(doc, op, at, spans, context);
+    if (anchor?.blank) {
+      const { block, nodes } = writeBlank(doc, anchor.key, (d, k) => setRichNode(d, k, node), {
+        trace,
+        touched,
+      });
+      placed = { op: "insert_node", block, nodes };
+    } else if (anchor) {
+      const { block, nodes } = writeInPlace(doc, anchor, spans, op.op, {
         trace,
         touched,
         budget: context.budget,
@@ -725,7 +767,7 @@ function applyOperation(doc, { operation, arguments: args = {}, trace, comments 
       op.op === "delete_block"
         ? undefined
         : INSERTS.has(op.op)
-          ? nodeBlockOf(index, op.after_node_id)
+          ? (nodeBlockOf(index, op.after_node_id) ?? flowBlock(doc, op))
           : blockOf(index, op.node_id);
     // A move writes into its anchor's block as well as its own. A null
     // anchor is the start of the Page, in its first block.

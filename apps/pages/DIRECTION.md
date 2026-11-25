@@ -129,10 +129,15 @@ lists, images, views and dataframes in order. Blocks are a storage detail
      `insert_markdown`, `insert_image` and `insert_node` write after a
      top-level node inside its block
      ([model/insert-in-place.mjs](model/insert-in-place.mjs)), with no text moved and every
-     node id and comment anchor kept. Next, an omitted `after_node_id`
-     appends to the end of the last block and `null` writes at the start of
-     the first. No agent operation makes a block, except under the size rule
-     below.
+     node id and comment anchor kept. Done without one too: an omitted
+     `after_node_id` writes after the last node of the last block, and `null`
+     before the first node of the first
+     ([model/flow-placement.mjs](model/flow-placement.mjs)). Such an insert
+     makes a block only where it can't go inside: the Page has none, the
+     content would join a list of the same kind at that end, or the edge
+     block is past the passage limit or holds content this build can't
+     write in. A block's id as `after_node_id` still makes one, until block
+     ids leave the contract.
    - **`node_id` names nodes only.** Block ids leave the agent contract.
      `replace_block_markdown` gives way to node-scoped writes (item 4),
      `delete_block` to `delete_node` over a range, and `move_block` to a
@@ -256,8 +261,9 @@ lists, images, views and dataframes in order. Blocks are a storage detail
    named sources are a third module, `pages.sources`, a document only the
    host writes ([model/sources-doc.mjs](model/sources-doc.mjs)).
 7. **One flow per Page** (item 6 above). Done: in-place insert after a
-   node, "Continue writing" adds a paragraph, and `move_nodes` moves a
-   section with its comments ([model/move-nodes.mjs](model/move-nodes.mjs)).
+   node and at either end of the Page, "Continue writing" adds a paragraph,
+   and `move_nodes` moves a section with its comments
+   ([model/move-nodes.mjs](model/move-nodes.mjs)).
    Then, each its own change:
    1. The host reads each block once per batch, and the editor carries its
       tree through structural and formatting writes. Measure the 115 KB
@@ -268,14 +274,15 @@ lists, images, views and dataframes in order. Blocks are a storage detail
       `updateSpansExactly` and in the read that checks the write) after a
       whole-block `updateSpans`.
    2. Omitted and `null` `after_node_id` write into the last and first
-      blocks. The guides teach inserts by node only.
+      blocks. Done. Left: the guides still teach a block's id as an
+      insert's anchor.
    3. The explicit join for multi-block Pages, with comment re-anchoring.
    4. Block ids leave the agent contract. This waits on node-scoped writes
       (item 4 above), which need their own design first.
-   `scripts/project-transfer.mjs` still splits a block around a dataframe
-   on import and writes with `replace_block_markdown` and `delete_block`.
-   It moves to in-place insert with step 7.2 and off the block operations
-   with step 7.4.
+   `scripts/project-transfer.mjs` writes a body with
+   `replace_block_markdown` and `delete_block`, then inserts with no anchor,
+   which a host that writes in place keeps in one block. It moves off the
+   block operations with step 7.4.
 
 ### Delete
 
