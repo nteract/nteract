@@ -1,6 +1,6 @@
 {
   "name": "@nteract/sift",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nteract/nteract.git",

@@ -1,6 +1,6 @@
 {
   "name": "nteract",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "Open, run, and edit nteract notebooks from Codex",
   "author": {
     "name": "nteract contributors",
