@@ -84,7 +84,7 @@ async function signIn(email, contextOptions = {}) {
   return page;
 }
 async function editPage(operations) {
-  const afterInsert = (await tool(owner, "read_page", { page_id: pageId })).body;
+  const read = (await tool(owner, "read_page", { page_id: pageId })).body;
   return tool(owner, "edit_page", {
     page_id: pageId,
     revision: read.revision,
@@ -97,7 +97,7 @@ const dataframe = (asset_id, title) => ({
   node: { type: "dataframe", attrs: { asset_id, ...(title && { title }) } },
 });
 const content = (page) => page.locator("wg-content").first();
-// Each block has its own editor, so a table is in a later wg-content.
+// Every table on the Page, whichever block's editor holds it.
 const tables = (page) => page.locator("wg-content section.wordgard-dataframe-table");
 const markdownOf = async () =>
   (await tool(owner, "read_page", { page_id: pageId })).body.blocks
@@ -165,13 +165,17 @@ try {
   // An append returns the block it went into, or a new block's node_id
   // when it got one, and the new node's id in nodes.
   const afterInsert = (await tool(owner, "read_page", { page_id: pageId })).body;
-  const holder = afterInsert.blocks.find((block) => block.node_id === (node.block ?? node.node_id));
+  const holderId = node.block ?? node.node_id;
+  const holder = afterInsert.blocks.find((block) => block.node_id === holderId);
   assert.ok(
     holder.markdown.includes(`[Dataframe: Usage by day](${dataset.asset_url})`),
     holder.markdown,
   );
-  const entry = afterInsert.outline.entries.find((item) => item.node_id === node.nodes[0]);
-  assert.equal(entry?.type, "dataframe", JSON.stringify(afterInsert.outline.entries));
+  // A read with content carries no outline; the outline names the node's type.
+  const { outline } = (await tool(owner, "read_page", { page_id: pageId, include_content: false }))
+    .body;
+  const entry = outline.entries.find((item) => item.node_id === node.nodes[0]);
+  assert.equal(entry?.type, "dataframe", JSON.stringify(outline.entries));
   for (const page of [owner, viewer]) {
     await page.goto(`${origin}/p/${pageId}`);
     await expect(tables(page)).toHaveCount(1, { timeout: 15000 });
@@ -560,7 +564,7 @@ try {
   );
 
   const rewrite = await editPage([
-    { op: "replace_block_markdown", node_id: node.node_id, markdown: "gone" },
+    { op: "replace_block_markdown", node_id: holderId, markdown: "gone" },
   ]);
   assert.equal(rewrite.status, 400);
   assert.equal(rewrite.body.code, "markdownless_node", JSON.stringify(rewrite.body));
@@ -569,7 +573,7 @@ try {
   assert.equal(missing.body.code, "dataset_not_found");
   const line = `[Dataframe: Usage by day](${dataset.asset_url})`;
   const kept = await editPage([
-    { op: "replace_block_markdown", node_id: node.node_id, markdown: `Intro\n\n${line}` },
+    { op: "replace_block_markdown", node_id: holderId, markdown: `Intro\n\n${line}` },
   ]);
   assert.equal(kept.status, 200, JSON.stringify(kept.body));
   await expect(tables(viewer)).toHaveCount(1, { timeout: 15000 });
@@ -697,7 +701,7 @@ try {
   await expect(selected(other)).toHaveCount(1);
   await expect(selected(dropped)).toHaveCount(0);
   await expect.poll(drawnOutlines).toBe(1);
-  complete("Selecting another block's table deselects the first");
+  complete("Selecting another table deselects the first");
 
   await owner.waitForTimeout(1200);
   assert.equal(
@@ -711,7 +715,9 @@ try {
   await owner.keyboard.press("ControlOrMeta+X");
   await expect(tables(owner)).toHaveCount(1, { timeout: 10000 });
   await expect(tables(viewer)).toHaveCount(1, { timeout: 15000 });
-  await content(owner).click();
+  // Into the paragraph: the block holds the other table too, and a click on
+  // the block's middle would select that table.
+  await content(owner).getByText("Intro", { exact: true }).click();
   await owner.keyboard.press("ControlOrMeta+Home");
   await owner.keyboard.press("ControlOrMeta+V");
   await expect(tables(owner)).toHaveCount(2, { timeout: 10000 });
