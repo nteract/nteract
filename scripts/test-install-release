@@ -141,6 +141,11 @@ if [[ -z "\$out" || -z "\$url" ]]; then
 fi
 asset="\${url##*/}"
 echo "wget \$asset -> \$out" >> "$log"
+# GNU wget prints the status line and exits 8 on an HTTP error such as 404.
+if [[ ! -f "$assets/\$asset" ]]; then
+  echo "  HTTP/1.1 404 Not Found" >&2
+  exit 8
+fi
 cp "$assets/\$asset" "\$out"
 EOF
   chmod 0755 "$dir/wget"
@@ -194,7 +199,7 @@ WGET_DOWNLOAD_LOG="$WORK/wget-downloads.log"
 make_linux_fixtures "$WORK/wget-assets" "$WGET_LOG"
 make_fetch_tool_path_without_curl "$WORK/no-curl-tools" "$WORK/wget-assets" "$WGET_DOWNLOAD_LOG"
 PATH="$WORK/shim-linux:$WORK/no-curl-tools" run_installer "$WGET_HOME" \
-  --tag v9.9.9-stable.202601010101 --no-start > "$WORK/wget-out.log"
+  --tag v9.9.9-stable.202601010101 --no-start > "$WORK/wget-out.log" 2>&1
 WGET_PREFIX="$WGET_HOME/.local/share/nteract/stable"
 assert_file "$WGET_PREFIX/nteract.AppImage"
 assert_link "$WGET_HOME/.local/bin/runt" "$WGET_PREFIX/bin/runt"
@@ -204,6 +209,8 @@ grep -q "wget runtimed-linux-x64" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: r
 grep -q "wget nteract-mcp-linux-x64" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: mcp asset was not downloaded with wget"
 grep -q "wget nteract-stable-linux-x64.AppImage" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: appimage asset was not downloaded with wget"
 grep -q "runt daemon doctor --fix --no-start" "$WGET_LOG" || fail "wget fallback: daemon doctor --fix --no-start not invoked"
+grep -q "wget SHA256SUMS" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: SHA256SUMS was not requested"
+grep -q "this release has no SHA256SUMS" "$WORK/wget-out.log" || fail "wget fallback: missing SHA256SUMS should warn"
 
 note "linux nightly desktop install"
 NIGHTLY_HOME="$WORK/nightly-home"
@@ -413,6 +420,375 @@ for channel in stable nightly; do
     assert_link "$COMPAT_HOME/.local/bin/nteract" "$COMPAT_HOME/.local/share/nteract/$channel/bin/nteract-cli"
   done
 done
+
+note "release checksums: manifest tool"
+CHECKSUMS_TOOL="$SCRIPT_DIR/ci/release-checksums.sh"
+STABLE_KEY="RWQ++KyX5QK7Kad7qdUsSgK1wSX8tyP9oi0E9izCzqYTkppp4Gf0UUF8"  # 29BB02E597ACF83E
+NIGHTLY_KEY="RWS8zmGqVBZsmzkkrdjXigjInaliPhFjek6RO6+jUxxIzOfAJyo+oHhM" # 9B6C1654AA61CEBC
+[[ "$(bash "$CHECKSUMS_TOOL" public-key "$INSTALLER" stable)" == "$STABLE_KEY" ]] || fail "public-key: stable should sign with key 29BB02E597ACF83E"
+[[ "$(bash "$CHECKSUMS_TOOL" public-key "$INSTALLER" nightly)" == "$NIGHTLY_KEY" ]] || fail "public-key: nightly should sign with key 9B6C1654AA61CEBC"
+grep -Fq "\"$NIGHTLY_KEY\"" <(awk '/^NTERACT_STABLE_RELEASE_KEYS=\(/,/^\)/' "$INSTALLER") && fail "the stable key list must not accept the nightly key"
+grep -Fq "\"$STABLE_KEY\"" <(awk '/^NTERACT_NIGHTLY_RELEASE_KEYS=\(/,/^\)/' "$INSTALLER") && fail "the nightly key list must not accept the stable key"
+if bash "$CHECKSUMS_TOOL" public-key "$INSTALLER" beta > /dev/null 2>&1; then
+  fail "public-key: unknown channel should fail"
+fi
+MANIFEST_DIR="$WORK/manifest-assets"
+mkdir -p "$MANIFEST_DIR/extra"
+printf 'b\n' > "$MANIFEST_DIR/b-asset"
+printf 'a\n' > "$MANIFEST_DIR/a-asset"
+printf 'w\n' > "$MANIFEST_DIR/extra/wheel.whl"
+printf 'stale\n' > "$MANIFEST_DIR/SHA256SUMS.minisig"
+bash "$CHECKSUMS_TOOL" write "$MANIFEST_DIR" "$MANIFEST_DIR/extra" > /dev/null
+[[ "$(awk '{print $2}' "$MANIFEST_DIR/SHA256SUMS" | tr '\n' ' ')" == "a-asset b-asset wheel.whl " ]] || fail "write: manifest should list sorted asset names and skip itself and its signature"
+grep -Eqv '^[0-9a-f]{64}  [^ ]+$' "$MANIFEST_DIR/SHA256SUMS" && fail "write: manifest lines must be '<sha256>  <name>'"
+printf 'dup\n' > "$MANIFEST_DIR/extra/a-asset"
+if bash "$CHECKSUMS_TOOL" write "$MANIFEST_DIR" "$MANIFEST_DIR/extra" > /dev/null 2>&1; then
+  fail "write: duplicate asset names across directories should fail"
+fi
+if RELEASE_CHECKSUMS_SIGNING_KEY="" RELEASE_CHECKSUMS_SIGNING_KEY_PASSWORD="x" \
+  bash "$CHECKSUMS_TOOL" sign "$MANIFEST_DIR/SHA256SUMS" v1.0.0 > "$WORK/empty-key.log" 2>&1; then
+  fail "sign: empty key secret should fail"
+fi
+grep -q "RELEASE_CHECKSUMS_SIGNING_KEY is empty" "$WORK/empty-key.log" || fail "sign: empty key secret should be named"
+
+# Each case installs the Linux x64 CLI from a fresh fixture directory with an
+# installer stamped like a release asset: a tag, and a public key.
+VERIFY_TAG="v9.9.9-stable.202601010101"
+make_checksum_fixture() {
+  local dir="$1"
+  make_linux_fixtures "$dir" "$WORK/verify-calls.log"
+  bash "$CHECKSUMS_TOOL" write "$dir" > /dev/null
+}
+sign_fixture() {
+  local dir="$1" tag="$2" key="$3"
+  RELEASE_CHECKSUMS_SIGNING_KEY="$(base64 < "$key" | tr -d '\n')" \
+    RELEASE_CHECKSUMS_SIGNING_KEY_PASSWORD="$TEST_KEY_PASSWORD" \
+    RUNNER_TEMP="$WORK/runner-temp" \
+    bash "$CHECKSUMS_TOOL" sign "$dir/SHA256SUMS" "$tag" > /dev/null
+}
+# stamp_installer <dest> <tag> <stable keys> [<nightly keys>]
+# Keys are space-separated, first key first. Nightly defaults to stable's.
+stamp_installer() {
+  local dest="$1" tag="$2" stable="$3" nightly="${4:-$3}"
+  sed -e "s/^DEFAULT_TAG=\"\"$/DEFAULT_TAG=\"$tag\"/" "$INSTALLER" |
+    awk -v stable="$stable" -v nightly="$nightly" '
+      function emit(keys,   n, i, list) {
+        n = split(keys, list, " ")
+        for (i = 1; i <= n; i++) print "  \"" list[i] "\""
+      }
+      $0 == "NTERACT_STABLE_RELEASE_KEYS=(" { print; emit(stable); skip = 1; next }
+      $0 == "NTERACT_NIGHTLY_RELEASE_KEYS=(" { print; emit(nightly); skip = 1; next }
+      skip && /^\)/ { skip = 0 }
+      !skip { print }
+    ' > "$dest"
+  [[ "$(bash "$CHECKSUMS_TOOL" public-key "$dest" stable)" == "${stable%% *}" ]] || fail "stamp: stable keys not replaced"
+  [[ "$(bash "$CHECKSUMS_TOOL" public-key "$dest" nightly)" == "${nightly%% *}" ]] || fail "stamp: nightly keys not replaced"
+}
+# verify_case <name> <pass|fail> <output text> <assets> [installer args...]
+# Runs $CASE_INSTALLER with PATH=$CASE_PATH.
+verify_case() {
+  local name="$1" expect="$2" pattern="$3" assets="$4"
+  shift 4
+  local slug="${name// /-}"
+  local home="$WORK/verify-home-$slug" out="$WORK/verify-out-$slug.log"
+  local status=0
+  INSTALLER_UNDER_TEST="$CASE_INSTALLER" PATH="$CASE_PATH" run_installer "$home" \
+    --from-dir "$assets" --cli "$@" > "$out" 2>&1 || status=$?
+  if [[ "$expect" == pass && "$status" != 0 ]]; then
+    fail "$name: install should succeed (exit $status): $(tail -n 3 "$out")"
+  elif [[ "$expect" == fail && "$status" == 0 ]]; then
+    fail "$name: install should fail"
+  fi
+  if [[ "$expect" == fail ]]; then
+    assert_missing "$home/.local/share/nteract/stable/bin/runt"
+  else
+    assert_link "$home/.local/bin/runt" "$home/.local/share/nteract/stable/bin/runt"
+  fi
+  grep -Fq -- "$pattern" "$out" || fail "$name: output should contain '$pattern': $(tail -n 3 "$out")"
+}
+
+# A PATH with every tool the installer and fixtures use, but no minisign.
+NO_MINISIGN_PATH="$WORK/no-minisign-tools"
+mkdir -p "$NO_MINISIGN_PATH"
+for tool in awk basename bash cat chmod cp dirname env find grep head ln mkdir mktemp mv readlink rm sed sha256sum shasum tail tar tr wc; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    ln -s "$(command -v "$tool")" "$NO_MINISIGN_PATH/$tool"
+  fi
+done
+NO_MINISIGN_PATH="$WORK/shim-linux:$NO_MINISIGN_PATH"
+
+note "release checksums: installer without a signature"
+UNSIGNED_INSTALLER="$WORK/install-linux-release-release-key"
+stamp_installer "$UNSIGNED_INSTALLER" "$VERIFY_TAG" "$STABLE_KEY" "$NIGHTLY_KEY"
+CASE_INSTALLER="$UNSIGNED_INSTALLER"
+CASE_PATH="$NO_MINISIGN_PATH"
+make_linux_fixtures "$WORK/verify-no-sums" "$WORK/verify-calls.log"
+verify_case "no checksum file" pass "Warning: this release has no SHA256SUMS" "$WORK/verify-no-sums"
+make_checksum_fixture "$WORK/verify-good-sums"
+verify_case "good checksums" pass "Checked 4 downloads against SHA256SUMS" "$WORK/verify-good-sums"
+grep -Fq "no SHA256SUMS.minisig; the signature was not checked" "$WORK/verify-out-good-checksums.log" || fail "good checksums: should note the unchecked signature"
+make_checksum_fixture "$WORK/verify-tampered"
+printf 'tampered\n' >> "$WORK/verify-tampered/runtimed-linux-x64"
+verify_case "tampered asset" fail "SHA-256 mismatch for runtimed-linux-x64" "$WORK/verify-tampered"
+make_checksum_fixture "$WORK/verify-missing-line"
+grep -v ' nteract-mcp-linux-x64$' "$WORK/verify-missing-line/SHA256SUMS" > "$WORK/verify-missing-line/SHA256SUMS.new"
+mv "$WORK/verify-missing-line/SHA256SUMS.new" "$WORK/verify-missing-line/SHA256SUMS"
+verify_case "missing checksum line" fail "SHA256SUMS has no single entry for nteract-mcp-linux-x64" "$WORK/verify-missing-line"
+verify_case "require without checksum file" fail "has no SHA256SUMS; --require-signature" "$WORK/verify-no-sums" --require-signature
+verify_case "require without signature" fail "has no SHA256SUMS.minisig; --require-signature" "$WORK/verify-good-sums" --require-signature
+for value in TRUE True true; do
+  NTERACT_REQUIRE_SIGNATURE="$value" verify_case "env require $value" fail "has no SHA256SUMS.minisig; --require-signature" "$WORK/verify-good-sums"
+done
+for value in 0 false FALSE ""; do
+  NTERACT_REQUIRE_SIGNATURE="$value" verify_case "env require off ${value:-empty}" pass "no SHA256SUMS.minisig; the signature was not checked" "$WORK/verify-good-sums"
+done
+for value in yes 2 on; do
+  NTERACT_REQUIRE_SIGNATURE="$value" verify_case "env require invalid $value" fail "NTERACT_REQUIRE_SIGNATURE must be 1, true, 0, false or empty, not '$value'" "$WORK/verify-good-sums"
+done
+
+MINISIGN_BIN="$(command -v minisign || true)"
+if [[ -z "$MINISIGN_BIN" ]]; then
+  if [[ "${NTERACT_TEST_REQUIRE_MINISIGN:-0}" == "1" ]]; then
+    fail "minisign is not on PATH, and NTERACT_TEST_REQUIRE_MINISIGN=1 requires the signature cases"
+  else
+    echo "SKIP: minisign is not installed; signature cases did not run." >&2
+  fi
+else
+  note "release checksums: signatures (throwaway keys)"
+  TEST_KEY_PASSWORD="throwaway password"
+  KEYS="$WORK/keys"
+  mkdir -p "$KEYS"
+  printf '%s\n%s\n' "$TEST_KEY_PASSWORD" "$TEST_KEY_PASSWORD" |
+    minisign -G -p "$KEYS/good.pub" -s "$KEYS/good.key" > /dev/null 2>&1
+  printf '%s\n%s\n' "$TEST_KEY_PASSWORD" "$TEST_KEY_PASSWORD" |
+    minisign -G -p "$KEYS/other.pub" -s "$KEYS/other.key" > /dev/null 2>&1
+  GOOD_PUB="$(sed -n 2p "$KEYS/good.pub")"
+  SIGNED_INSTALLER="$WORK/install-linux-release-test-key"
+  stamp_installer "$SIGNED_INSTALLER" "$VERIFY_TAG" "$GOOD_PUB"
+  CASE_INSTALLER="$SIGNED_INSTALLER"
+  WITH_MINISIGN_PATH="$WORK/with-minisign-tools"
+  mkdir -p "$WITH_MINISIGN_PATH"
+  ln -s "$MINISIGN_BIN" "$WITH_MINISIGN_PATH/minisign"
+  WITH_MINISIGN_PATH="$WITH_MINISIGN_PATH:$NO_MINISIGN_PATH"
+
+  make_checksum_fixture "$WORK/verify-signed"
+  sign_fixture "$WORK/verify-signed" "$VERIFY_TAG" "$KEYS/good.key"
+  assert_missing "$WORK/runner-temp/nteract-release-checksums-key"
+  bash "$CHECKSUMS_TOOL" verify "$WORK/verify-signed/SHA256SUMS" "$VERIFY_TAG" "$GOOD_PUB" > /dev/null || fail "verify: good signature should verify"
+  if bash "$CHECKSUMS_TOOL" verify "$WORK/verify-signed/SHA256SUMS" "$VERIFY_TAG" "$STABLE_KEY" > /dev/null 2>&1; then
+    fail "verify: signature should not verify against a different key"
+  fi
+  if bash "$CHECKSUMS_TOOL" verify "$WORK/verify-signed/SHA256SUMS" "v9.9.8-stable.202512310101" "$GOOD_PUB" > /dev/null 2>&1; then
+    fail "verify: signature should not verify for a different tag"
+  fi
+
+  CASE_PATH="$WITH_MINISIGN_PATH"
+  verify_case "good signature" pass "Verified SHA256SUMS signature for $VERIFY_TAG" "$WORK/verify-signed"
+  verify_case "good signature required" pass "Verified SHA256SUMS signature for $VERIFY_TAG" "$WORK/verify-signed" --require-signature
+  NTERACT_REQUIRE_SIGNATURE=1 verify_case "env require without signature" fail "has no SHA256SUMS.minisig; --require-signature" "$WORK/verify-good-sums"
+
+  make_checksum_fixture "$WORK/verify-bad-sig"
+  sign_fixture "$WORK/verify-bad-sig" "$VERIFY_TAG" "$KEYS/other.key"
+  verify_case "bad signature" fail "signature does not verify against any nteract stable release key" "$WORK/verify-bad-sig"
+
+  # Accepted keys are a list per channel: an older key further down still
+  # verifies, and another channel's key does not.
+  OTHER_PUB="$(sed -n 2p "$KEYS/other.pub")"
+  CASE_INSTALLER="$WORK/install-linux-release-rotated"
+  stamp_installer "$CASE_INSTALLER" "$VERIFY_TAG" "$OTHER_PUB $GOOD_PUB"
+  verify_case "older key in the list" pass "Verified SHA256SUMS signature for $VERIFY_TAG" "$WORK/verify-signed"
+  CASE_INSTALLER="$WORK/install-linux-release-wrong-channel"
+  stamp_installer "$CASE_INSTALLER" "$VERIFY_TAG" "$OTHER_PUB" "$GOOD_PUB"
+  verify_case "nightly key on a stable install" fail "signature does not verify against any nteract stable release key" "$WORK/verify-signed"
+
+  # The reverse: a nightly install rejects a manifest signed with the stable key.
+  NIGHTLY_SIGNED="$WORK/verify-nightly-stable-signed"
+  make_nightly_linux_fixtures "$NIGHTLY_SIGNED" "$WORK/verify-calls.log"
+  bash "$CHECKSUMS_TOOL" write "$NIGHTLY_SIGNED" > /dev/null
+  sign_fixture "$NIGHTLY_SIGNED" "v9.9.9-nightly.202601010101" "$KEYS/good.key"
+  NIGHTLY_CASE_INSTALLER="$WORK/install-linux-release-nightly-wrong-key"
+  stamp_installer "$NIGHTLY_CASE_INSTALLER" "" "$GOOD_PUB" "$OTHER_PUB"
+  sed -e 's/^DEFAULT_CHANNEL="stable"$/DEFAULT_CHANNEL="nightly"/' \
+    -e 's/^DEFAULT_TAG=""$/DEFAULT_TAG="v9.9.9-nightly.202601010101"/' \
+    "$NIGHTLY_CASE_INSTALLER" > "$NIGHTLY_CASE_INSTALLER.stamped"
+  status=0
+  INSTALLER_UNDER_TEST="$NIGHTLY_CASE_INSTALLER.stamped" PATH="$WITH_MINISIGN_PATH" run_installer "$WORK/verify-home-stable-key-nightly" \
+    --from-dir "$NIGHTLY_SIGNED" --cli > "$WORK/verify-out-stable-key-nightly.log" 2>&1 || status=$?
+  [[ "$status" != 0 ]] || fail "stable key on a nightly install: install should fail"
+  assert_missing "$WORK/verify-home-stable-key-nightly/.local/share/nteract/nightly/bin/runt-nightly"
+  grep -Fq "signature does not verify against any nteract nightly release key" "$WORK/verify-out-stable-key-nightly.log" ||
+    fail "stable key on a nightly install: should name the nightly key list"
+  # With the right list, the same nightly manifest verifies.
+  stamp_installer "$NIGHTLY_CASE_INSTALLER" "" "$OTHER_PUB" "$GOOD_PUB"
+  sed -e 's/^DEFAULT_CHANNEL="stable"$/DEFAULT_CHANNEL="nightly"/' \
+    -e 's/^DEFAULT_TAG=""$/DEFAULT_TAG="v9.9.9-nightly.202601010101"/' \
+    "$NIGHTLY_CASE_INSTALLER" > "$NIGHTLY_CASE_INSTALLER.stamped"
+  INSTALLER_UNDER_TEST="$NIGHTLY_CASE_INSTALLER.stamped" PATH="$WITH_MINISIGN_PATH" run_installer "$WORK/verify-home-nightly-key-nightly" \
+    --from-dir "$NIGHTLY_SIGNED" --cli > "$WORK/verify-out-nightly-key-nightly.log" 2>&1 ||
+    fail "nightly key on a nightly install: install should succeed: $(tail -n 3 "$WORK/verify-out-nightly-key-nightly.log")"
+  grep -Fq "Verified SHA256SUMS signature for v9.9.9-nightly.202601010101" "$WORK/verify-out-nightly-key-nightly.log" ||
+    fail "nightly key on a nightly install: should verify the signature"
+  CASE_INSTALLER="$SIGNED_INSTALLER"
+
+  make_checksum_fixture "$WORK/verify-other-tag"
+  sign_fixture "$WORK/verify-other-tag" "v9.9.8-stable.202512310101" "$KEYS/good.key"
+  verify_case "signature for another tag" fail "signed for 'nteract release v9.9.8-stable.202512310101'" "$WORK/verify-other-tag"
+
+  make_checksum_fixture "$WORK/verify-signed-tampered"
+  sign_fixture "$WORK/verify-signed-tampered" "$VERIFY_TAG" "$KEYS/good.key"
+  printf 'tampered\n' >> "$WORK/verify-signed-tampered/runt-linux-x64"
+  verify_case "signed manifest with tampered asset" fail "SHA-256 mismatch for runt-linux-x64" "$WORK/verify-signed-tampered"
+
+  CASE_PATH="$NO_MINISIGN_PATH"
+  verify_case "signature without minisign" pass "minisign is not on PATH; the signature was not checked" "$WORK/verify-signed"
+  verify_case "require without minisign" fail "minisign is not on PATH; --require-signature" "$WORK/verify-signed" --require-signature
+
+  # A checkout's installer knows no tag: it checks the key but cannot bind
+  # the tag, which --require-signature refuses.
+  UNSTAMPED_INSTALLER="$WORK/install-linux-release-test-key-unstamped"
+  stamp_installer "$UNSTAMPED_INSTALLER" "" "$GOOD_PUB"
+  CASE_INSTALLER="$UNSTAMPED_INSTALLER"
+  CASE_PATH="$WITH_MINISIGN_PATH"
+  verify_case "unknown tag" pass "no tag is known for --from-dir" "$WORK/verify-signed"
+  verify_case "require with unknown tag" fail "No release tag is known for --from-dir" "$WORK/verify-signed" --require-signature
+fi
+
+note "release checksums: download paths decide 'missing' from the HTTP status"
+# Fake servers for curl, GNU wget and BusyBox wget. Each serves
+# <assets>/<name>; a file <assets>/.status-<name> forces that HTTP status, and
+# a missing file answers 404. /releases/latest redirects to the tag in
+# <assets>/.latest-tag.
+DOWNLOAD_TAG="v9.9.7-stable.202512300101"
+make_fake_curl() {
+  local dir="$1" assets="$2" log="$3"
+  mkdir -p "$dir"
+  cat > "$dir/curl" <<EOF
+#!/usr/bin/env bash
+out="" format="" url=""
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --output) out="\$2"; shift 2 ;;
+    --write-out) format="\$2"; shift 2 ;;
+    -*) shift ;;
+    *) url="\$1"; shift ;;
+  esac
+done
+echo "curl \$url" >> "$log"
+if [[ "\$url" == */releases/latest ]]; then
+  [[ "\$format" != *url_effective* ]] || printf '%s' "\${url%/latest}/tag/\$(cat "$assets/.latest-tag")"
+  exit 0
+fi
+asset="\${url##*/}"
+code=200
+if [[ -f "$assets/.status-\$asset" ]]; then
+  code="\$(cat "$assets/.status-\$asset")"
+elif [[ ! -f "$assets/\$asset" ]]; then
+  code=404
+fi
+[[ "\$format" != *http_code* ]] || printf '%s' "\$code"
+if [[ "\$code" != 200 ]]; then
+  echo "curl: (22) The requested URL returned error: \$code" >&2
+  exit 22
+fi
+cp "$assets/\$asset" "\$out"
+EOF
+  chmod 0755 "$dir/curl"
+}
+make_fake_wget() {
+  local dir="$1" assets="$2" log="$3" flavor="$4"
+  mkdir -p "$dir"
+  cat > "$dir/wget" <<EOF
+#!/usr/bin/env bash
+out="" url=""
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    -O) out="\$2"; shift 2 ;;
+    -*) shift ;;
+    *) url="\$1"; shift ;;
+  esac
+done
+echo "wget \$url" >> "$log"
+if [[ "\$url" == */releases/latest ]]; then
+  echo "  HTTP/1.1 302 Found" >&2
+  if [[ "$flavor" == busybox ]]; then
+    echo "  location: \${url%/latest}/tag/\$(cat "$assets/.latest-tag")" >&2
+  else
+    echo "  Location: \${url%/latest}/tag/\$(cat "$assets/.latest-tag")" >&2
+    echo "Location: \${url%/latest}/tag/\$(cat "$assets/.latest-tag") [following]" >&2
+  fi
+  echo "  HTTP/1.1 200 OK" >&2
+  exit 0
+fi
+asset="\${url##*/}"
+code=200
+if [[ -f "$assets/.status-\$asset" ]]; then
+  code="\$(cat "$assets/.status-\$asset")"
+elif [[ ! -f "$assets/\$asset" ]]; then
+  code=404
+fi
+if [[ "\$code" != 200 ]]; then
+  if [[ "$flavor" == busybox ]]; then
+    echo "wget: server returned error: HTTP/1.1 \$code Error" >&2
+    exit 1
+  fi
+  echo "  HTTP/1.1 302 Found" >&2
+  echo "  HTTP/1.1 \$code Error" >&2
+  echo "ERROR \$code: Error." >&2
+  exit 8
+fi
+echo "  HTTP/1.1 200 OK" >&2
+cp "$assets/\$asset" "\$out"
+EOF
+  chmod 0755 "$dir/wget"
+}
+# download_case <name> <pass|fail> <output text> <tools dir> [installer args...]
+download_case() {
+  local name="$1" expect="$2" pattern="$3" tools="$4"
+  shift 4
+  local slug="${name// /-}"
+  local home="$WORK/download-home-$slug" out="$WORK/download-out-$slug.log"
+  local status=0
+  INSTALLER_UNDER_TEST="$DOWNLOAD_INSTALLER" PATH="$tools:$NO_MINISIGN_PATH" run_installer "$home" \
+    --cli "$@" > "$out" 2>&1 || status=$?
+  if [[ "$expect" == pass && "$status" != 0 ]]; then
+    fail "$name: install should succeed (exit $status): $(tail -n 3 "$out")"
+  elif [[ "$expect" == fail && "$status" == 0 ]]; then
+    fail "$name: install should fail"
+  fi
+  if [[ "$expect" == fail ]]; then
+    assert_missing "$home/.local/share/nteract/stable/bin/runt"
+  fi
+  grep -Fq -- "$pattern" "$out" || fail "$name: output should contain '$pattern': $(tail -n 3 "$out")"
+}
+
+DOWNLOAD_INSTALLER="$WORK/install-linux-release-no-tag"
+stamp_installer "$DOWNLOAD_INSTALLER" "" "$STABLE_KEY" "$NIGHTLY_KEY"
+DOWNLOAD_ASSETS="$WORK/download-assets"
+make_linux_fixtures "$DOWNLOAD_ASSETS" "$WORK/download-calls.log"
+printf '%s\n' "$DOWNLOAD_TAG" > "$DOWNLOAD_ASSETS/.latest-tag"
+for client in curl gnu-wget busybox-wget; do
+  tools="$WORK/download-tools-$client"
+  log="$WORK/download-$client.log"
+  case "$client" in
+    curl) make_fake_curl "$tools" "$DOWNLOAD_ASSETS" "$log" ;;
+    gnu-wget) make_fake_wget "$tools" "$DOWNLOAD_ASSETS" "$log" gnu ;;
+    busybox-wget) make_fake_wget "$tools" "$DOWNLOAD_ASSETS" "$log" busybox ;;
+  esac
+  rm -f "$DOWNLOAD_ASSETS/.status-SHA256SUMS"
+  # No --tag and no stamped tag: the latest release is resolved once, and
+  # every asset comes from that tag.
+  download_case "$client latest tag and 404 checksums" pass "Warning: this release has no SHA256SUMS" "$tools"
+  grep -q "/releases/download/$DOWNLOAD_TAG/runt-linux-x64" "$log" || fail "$client: assets should come from the resolved latest tag"
+  grep -q "/releases/download/$DOWNLOAD_TAG/SHA256SUMS" "$log" || fail "$client: SHA256SUMS should come from the resolved latest tag"
+  for code in 503 403 429; do
+    printf '%s\n' "$code" > "$DOWNLOAD_ASSETS/.status-SHA256SUMS"
+    download_case "$client checksums answer $code" fail "Could not download" "$tools" --tag "$DOWNLOAD_TAG"
+  done
+  rm -f "$DOWNLOAD_ASSETS/.status-SHA256SUMS"
+done
+rm -f "$DOWNLOAD_ASSETS/.latest-tag"
+download_case "curl latest tag unresolved" fail "Could not resolve the latest release" "$WORK/download-tools-curl"
+download_case "gnu-wget latest tag unresolved" fail "Could not resolve the latest release" "$WORK/download-tools-gnu-wget"
 
 note "unsupported platform is rejected with guidance"
 make_uname_shim "$WORK/shim-unsupported" "Linux" "armv7l"

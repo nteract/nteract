@@ -95,6 +95,67 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --cli
 
 Use `nteract` for notebook, workstation, and MCP operations. CLI-only installation does not configure or start a local daemon service. The desktop app bundles the same CLI. Existing `runt`, `runt-nightly`, and `nteract-mcp` commands remain compatible. See the [CLI guide](docs/runbooks/cli.md) for runtime startup, channel selection, and scripting behavior.
 
+### Verify a release
+
+Each release publishes `SHA256SUMS`, with one SHA-256 line for every file the
+release workflow uploads when it creates the release, and
+`SHA256SUMS.minisig`, a [minisign](https://jedisct1.github.io/minisign/)
+signature whose trusted comment reads `nteract release <tag>`. Stable and
+nightly releases are signed with separate keys:
+
+| Channel | Key ID | Public key |
+|---------|--------|------------|
+| Stable | `29BB02E597ACF83E` | `RWQ++KyX5QK7Kad7qdUsSgK1wSX8tyP9oi0E9izCzqYTkppp4Gf0UUF8` |
+| Nightly | `9B6C1654AA61CEBC` | `RWS8zmGqVBZsmzkkrdjXigjInaliPhFjek6RO6+jUxxIzOfAJyo+oHhM` |
+
+The same keys are pinned in `NTERACT_STABLE_RELEASE_KEYS` and
+`NTERACT_NIGHTLY_RELEASE_KEYS` in
+[`scripts/install-linux-release`](scripts/install-linux-release). Compare the
+two copies to check a key from a second source.
+
+`SHA256SUMS` does not cover the editor assets attached to a release later
+(`notebook-cloud-assets-<channel>.tar.gz` and its `.sha256`). A release can be
+published without `SHA256SUMS.minisig` if signing failed; the installer then
+says the signature was not checked.
+
+The one-line `curl | bash` install checks every download against the release's
+`SHA256SUMS` before installing anything. When `minisign` is on `PATH`, it also
+checks the signature against the channel's keys and the tag. It does not
+verify the installer script itself: you trust the HTTPS transport that
+delivered it. Releases without
+`SHA256SUMS` install with a warning.
+
+To verify the installer before running it, fetch it with the checksum file
+and signature from one release:
+
+```bash
+tag=v2.10.2-stable.202611240000   # the release you are installing
+base=https://github.com/nteract/nteract/releases/download/$tag
+curl -fsSLO "$base/install-linux-release"
+curl -fsSLO "$base/SHA256SUMS"
+curl -fsSLO "$base/SHA256SUMS.minisig"
+minisign -Vm SHA256SUMS -P RWQ++KyX5QK7Kad7qdUsSgK1wSX8tyP9oi0E9izCzqYTkppp4Gf0UUF8
+# The trusted comment printed above must read: nteract release <tag>
+sha256sum --check --ignore-missing SHA256SUMS   # must list install-linux-release: OK
+bash install-linux-release --require-signature
+```
+
+For a nightly tag, use the nightly key. `--require-signature`, or
+`NTERACT_REQUIRE_SIGNATURE=1` (also `true`), makes the installer fail unless
+`SHA256SUMS`, its signature and `minisign` are all present and verify. Other
+values of `NTERACT_REQUIRE_SIGNATURE` stop the install. Use
+`sha256sum --check --ignore-missing SHA256SUMS` the same way for any file you
+download by hand.
+
+The files listed in `SHA256SUMS` also have a GitHub build provenance
+attestation. `SHA256SUMS` and `SHA256SUMS.minisig` themselves are not
+attested.
+
+```bash
+gh attestation verify nteract-stable-linux-x64.AppImage --repo nteract/nteract \
+  --signer-workflow nteract/nteract/.github/workflows/release-common.yml
+```
+
 ## Runtime model
 
 nteract notebooks store content in `NotebookDoc` and live kernel and execution

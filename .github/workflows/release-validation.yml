@@ -21,6 +21,9 @@ on:
       - scripts/ci/audit-windows-crt-imports.mjs
       - scripts/ci/filter-unpublished-release-tags.sh
       - scripts/ci/check-release-tag.sh
+      - scripts/ci/release-checksums.sh
+      - scripts/install-linux-release
+      - scripts/test-install-release
       - scripts/ci/nightly-wheel-recovery.mjs
       - scripts/ci/npm-release*
       - scripts/ci/npm-wasm-*
@@ -179,6 +182,30 @@ jobs:
       - run: node --test scripts/tests/release-attribution.test.mjs scripts/tests/bundled-npm-licenses.test.mjs
       - run: node --test scripts/tests/prepare-plotly-attribution.test.mjs
       - run: python3 -m unittest scripts/tests/test_package_notebook_ui.py -v
+      # The only Linux run of the pinned minisign before a release. A failure
+      # names the check that broke: download, hash, layout or run.
+      - name: Install the pinned minisign release binary
+        run: bash scripts/ci/release-checksums.sh install-minisign "$RUNNER_TEMP/minisign-bin"
+      - name: Write, sign and verify release checksums with a throwaway key
+        run: |
+          export MINISIGN="$RUNNER_TEMP/minisign-bin/minisign"
+          work="$(mktemp -d)"
+          mkdir -p "$work/assets"
+          printf 'asset\n' > "$work/assets/example-asset"
+          password="throwaway-$RANDOM-$RANDOM"
+          printf '%s\n%s\n' "$password" "$password" |
+            "$MINISIGN" -G -p "$work/test.pub" -s "$work/test.key" > /dev/null
+          bash scripts/ci/release-checksums.sh write "$work/assets"
+          RELEASE_CHECKSUMS_SIGNING_KEY="$(base64 -w0 < "$work/test.key")" \
+            RELEASE_CHECKSUMS_SIGNING_KEY_PASSWORD="$password" \
+            RUNNER_TEMP="$work" \
+            bash scripts/ci/release-checksums.sh sign "$work/assets/SHA256SUMS" v0.0.0-validation.0
+          bash scripts/ci/release-checksums.sh verify "$work/assets/SHA256SUMS" v0.0.0-validation.0 "$(sed -n 2p "$work/test.pub")"
+          rm -rf "$work"
+      - name: Installer fixture tests with the pinned minisign
+        env:
+          NTERACT_TEST_REQUIRE_MINISIGN: "1"
+        run: PATH="$RUNNER_TEMP/minisign-bin:$PATH" bash scripts/test-install-release
 
   native-rust-attribution:
     name: Native Rust attribution preflight

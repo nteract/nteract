@@ -14,6 +14,14 @@
 # Desktop installs repair/install the per-user daemon service with
 # `nteract daemon doctor --fix` (systemd on Linux, launchd on macOS) and start
 # it by default. CLI-only installs leave runtime services alone.
+#
+# Downloads are checked before anything is installed. When the release has a
+# SHA256SUMS asset, every downloaded asset must match its line. When it also
+# has SHA256SUMS.minisig and `minisign` is on PATH, the signature must verify
+# against a key in the installed channel's key list and its trusted comment
+# must name the tag being installed. Releases without SHA256SUMS install with a
+# warning. --require-signature (or NTERACT_REQUIRE_SIGNATURE=1) makes the
+# checksum file, the signature and minisign all mandatory.
 
 set -euo pipefail
 
@@ -47,6 +55,10 @@ Options:
                        Applies to desktop installs only.
   --default-cli        Select this installation for the shared nteract command.
                        Existing unrelated commands are always preserved.
+  --require-signature  Fail unless the release's SHA256SUMS, its minisign
+                       signature and a local `minisign` are all present and
+                       verify. Also set by NTERACT_REQUIRE_SIGNATURE=1
+                       (or true); 0, false and empty leave it off.
   -h, --help           Show this help.
 
 Installs, for stable on Linux (<arch> is x64 or arm64):
@@ -116,12 +128,35 @@ REPO="nteract/nteract"
 # release installer with no args installs the exact channel and tag it came from.
 DEFAULT_CHANNEL="stable"
 DEFAULT_TAG=""
+# Minisign keys accepted for each channel's SHA256SUMS, one quoted key per
+# line. The first entry is the key the release workflow signs that channel
+# with today, and it checks each signature against that entry before
+# publishing. Later entries are older keys that releases still in use were
+# signed with. A rotation adds the new key at the top of the list. Stable and
+# nightly use separate keys: nightly signs unattended, stable behind a
+# reviewer, so a leaked nightly key must not verify a stable release. Neither
+# list holds the other channel's key.
+NTERACT_STABLE_RELEASE_KEYS=(
+  "RWQ++KyX5QK7Kad7qdUsSgK1wSX8tyP9oi0E9izCzqYTkppp4Gf0UUF8" # 29BB02E597ACF83E
+)
+NTERACT_NIGHTLY_RELEASE_KEYS=(
+  "RWS8zmGqVBZsmzkkrdjXigjInaliPhFjek6RO6+jUxxIzOfAJyo+oHhM" # 9B6C1654AA61CEBC
+)
 CHANNEL="$DEFAULT_CHANNEL"
 TAG=""
 FROM_DIR=""
 NO_START=0
 HEADLESS=0
 DEFAULT_CLI=0
+# A security switch is never ignored: values other than these stop the install.
+case "${NTERACT_REQUIRE_SIGNATURE:-}" in
+  1|[Tt][Rr][Uu][Ee]) REQUIRE_SIGNATURE=1 ;;
+  ""|0|[Ff][Aa][Ll][Ss][Ee]) REQUIRE_SIGNATURE=0 ;;
+  *)
+    echo "NTERACT_REQUIRE_SIGNATURE must be 1, true, 0, false or empty, not '$NTERACT_REQUIRE_SIGNATURE'." >&2
+    exit 2
+    ;;
+esac
 XDG_DATA_HOME_DEFAULT="${XDG_DATA_HOME:-$HOME/.local/share}"
 PREFIX=""
 BIN_DIR="$HOME/.local/bin"
@@ -174,6 +209,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-start)
       NO_START=1
+      shift
+      ;;
+    --require-signature)
+      REQUIRE_SIGNATURE=1
       shift
       ;;
     -h|--help)
@@ -242,11 +281,7 @@ cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
 base_url() {
-  if [[ -n "$TAG" ]]; then
-    printf 'https://github.com/%s/releases/download/%s' "$REPO" "$TAG"
-  else
-    printf 'https://github.com/%s/releases/latest/download' "$REPO"
-  fi
+  printf 'https://github.com/%s/releases/download/%s' "$REPO" "$TAG"
 }
 
 download_url() {
@@ -262,9 +297,14 @@ download_url() {
   fi
 }
 
+FETCHED_ASSETS=()
+FETCHED_PATHS=()
+
 fetch_asset() {
   local asset="$1"
   local dest="$2"
+  FETCHED_ASSETS+=("$asset")
+  FETCHED_PATHS+=("$dest")
   if [[ -n "$FROM_DIR" ]]; then
     local src="$FROM_DIR/$asset"
     if [[ ! -f "$src" ]]; then
@@ -280,6 +320,181 @@ fetch_asset() {
     download_url "$url" "$dest"
   fi
   chmod 0755 "$dest"
+}
+
+# Last HTTP status in a server response log. GNU wget -S prints
+# "  HTTP/1.1 404 Not Found" per response; BusyBox wget prints
+# "server returned error: HTTP/1.1 404 Not Found". Redirects come first, so
+# the last status is the final answer. Prints nothing when none was seen.
+last_http_status() {
+  local line status="" pattern='HTTP/[0-9.]+ ([0-9][0-9][0-9])'
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ $pattern ]]; then
+      status="${BASH_REMATCH[1]}"
+    fi
+  done < "$1"
+  printf '%s' "$status"
+}
+
+# Fetch a release file that older releases lack. Returns 1 only when the
+# server's final answer is HTTP 404: the release does not have the file. Any
+# other failure (403, 429, 5xx, DNS, TLS) stops the install, so a flaky or
+# blocked network never reads as "this release has no checksums".
+fetch_optional() {
+  local asset="$1"
+  local dest="$2"
+  rm -f "$dest"
+  if [[ -n "$FROM_DIR" ]]; then
+    [[ -f "$FROM_DIR/$asset" ]] || return 1
+    cp "$FROM_DIR/$asset" "$dest"
+    return 0
+  fi
+  local url
+  url="$(base_url)/$asset"
+  if command -v curl >/dev/null 2>&1; then
+    local code="" status=0
+    code="$(curl --fail --location --silent --show-error --output "$dest" \
+      --write-out '%{http_code}' "$url" 2>"$TMP_DIR/curl-error")" || status=$?
+    if [[ "$status" == 0 ]]; then
+      return 0
+    fi
+    rm -f "$dest"
+    [[ "$code" != "404" ]] || return 1
+    cat "$TMP_DIR/curl-error" >&2
+    echo "Could not download $url" >&2
+    exit 1
+  elif command -v wget >/dev/null 2>&1; then
+    local status=0
+    wget -S -O "$dest" "$url" 2>"$TMP_DIR/wget-response" || status=$?
+    if [[ "$status" == 0 ]]; then
+      return 0
+    fi
+    rm -f "$dest"
+    [[ "$(last_http_status "$TMP_DIR/wget-response")" != "404" ]] || return 1
+    printf '%s\n' "$(<"$TMP_DIR/wget-response")" >&2
+    echo "Could not download $url" >&2
+    exit 1
+  else
+    echo "curl or wget is required to install nteract." >&2
+    exit 1
+  fi
+}
+
+# A tag the installer can bind the signature to: GitHub's latest release is
+# resolved once, so every asset comes from that one release.
+resolve_latest_tag() {
+  local url="https://github.com/$REPO/releases/latest"
+  local effective=""
+  if command -v curl >/dev/null 2>&1; then
+    effective="$(curl --fail --location --silent --show-error --output /dev/null \
+      --write-out '%{url_effective}' "$url")" || effective=""
+  elif command -v wget >/dev/null 2>&1; then
+    # Follow the redirect and keep the last Location header that names a tag.
+    # wget's exit status is ignored: the headers decide.
+    wget -S --spider "$url" >"$TMP_DIR/wget-latest" 2>&1 || true
+    local line pattern='[Ll]ocation: *([^[:space:]]*/releases/tag/[^[:space:]]+)'
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" =~ $pattern ]]; then
+        effective="${BASH_REMATCH[1]}"
+      fi
+    done < "$TMP_DIR/wget-latest"
+  fi
+  local tag="${effective##*/releases/tag/}"
+  if [[ -z "$effective" || "$tag" == "$effective" || -z "$tag" || "$tag" == */* ]]; then
+    echo "Could not resolve the latest release of $REPO. Pass --tag <tag>." >&2
+    exit 1
+  fi
+  printf '%s' "$tag"
+}
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    echo "sha256sum or shasum is required to check this release's SHA256SUMS." >&2
+    exit 1
+  fi
+}
+
+# Check the signature on SHA256SUMS, then every fetched asset against it.
+# Runs before any file is installed.
+verify_downloads() {
+  local sums="$TMP_DIR/SHA256SUMS"
+  local sig="$sums.minisig"
+  if ! fetch_optional SHA256SUMS "$sums"; then
+    if [[ "$REQUIRE_SIGNATURE" == "1" ]]; then
+      echo "This release has no SHA256SUMS; --require-signature cannot be met." >&2
+      exit 1
+    fi
+    echo "Warning: this release has no SHA256SUMS; downloads were not checked." >&2
+    return 0
+  fi
+
+  local has_sig=0 has_minisign=0
+  if fetch_optional SHA256SUMS.minisig "$sig"; then
+    has_sig=1
+  fi
+  if command -v minisign >/dev/null 2>&1; then
+    has_minisign=1
+  fi
+
+  if [[ "$has_sig" == "1" && "$has_minisign" == "1" ]]; then
+    if [[ -z "$EXPECTED_TAG" && "$REQUIRE_SIGNATURE" == "1" ]]; then
+      echo "No release tag is known for --from-dir, so the signature cannot be bound to a release." >&2
+      echo "Use the install-linux-release asset from the same release." >&2
+      exit 1
+    fi
+    local comment="" key verified=0
+    local keys=("${NTERACT_STABLE_RELEASE_KEYS[@]}")
+    [[ "$CHANNEL" != "nightly" ]] || keys=("${NTERACT_NIGHTLY_RELEASE_KEYS[@]}")
+    for key in "${keys[@]}"; do
+      if comment="$(minisign -V -m "$sums" -x "$sig" -P "$key" -Q 2>/dev/null)"; then
+        verified=1
+        break
+      fi
+    done
+    if [[ "$verified" != "1" ]]; then
+      echo "SHA256SUMS signature does not verify against any nteract $CHANNEL release key. Not installing." >&2
+      exit 1
+    fi
+    if [[ -n "$EXPECTED_TAG" ]]; then
+      if [[ "$comment" != "nteract release $EXPECTED_TAG" ]]; then
+        echo "SHA256SUMS is signed for '$comment', not 'nteract release $EXPECTED_TAG'. Not installing." >&2
+        exit 1
+      fi
+      echo "Verified SHA256SUMS signature for $EXPECTED_TAG"
+    else
+      echo "Note: SHA256SUMS signature verified ('$comment'); no tag is known for --from-dir, so the tag was not matched." >&2
+    fi
+  elif [[ "$REQUIRE_SIGNATURE" == "1" ]]; then
+    if [[ "$has_sig" == "0" ]]; then
+      echo "This release has no SHA256SUMS.minisig; --require-signature cannot be met." >&2
+    else
+      echo "minisign is not on PATH; --require-signature cannot be met." >&2
+    fi
+    exit 1
+  elif [[ "$has_sig" == "0" ]]; then
+    echo "Note: this release has no SHA256SUMS.minisig; the signature was not checked." >&2
+  else
+    echo "Note: minisign is not on PATH; the signature was not checked. Install minisign to check it; --require-signature makes it mandatory." >&2
+  fi
+
+  local i asset expected actual
+  for i in "${!FETCHED_ASSETS[@]}"; do
+    asset="${FETCHED_ASSETS[$i]}"
+    expected="$(awk -v name="$asset" '$2 == name || $2 == "*" name { print $1; n++ } END { if (n != 1) exit 1 }' "$sums")" || {
+      echo "SHA256SUMS has no single entry for $asset. Not installing." >&2
+      exit 1
+    }
+    actual="$(sha256_of "${FETCHED_PATHS[$i]}")"
+    if [[ "$actual" != "$expected" ]]; then
+      echo "SHA-256 mismatch for $asset: expected $expected, got $actual. Not installing." >&2
+      exit 1
+    fi
+  done
+  echo "Checked ${#FETCHED_ASSETS[@]} downloads against SHA256SUMS"
 }
 
 atomic_install() {
@@ -318,6 +533,15 @@ install_app_bundle() {
   echo "Installed $APP_DEST"
 }
 
+if [[ -n "$FROM_DIR" ]]; then
+  # A release's own installer carries its tag; a checkout's copy knows none.
+  EXPECTED_TAG=""
+  [[ "$CHANNEL" != "$DEFAULT_CHANNEL" ]] || EXPECTED_TAG="$DEFAULT_TAG"
+else
+  [[ -n "$TAG" ]] || TAG="$(resolve_latest_tag)"
+  EXPECTED_TAG="$TAG"
+fi
+
 mkdir -p "$PREFIX" "$BIN_DIR"
 PREFIX="$(cd "$PREFIX" && pwd -L)"
 BIN_DIR="$(cd "$BIN_DIR" && pwd -L)"
@@ -334,6 +558,7 @@ if [[ "$OS" == "linux" ]]; then
   fetch_asset "$GLOBAL_CLI_ASSET" "$TMP_DIR/nteract-cli"
   fetch_asset "$DAEMON_ASSET" "$TMP_DIR/$DAEMON_NAME"
   fetch_asset "$MCP_ASSET" "$TMP_DIR/$MCP_NAME"
+  verify_downloads
 
   if [[ "$HEADLESS" == "0" ]]; then
     atomic_install "$TMP_DIR/$APPIMAGE_ASSET" "$APPIMAGE_DEST"
@@ -354,6 +579,7 @@ else
   # candidates look; headless installs keep it under the prefix so a
   # workstation box never grows an Applications entry.
   fetch_asset "$BUNDLE_ASSET" "$TMP_DIR/$BUNDLE_ASSET"
+  verify_downloads
   if [[ "$HEADLESS" == "0" ]]; then
     # ~/Applications, not /Applications: the whole install is per-user by
     # design (per-user daemon service, per-user bin links), and the
