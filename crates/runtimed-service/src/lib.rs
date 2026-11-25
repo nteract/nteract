@@ -158,9 +158,20 @@ enum ServiceConfigMode {
 }
 
 impl ServiceConfigMode {
-    #[cfg(any(target_os = "linux", test))]
+    #[cfg(any(target_os = "linux", target_os = "macos", test))]
     fn should_register(self) -> bool {
         matches!(self, Self::Register)
+    }
+
+    /// Whether to also register the bundled launch agent with SMAppService.
+    ///
+    /// Registering loads the in-bundle agent, and its `RunAtLoad` key starts
+    /// the daemon right away. Staging modes promise not to start the daemon,
+    /// so they never register, and `bundle_eligible` is not consulted. The
+    /// next install or upgrade in `Register` mode adds the Login Item.
+    #[cfg(any(target_os = "macos", test))]
+    fn should_register_login_item(self, bundle_eligible: impl FnOnce() -> bool) -> bool {
+        self.should_register() && bundle_eligible()
     }
 }
 
@@ -322,7 +333,9 @@ impl ServiceManager {
     ///
     /// Used by `runt daemon doctor --fix --no-start` and packaging smoke tests
     /// that need to verify the durable binary and service definition from a
-    /// headless container where Linux user systemd is unavailable.
+    /// headless container where Linux user systemd is unavailable. On macOS
+    /// this writes the legacy plist but skips SMAppService registration,
+    /// which would launch the daemon.
     pub fn install_no_start(&mut self, source_binary: &PathBuf) -> ServiceResult<()> {
         self.install_inner(source_binary, ServiceConfigMode::StageOnly)
     }
@@ -359,7 +372,7 @@ impl ServiceManager {
         // or the plist isn't in the bundle yet, we skip it silently.
         // The legacy plist above is always the fallback.
         #[cfg(target_os = "macos")]
-        if should_use_smappservice(source_binary) {
+        if config_mode.should_register_login_item(|| should_use_smappservice(source_binary)) {
             match smappservice_register() {
                 Ok(()) => info!("[service] Also registered via SMAppService (Login Items)"),
                 Err(e) => info!(
@@ -504,7 +517,8 @@ impl ServiceManager {
     /// post-install hook uses this so spawning the daemon during installation
     /// does not trap a long-running process in the installer's Job Object. On
     /// Linux, packaging smoke tests use it to stage the service definition in
-    /// headless sessions where user systemd is unavailable.
+    /// headless sessions where user systemd is unavailable. On macOS it skips
+    /// SMAppService re-registration, which would launch the daemon.
     pub fn upgrade_no_start(&mut self, source_binary: &PathBuf) -> ServiceResult<()> {
         self.upgrade_inner(source_binary, false)
     }
@@ -538,9 +552,10 @@ impl ServiceManager {
         self.create_service_config(config_mode)?;
         info!("[service] Updated service config");
 
-        // macOS 13+: Re-register via SMAppService (best-effort)
+        // macOS 13+: Re-register via SMAppService (best-effort). A no-start
+        // upgrade leaves the existing registration alone.
         #[cfg(target_os = "macos")]
-        if should_use_smappservice(source_binary) {
+        if config_mode.should_register_login_item(|| should_use_smappservice(source_binary)) {
             match smappservice_register() {
                 Ok(()) => info!("[service] Re-registered via SMAppService"),
                 Err(e) => info!("[service] SMAppService re-registration skipped ({})", e),
@@ -1356,6 +1371,18 @@ mod tests {
             .contains("ExecStart=/tmp/runt-home/.local/share/runt-nightly/bin/runtimed-nightly"));
         assert!(content.contains("Environment=HOME=/tmp/runt-home"));
         assert!(content.contains("WantedBy=default.target"));
+    }
+
+    #[test]
+    fn stage_only_never_registers_login_item() {
+        assert!(!ServiceConfigMode::StageOnly
+            .should_register_login_item(|| panic!("staging must not probe the bundle")));
+    }
+
+    #[test]
+    fn register_mode_registers_login_item_only_for_eligible_bundle() {
+        assert!(ServiceConfigMode::Register.should_register_login_item(|| true));
+        assert!(!ServiceConfigMode::Register.should_register_login_item(|| false));
     }
 
     #[test]
