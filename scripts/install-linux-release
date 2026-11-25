@@ -166,6 +166,10 @@ APPLICATIONS_DIR=""
 # The fixture tests point this at a sandbox so they never touch the host's
 # /Applications. App lookup only searches the real one.
 SYSTEM_APPLICATIONS_DIR="${NTERACT_SYSTEM_APPLICATIONS_DIR:-/Applications}"
+# Where a legacy command link into an app bundle may live, and the plist reader
+# macOS ships. The fixture tests override both.
+SYSTEM_BIN_DIR="${NTERACT_SYSTEM_BIN_DIR:-/usr/local/bin}"
+PLIST_BUDDY="${NTERACT_PLIST_BUDDY:-/usr/libexec/PlistBuddy}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -293,6 +297,8 @@ fi
 # One macOS bundle carries the app and the runt/runtimed/nteract-mcp sidecars
 # in Contents/MacOS; there are no standalone darwin daemon/mcp assets.
 BUNDLE_ASSET="nteract-$CHANNEL-darwin-$ARCH.app.tar.gz"
+BUNDLE_ID="org.nteract.desktop"
+[[ "$CHANNEL" != "nightly" ]] || BUNDLE_ID="org.nteract.desktop.nightly"
 
 APPIMAGE_DEST="$PREFIX/$APPIMAGE_NAME.AppImage"
 SIDE_BIN_DIR="$PREFIX/bin"
@@ -546,8 +552,26 @@ install_app_bundle() {
   APP_BASENAME="$(basename "$app_src")"
   APP_DEST="$dest_dir/$APP_BASENAME"
 
+  # Everything that can refuse the install runs before the destination changes.
+  local sidecar
+  for sidecar in runt runtimed nteract-mcp nteract-cli; do
+    if [[ ! -x "$app_src/Contents/MacOS/$sidecar" ]]; then
+      echo "Bundle is missing expected sidecar: Contents/MacOS/$sidecar in $archive" >&2
+      exit 1
+    fi
+  done
+
+  # The default destination is shared by every account, and nothing says the
+  # user meant to replace whatever has this name there.
+  if [[ "$DEFAULT_APPLICATIONS_DIR" == "1" && ( -e "$APP_DEST" || -L "$APP_DEST" ) ]] &&
+     [[ "$(bundle_identifier_of "$APP_DEST")" != "$BUNDLE_ID" ]]; then
+    echo "Cannot replace $APP_DEST: it is not a $BUNDLE_ID app. It is unchanged." >&2
+    echo "Move it out of the way and run the installer again, or pass --applications-dir." >&2
+    exit 1
+  fi
+
   # A bundle another account or a package installed can sit in a directory
-  # this user may write. Refuse before touching it.
+  # this user may write.
   local part
   for part in "$APP_DEST" "$APP_DEST/Contents" "$APP_DEST/Contents/MacOS"; do
     if [[ -e "$part" && ! -w "$part" ]]; then
@@ -556,34 +580,50 @@ install_app_bundle() {
     fi
   done
 
-  # Set the old bundle aside before the new one moves in, so a refused rename
-  # leaves a working app behind.
-  rm -rf "$APP_DEST.new" "$APP_DEST.old"
-  mv "$app_src" "$APP_DEST.new"
+  # Stage inside a directory this run creates, on the destination's volume.
+  # The existing bundle is renamed aside, so a refused rename leaves it whole.
+  local staging
+  staging="$(mktemp -d "$dest_dir/.nteract-install.XXXXXX")"
+  mv "$app_src" "$staging/new"
   if [[ -e "$APP_DEST" || -L "$APP_DEST" ]]; then
-    mv "$APP_DEST" "$APP_DEST.old"
+    if ! mv "$APP_DEST" "$staging/previous"; then
+      rm -rf "$staging"
+      echo "Could not replace $APP_DEST. The existing app is unchanged." >&2
+      exit 1
+    fi
   fi
-  if ! mv "$APP_DEST.new" "$APP_DEST"; then
-    [[ ! -e "$APP_DEST.old" ]] || mv "$APP_DEST.old" "$APP_DEST"
+  if ! mv "$staging/new" "$APP_DEST"; then
+    if [[ -e "$staging/previous" || -L "$staging/previous" ]] &&
+       ! mv "$staging/previous" "$APP_DEST"; then
+      echo "Could not install $APP_DEST. The previous app is at $staging/previous." >&2
+      exit 1
+    fi
+    rm -rf "$staging"
     echo "Could not install $APP_DEST." >&2
     exit 1
   fi
-  rm -rf "$APP_DEST.old" || echo "Warning: could not remove $APP_DEST.old." >&2
+  rm -rf "$staging" || echo "Warning: could not remove $staging." >&2
   echo "Installed $APP_DEST"
 }
 
-# CFBundleIdentifier from an XML Info.plist, which is what release bundles
-# carry. Prints nothing when it cannot be read.
+# The top-level CFBundleIdentifier of an app. Prints nothing when it cannot be
+# read.
 bundle_identifier_of() {
-  [[ -f "$1/Contents/Info.plist" ]] || return 0
-  tr -d '\r\n' < "$1/Contents/Info.plist" |
-    sed -n 's:.*<key>CFBundleIdentifier</key>[[:space:]]*<string>\([^<]*\)</string>.*:\1:p'
+  local plist="$1/Contents/Info.plist" identifier
+  [[ -f "$plist" ]] || return 0
+  if identifier="$("$PLIST_BUDDY" -c 'Print :CFBundleIdentifier' "$plist" 2>/dev/null)"; then
+    printf '%s' "$identifier"
+  fi
 }
 
-# Links into REPLACED_APP belong to this installation: the app there is being
+# Links into REPLACED_APPS belong to this installation: each app there is being
 # removed, or is already gone.
 points_into_replaced_app() {
-  [[ -n "$REPLACED_APP" && "$1" == "$REPLACED_APP/Contents/MacOS/"* ]]
+  local app
+  for app in ${REPLACED_APPS[@]+"${REPLACED_APPS[@]}"}; do
+    [[ "$1" != "$app/Contents/MacOS/"* ]] || return 0
+  done
+  return 1
 }
 
 if [[ -n "$FROM_DIR" ]]; then
@@ -640,38 +680,37 @@ else
   fi
 
   MACOS_BIN="$APP_DEST/Contents/MacOS"
-  for sidecar in runt runtimed nteract-mcp nteract-cli; do
-    if [[ ! -x "$MACOS_BIN/$sidecar" ]]; then
-      echo "Bundle is missing expected sidecar: $MACOS_BIN/$sidecar" >&2
-      exit 1
-    fi
-  done
-
   RUNT_BIN="$MACOS_BIN/runt"
   GLOBAL_CLI_BIN="$MACOS_BIN/nteract-cli"
   DAEMON_BIN="$MACOS_BIN/runtimed"
   MCP_BIN="$MACOS_BIN/nteract-mcp"
 fi
 
-# A default macOS install keeps one copy per channel, so it retires the one in
-# ~/Applications. Only a real directory with this channel's bundle identifier
-# qualifies; a symlink or the installed app reached by another path stays.
-REPLACED_APP=""
-OLD_APP=""
+# A default macOS install keeps one copy per channel, so it retires those in
+# ~/Applications. Only a real bundle in a real directory with this channel's
+# identifier qualifies. Anything reached through a symlink stays, as does the
+# installed app reached by another path.
+REPLACED_APPS=()
+OLD_APPS=()
 if [[ "$DEFAULT_APPLICATIONS_DIR" == "1" ]]; then
-  BUNDLE_ID="org.nteract.desktop"
-  [[ "$CHANNEL" != "nightly" ]] || BUNDLE_ID="org.nteract.desktop.nightly"
-  candidate="${HOME%/}/Applications/$APP_BASENAME"
-  if [[ ! -e "$candidate" && ! -L "$candidate" ]]; then
-    REPLACED_APP="$candidate"
-  elif [[ "$candidate" -ef "$APP_DEST" ]]; then
-    :
-  elif [[ ! -L "$candidate" && "$(bundle_identifier_of "$candidate")" == "$BUNDLE_ID" ]]; then
-    REPLACED_APP="$candidate"
-    OLD_APP="$candidate"
-  else
-    echo "Note: kept $candidate, which is not a plain $BUNDLE_ID app. If it is an old nteract copy, remove it yourself." >&2
-  fi
+  user_apps="${HOME%/}/Applications"
+  names=("$APP_BASENAME")
+  # Names older Nightly releases installed under; app lookup still finds them.
+  [[ "$CHANNEL" != "nightly" ]] || names+=("nteract-nightly.app" "nteract (Nightly).app")
+  for name in "${names[@]}"; do
+    candidate="$user_apps/$name"
+    if [[ ! -e "$candidate" && ! -L "$candidate" ]]; then
+      REPLACED_APPS+=("$candidate")
+    elif [[ "$candidate" -ef "$APP_DEST" ]]; then
+      :
+    elif [[ ! -L "$user_apps" && ! -L "$candidate" &&
+            "$(bundle_identifier_of "$candidate")" == "$BUNDLE_ID" ]]; then
+      REPLACED_APPS+=("$candidate")
+      OLD_APPS+=("$candidate")
+    else
+      echo "Note: kept $candidate. It is reached through a symlink or is not a $BUNDLE_ID app. If it is an old nteract copy, remove it yourself." >&2
+    fi
+  done
 fi
 
 # The app has its own command so CLI `open` cannot recurse into itself.
@@ -760,12 +799,24 @@ fi
 
 # Remove the old copy before doctor runs: when both copies are the same
 # version, doctor moves the daemon service only if its binary is gone.
-if [[ -n "$OLD_APP" ]]; then
-  if rm -rf "$OLD_APP"; then
-    echo "Removed the older copy at $OLD_APP"
+for old_app in ${OLD_APPS[@]+"${OLD_APPS[@]}"}; do
+  if rm -rf "$old_app"; then
+    echo "Removed the older copy at $old_app"
   else
-    echo "Warning: could not remove $OLD_APP. Remove it so only $APP_DEST remains." >&2
+    echo "Warning: could not remove $old_app. Remove it so only $APP_DEST remains." >&2
   fi
+done
+
+# Links this run does not manage, such as a system-wide command or one left
+# from another --bin-dir, are reported rather than changed.
+if [[ "$DEFAULT_APPLICATIONS_DIR" == "1" ]]; then
+  for link in "${HOME%/}/.local/bin"/* "$SYSTEM_BIN_DIR"/*; do
+    [[ -L "$link" && ! -e "$link" ]] || continue
+    link_target="$(readlink "$link")"
+    points_into_replaced_app "$link_target" || continue
+    echo "Warning: $link points into a removed app. Repoint it, with sudo if needed:" >&2
+    echo "  ln -sfn \"$APP_DEST/Contents/MacOS/${link_target##*/}\" \"$link\"" >&2
+  done
 fi
 
 # Avoid accidentally installing a per-worktree dev daemon when the installer is
