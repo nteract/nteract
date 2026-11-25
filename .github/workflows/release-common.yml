@@ -48,6 +48,16 @@ on:
         required: false
         type: string
         default: ""
+    # The callers publish to PyPI in a job of their own and need the release
+    # identity for it. Both are empty on a wheel-recovery run, which skips
+    # compute-version; the nightly caller skips its PyPI job on that run.
+    outputs:
+      version:
+        description: Release version without the leading v; empty when no release ran
+        value: ${{ jobs.compute-version.outputs.version }}
+      source_sha:
+        description: Commit the release was built from
+        value: ${{ jobs.compute-version.outputs.source_sha }}
 
 permissions:
   contents: write
@@ -1757,7 +1767,7 @@ jobs:
     # tracks stable only.
     name: Publish runtime-peer image
     runs-on: ubuntu-24.04
-    needs: [compute-version, prerelease, publish-pypi, image-runtime-peer-build]
+    needs: [compute-version, prerelease, image-runtime-peer-build]
     permissions:
       contents: read
       packages: write
@@ -1823,9 +1833,8 @@ jobs:
     if: inputs.publish_plugin_channel != ''
     runs-on: ubuntu-24.04
     # Publish only after every release build, smoke check, and the final
-    # source/tag check have passed and the release has been published,
-    # on GitHub and on PyPI.
-    needs: [compute-version, prerelease, publish-pypi]
+    # source/tag check have passed and the release has been published.
+    needs: [compute-version, prerelease]
     # Writes go to nteract/agent-plugins through CLAUDE_PLUGIN_DEPLOY_TOKEN,
     # not GITHUB_TOKEN, so this job needs only read on its own checkout.
     permissions:
@@ -2464,7 +2473,8 @@ jobs:
 
       # The updater channel moves as soon as the GitHub release is public and its
       # tag is confirmed. The desktop app bundles its daemon and installs nothing
-      # from PyPI, so desktop updates do not wait on the publish-pypi job.
+      # from PyPI. The callers upload the wheels in their own publish-pypi job,
+      # after this whole pipeline succeeds.
       - name: Update ${{ inputs.updater_channel_tag }} updater channel
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -2503,89 +2513,6 @@ jobs:
             --arg url "$RUN_URL" \
             '{embeds: [{title: $title, description: $description, url: $url, color: 3066993}]}' \
             | curl -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
-
-  # PyPI has its own job so that a failed upload is rerun alone. A rerun of
-  # `prerelease` replaces release assets and the updater manifest that desktop
-  # clients already read, so nothing that fails often belongs in that job.
-  #
-  # PyPI versions are irreversible. This job needs a successful `prerelease`:
-  # the GitHub release is public, its tag is confirmed and the updater channel
-  # has moved. A failure here holds back plugin and runtime-peer image
-  # publication, which need this job, and the npm, WASM and editor workflows,
-  # which need a successful run. Desktop users already have the update.
-  #
-  # Nightly publishes carry unique per-minute alpha versions
-  # (e.g. 2.2.1a202604150406). Stable publishes use the base version
-  # from crates/runt/Cargo.toml so the stable release promotes the same
-  # API users install without --pre, even if pyproject.toml was stale.
-  #
-  # PyPI matches the trusted publisher on job_workflow_ref, which names this
-  # file, plus the job environment. Moving this job to another workflow file
-  # requires a publisher registered for that file first.
-  #
-  # The upload carries no PEP 740 attestations. PyPI checks an attestation
-  # against workflow_ref, the caller workflow, and that never equals the
-  # publisher's file while this job runs in a reusable workflow. An
-  # attestation signed here is rejected along with its wheel. Provenance
-  # needs this job in the caller files.
-  publish-pypi:
-    environment: ${{ inputs.version_suffix == 'stable' && 'release-stable' || 'release-nightly' }}
-    name: Publish runtimed to PyPI
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    needs: [compute-version, prerelease]
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
-          persist-credentials: false
-
-      - name: Download Python wheels
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: wheels-*
-          path: ./wheels
-          merge-multiple: true
-
-      - name: Download release checksums
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: release-checksums
-          path: release-checksums
-
-      # The wheels PyPI receives are the wheels on the GitHub release: every
-      # wheel SHA256SUMS lists is here with that hash, and nothing else is. A
-      # `wheels-*` pattern alone would upload a partial set if an artifact had
-      # expired before a late rerun.
-      - name: Verify wheels against release checksums
-        run: |
-          grep '\.whl$' release-checksums/SHA256SUMS > "$RUNNER_TEMP/wheel-sums"
-          test -s "$RUNNER_TEMP/wheel-sums"
-          (cd wheels && sha256sum --check --strict "$RUNNER_TEMP/wheel-sums")
-          listed=$(wc -l < "$RUNNER_TEMP/wheel-sums")
-          present=$(find wheels -maxdepth 1 -type f -name '*.whl' | wc -l)
-          test "$listed" -eq "$present"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          enable-cache: false
-
-      # A rerun can start long after `prerelease` checked the tag.
-      - name: Verify release tag matches built source
-        env:
-          TAG_NAME: v${{ needs.compute-version.outputs.version }}
-          SOURCE_SHA: ${{ needs.compute-version.outputs.source_sha }}
-        run: bash scripts/ci/check-release-tag.sh "$TAG_NAME" "$SOURCE_SHA" --require
-
-      # --check-url takes the index root. uv skips a wheel the index already
-      # holds with the same hash, so a rerun uploads only what is missing.
-      - name: Publish runtimed to PyPI
-        run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/ ./wheels/*.whl
 
   # The three checksum jobs below are additive hardening. They run once the
   # GitHub release exists, even if a later prerelease step failed. Each has

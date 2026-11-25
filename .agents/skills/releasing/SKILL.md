@@ -59,7 +59,8 @@ Triggers `release-stable.yml` which:
 4. Creates GitHub Release with all artifacts
 5. Updates `stable-latest` Tauri updater channel
 6. Posts to Discord
-7. Publishes `runtimed` wheels to PyPI (stable) from its own job, `publish-pypi`
+7. Publishes agent plugins and the runtime-peer image
+8. Publishes `runtimed` wheels to PyPI (stable), with attestations, from the `publish-pypi` job in `release-stable.yml`
 
 ### Nightly Release
 
@@ -117,7 +118,7 @@ Desktop version: `{runt version}-{suffix}.{timestamp}` stamped into `tauri.conf.
 
 ### Trusted Publishing
 
-PyPI uses OIDC trusted publishing (no API tokens). The `runtimed` project has two trusted publishers. Both name the workflow `release-common.yml`, where the publish job is defined; one names environment `release-nightly`, the other `release-stable`. A publisher that names `release-nightly.yml` or `release-stable.yml` does not match.
+PyPI uses OIDC trusted publishing (no API tokens). The `publish-pypi` job is defined in `release-nightly.yml` and `release-stable.yml`, and the `runtimed` project has a trusted publisher for each: the workflow file with the environment of the same name (`release-nightly`, `release-stable`). The job cannot move into `release-common.yml`: PyPI matches the publisher on the file that defines the job and a wheel's attestation on the workflow that started the run, and only a job in the caller makes them agree.
 
 ## Pre-Release Checklist
 
