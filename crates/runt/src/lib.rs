@@ -4,6 +4,7 @@
 extern crate runtimed_client as runtimed;
 mod cloud_cli;
 mod doctor_readiness;
+mod doctor_version_repair;
 mod local_runtime;
 mod notebook_cli;
 mod workstation_cli;
@@ -3133,20 +3134,35 @@ async fn doctor_command(
         };
         let bundled_ver = bundled.as_ref().and_then(|p| get_binary_version(p));
 
-        // Fix version mismatch: installed binary differs from bundled app binary
-        // Common when a dev binary is accidentally left in the nightly install path.
-        // The +dirty marker is ignored — a dirty/clean rebuild at the same SHA
-        // shares committed source and shouldn't trigger an upgrade.
-        if binary_exists && config_exists {
-            if let (Some(inst), Some(bund), Some(bundled_path)) =
-                (&installed_ver, &bundled_ver, &bundled)
-            {
-                if !runtimed_client::versions_match_ignoring_dirty(inst, bund) {
-                    let result = if no_start {
-                        manager.upgrade_no_start(bundled_path)
-                    } else {
-                        manager.upgrade(bundled_path)
-                    };
+        // Fix version mismatch: the installed binary differs from the bundled
+        // one, or the running daemon differs from the binary it should run.
+        // Restarts go through `<binary> install`, the transactional service
+        // repair; see `doctor_version_repair` for the rules.
+        let running_ver = if daemon_state_status == "ok" {
+            daemon_info.map(|info| info.version.as_str())
+        } else {
+            None
+        };
+        let version_repair = if binary_exists && config_exists {
+            doctor_version_repair::decide_version_repair(
+                doctor_version_repair::VersionInputs {
+                    installed: installed_ver.as_deref(),
+                    running: running_ver,
+                    bundled: bundled_ver.as_deref(),
+                },
+                no_start,
+                runt_workspace::is_dev_mode(),
+            )
+        } else {
+            doctor_version_repair::VersionRepair::None
+        };
+        match version_repair {
+            doctor_version_repair::VersionRepair::None => {}
+            doctor_version_repair::VersionRepair::StageBundled => {
+                if let (Some(inst), Some(bund), Some(bundled_path)) =
+                    (&installed_ver, &bundled_ver, &bundled)
+                {
+                    let result = manager.upgrade_no_start(bundled_path);
                     launches.record(doctor_readiness::ServiceRepair::Upgrade, result.is_ok());
                     match result {
                         Ok(()) => {
@@ -3159,6 +3175,70 @@ async fn doctor_command(
                         }
                         Err(e) => {
                             eprintln!("Failed to upgrade daemon binary: {}", e);
+                        }
+                    }
+                }
+            }
+            doctor_version_repair::VersionRepair::HeldByNoStart => {
+                eprintln!(
+                    "Running daemon version differs from the installed binary; --no-start leaves it running. Restart the app or rerun '{command_name} daemon doctor --fix' without --no-start."
+                );
+            }
+            doctor_version_repair::VersionRepair::HeldByDevMode => {
+                eprintln!(
+                    "Dev mode: doctor does not restart the worktree daemon or touch the installed service. Restart the dev daemon with 'cargo xtask dev-daemon'."
+                );
+            }
+            doctor_version_repair::VersionRepair::Restart { source } => {
+                let source_path = match source {
+                    doctor_version_repair::RepairSource::Bundled => bundled.clone(),
+                    doctor_version_repair::RepairSource::Installed => Some(binary_path.clone()),
+                };
+                let target_ver = match source {
+                    doctor_version_repair::RepairSource::Bundled => bundled_ver.as_deref(),
+                    doctor_version_repair::RepairSource::Installed => installed_ver.as_deref(),
+                };
+                if let (Some(source_path), Some(target_ver)) = (source_path, target_ver) {
+                    let running_kernels = if daemon_running_before {
+                        count_running_kernels(client).await
+                    } else if running_ver.is_some() {
+                        Err("the daemon process is alive but did not answer a ping".to_string())
+                    } else {
+                        Ok(0)
+                    };
+                    let interactive = !json
+                        && std::io::IsTerminal::is_terminal(&std::io::stdin())
+                        && std::io::IsTerminal::is_terminal(&std::io::stderr());
+                    let proceed = match doctor_version_repair::restart_gate(
+                        running_kernels,
+                        interactive,
+                        command_name,
+                    ) {
+                        doctor_version_repair::RestartGate::Proceed => true,
+                        doctor_version_repair::RestartGate::Ask { running_kernels } => {
+                            confirm_kernel_restart(running_kernels)
+                        }
+                        doctor_version_repair::RestartGate::Refuse { reason } => {
+                            eprintln!("Daemon restart skipped: {reason}");
+                            false
+                        }
+                    };
+                    if proceed {
+                        let from = running_ver
+                            .or(installed_ver.as_deref())
+                            .unwrap_or("unknown");
+                        match run_service_repair(&source_path).await {
+                            Ok(()) => {
+                                actions_taken.push(format!(
+                                    "Restarted daemon: {} -> {} (clean shutdown, from {})",
+                                    from,
+                                    target_ver,
+                                    source_path.display()
+                                ));
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to restart daemon: {}", e);
+                            }
                         }
                     }
                 }
@@ -3493,6 +3573,55 @@ fn is_process_running(pid: u32) -> bool {
 
 /// Get the version from a runtimed binary by running `--version`.
 /// Returns e.g. `"2.0.0+a1b2c3d"` (crate version + commit hash).
+/// Count rooms with a live kernel on the daemon `client` talks to.
+async fn count_running_kernels(
+    client: &runtimed::client::PoolClient,
+) -> std::result::Result<usize, String> {
+    match tokio::time::timeout(Duration::from_secs(5), client.list_rooms()).await {
+        Ok(Ok(rooms)) => Ok(rooms.iter().filter(|room| room.has_kernel).count()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(_) => Err("room list timed out".to_string()),
+    }
+}
+
+/// Ask on stderr before a restart ends `running_kernels` kernels.
+fn confirm_kernel_restart(running_kernels: usize) -> bool {
+    use std::io::Write;
+    eprint!(
+        "Restarting the daemon will stop {running_kernels} running kernel(s). Notebook contents are kept. Restart now? [y/N] "
+    );
+    let _ = std::io::stderr().flush();
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return false;
+    }
+    input.trim().eq_ignore_ascii_case("y")
+}
+
+/// Run `<source> install`, the daemon's transactional service repair. It
+/// shuts the live daemon down cleanly, installs `source`, starts it, and exits
+/// zero only after the new daemon reports `source`'s own version.
+async fn run_service_repair(source: &Path) -> Result<()> {
+    let output = tokio::process::Command::new(source)
+        .arg("install")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("could not run {} install: {e}", source.display()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let tail: Vec<&str> = stderr.lines().rev().take(5).collect();
+    let tail: Vec<&str> = tail.into_iter().rev().collect();
+    Err(anyhow::anyhow!(
+        "{} install exited with {}: {}",
+        source.display(),
+        output.status,
+        tail.join(" | ")
+    ))
+}
+
 fn get_binary_version(path: &Path) -> Option<String> {
     let output = std::process::Command::new(path)
         .arg("--version")
