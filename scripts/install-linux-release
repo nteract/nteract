@@ -10,7 +10,8 @@
 # Linux installs the AppImage plus runt/runtimed/nteract-mcp sidecars into a
 # durable per-user directory and links commands into ~/.local/bin. macOS
 # installs the signed .app bundle (which carries the same sidecars in
-# Contents/MacOS) into ~/Applications and links the commands from there.
+# Contents/MacOS) into /Applications, where the DMG puts it, and links the
+# commands from there. The commands and daemon service stay per-user.
 # Desktop installs repair/install the per-user daemon service with
 # `nteract daemon doctor --fix` (systemd on Linux, launchd on macOS) and start
 # it by default. CLI-only installs leave runtime services alone.
@@ -49,8 +50,9 @@ Options:
                        See docs/runbooks/remote-workstation.md.
   --applications-dir <dir>
                        macOS only: where the .app bundle is installed
-                       (default: ~/Applications — the install is per-user
-                       by design, like the daemon service).
+                       (default: /Applications, like the DMG). The default
+                       also removes this channel's copy from ~/Applications;
+                       with this option no other copy is removed.
   --no-start           Install/repair the daemon service but do not start it.
                        Applies to desktop installs only.
   --default-cli        Select this installation for the shared nteract command.
@@ -69,7 +71,7 @@ Installs, for stable on Linux (<arch> is x64 or arm64):
   nteract-mcp-linux-<arch>             -> <prefix>/bin/nteract-mcp
 
 For stable on macOS (arm64/x64), one bundle carries app and sidecars:
-  nteract-stable-darwin-<arch>.app.tar.gz -> ~/Applications/nteract.app
+  nteract-stable-darwin-<arch>.app.tar.gz -> /Applications/nteract.app
   (--headless keeps the bundle under <prefix> instead and skips
    Applications entirely; commands link to <bundle>/Contents/MacOS)
 
@@ -160,7 +162,14 @@ esac
 XDG_DATA_HOME_DEFAULT="${XDG_DATA_HOME:-$HOME/.local/share}"
 PREFIX=""
 BIN_DIR="$HOME/.local/bin"
-APPLICATIONS_DIR="$HOME/Applications"
+APPLICATIONS_DIR=""
+# The fixture tests point this at a sandbox so they never touch the host's
+# /Applications. App lookup only searches the real one.
+SYSTEM_APPLICATIONS_DIR="${NTERACT_SYSTEM_APPLICATIONS_DIR:-/Applications}"
+# Where a legacy command link into an app bundle may live, and the plist reader
+# macOS ships. The fixture tests override both.
+SYSTEM_BIN_DIR="${NTERACT_SYSTEM_BIN_DIR:-/usr/local/bin}"
+PLIST_BUDDY="${NTERACT_PLIST_BUDDY:-/usr/libexec/PlistBuddy}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -244,6 +253,21 @@ if [[ "$CHANNEL" == "nightly" && -z "$TAG" && -z "$FROM_DIR" ]]; then
   exit 2
 fi
 
+# A macOS desktop install without --applications-dir targets the DMG's
+# location. There is no fallback directory: a second location is how two
+# copies of one app come to exist.
+DEFAULT_APPLICATIONS_DIR=0
+if [[ "$OS" == "darwin" && "$HEADLESS" == "0" && -z "$APPLICATIONS_DIR" ]]; then
+  DEFAULT_APPLICATIONS_DIR=1
+  APPLICATIONS_DIR="$SYSTEM_APPLICATIONS_DIR"
+  if [[ ! -d "$APPLICATIONS_DIR" || ! -w "$APPLICATIONS_DIR" ]]; then
+    echo "This account cannot write to $APPLICATIONS_DIR. Nothing was installed." >&2
+    echo "Install the DMG with an administrator account, or install a copy for this user only:" >&2
+    echo "  --applications-dir \"$HOME/Applications\"" >&2
+    exit 1
+  fi
+fi
+
 if [[ -z "$PREFIX" ]]; then
   PREFIX="$XDG_DATA_HOME_DEFAULT/nteract/$CHANNEL"
 fi
@@ -273,11 +297,26 @@ fi
 # One macOS bundle carries the app and the runt/runtimed/nteract-mcp sidecars
 # in Contents/MacOS; there are no standalone darwin daemon/mcp assets.
 BUNDLE_ASSET="nteract-$CHANNEL-darwin-$ARCH.app.tar.gz"
+BUNDLE_ID="org.nteract.desktop"
+[[ "$CHANNEL" != "nightly" ]] || BUNDLE_ID="org.nteract.desktop.nightly"
 
 APPIMAGE_DEST="$PREFIX/$APPIMAGE_NAME.AppImage"
 SIDE_BIN_DIR="$PREFIX/bin"
 TMP_DIR="$(mktemp -d)"
-cleanup() { rm -rf "$TMP_DIR"; }
+APP_DEST=""
+SWAP_STAGING=""
+cleanup() {
+  # An interrupted app swap leaves the previous bundle in its staging
+  # directory. Put it back; keep the directory if that fails.
+  if [[ -n "$SWAP_STAGING" ]]; then
+    local previous="$SWAP_STAGING/previous"
+    if [[ ( -e "$previous" || -L "$previous" ) && ! -e "$APP_DEST" && ! -L "$APP_DEST" ]]; then
+      mv "$previous" "$APP_DEST" || true
+    fi
+    [[ -e "$previous" || -L "$previous" ]] || rm -rf "$SWAP_STAGING"
+  fi
+  rm -rf "$TMP_DIR"
+}
 trap cleanup EXIT
 
 base_url() {
@@ -526,11 +565,92 @@ install_app_bundle() {
   APP_BASENAME="$(basename "$app_src")"
   APP_DEST="$dest_dir/$APP_BASENAME"
 
-  rm -rf "$APP_DEST.new"
-  mv "$app_src" "$APP_DEST.new"
-  rm -rf "$APP_DEST"
-  mv "$APP_DEST.new" "$APP_DEST"
+  # Everything that can refuse the install runs before the destination changes.
+  # `notebook` is the desktop app; the rest are its sidecars.
+  local executable
+  for executable in notebook runt runtimed nteract-mcp nteract-cli; do
+    if [[ ! -x "$app_src/Contents/MacOS/$executable" ]]; then
+      echo "Bundle is missing expected executable: Contents/MacOS/$executable in $archive" >&2
+      exit 1
+    fi
+  done
+
+  # A default install replaces the shared app and removes older copies, so the
+  # incoming bundle must be this channel's app.
+  if [[ "$DEFAULT_APPLICATIONS_DIR" == "1" ]]; then
+    if [[ "$(bundle_identifier_of "$app_src")" != "$BUNDLE_ID" ]]; then
+      echo "The app in $archive is not a $BUNDLE_ID app. Nothing was replaced." >&2
+      exit 1
+    fi
+    # Other accounts run the shared app, whatever this shell's umask is.
+    chmod -R a+rX "$app_src"
+  fi
+
+  # The default destination is shared by every account, and nothing says the
+  # user meant to replace whatever has this name there.
+  if [[ "$DEFAULT_APPLICATIONS_DIR" == "1" && ( -e "$APP_DEST" || -L "$APP_DEST" ) ]] &&
+     [[ -L "$APP_DEST" || "$(bundle_identifier_of "$APP_DEST")" != "$BUNDLE_ID" ]]; then
+    echo "Cannot replace $APP_DEST: it is a symlink or is not a $BUNDLE_ID app. It is unchanged." >&2
+    echo "Move it out of the way and run the installer again, or pass --applications-dir." >&2
+    exit 1
+  fi
+
+  # A bundle another account or a package installed can sit in a directory
+  # this user may write.
+  local part
+  for part in "$APP_DEST" "$APP_DEST/Contents" "$APP_DEST/Contents/MacOS"; do
+    if [[ -e "$part" && ! -w "$part" ]]; then
+      echo "Cannot replace $APP_DEST: this account cannot write to $part. The existing app is unchanged." >&2
+      exit 1
+    fi
+  done
+
+  # Stage inside a directory this run creates, on the destination's volume.
+  # The existing bundle is renamed aside, so a refused rename leaves it whole.
+  local staging
+  staging="$(mktemp -d "$dest_dir/.nteract-install.XXXXXX")"
+  SWAP_STAGING="$staging"
+  mv "$app_src" "$staging/new"
+  if [[ -e "$APP_DEST" || -L "$APP_DEST" ]]; then
+    if ! mv "$APP_DEST" "$staging/previous"; then
+      rm -rf "$staging"
+      echo "Could not replace $APP_DEST. The existing app is unchanged." >&2
+      exit 1
+    fi
+  fi
+  if ! mv "$staging/new" "$APP_DEST"; then
+    if [[ -e "$staging/previous" || -L "$staging/previous" ]] &&
+       ! mv "$staging/previous" "$APP_DEST"; then
+      echo "Could not install $APP_DEST. The previous app is at $staging/previous." >&2
+      exit 1
+    fi
+    rm -rf "$staging"
+    echo "Could not install $APP_DEST." >&2
+    exit 1
+  fi
+  SWAP_STAGING=""
+  rm -rf "$staging" || echo "Warning: could not remove $staging." >&2
   echo "Installed $APP_DEST"
+}
+
+# The top-level CFBundleIdentifier of an app. Prints nothing when it cannot be
+# read.
+bundle_identifier_of() {
+  local plist="$1/Contents/Info.plist" identifier
+  [[ -f "$plist" ]] || return 0
+  if identifier="$("$PLIST_BUDDY" -c 'Print :CFBundleIdentifier' "$plist" 2>/dev/null)"; then
+    printf '%s' "$identifier"
+  fi
+}
+
+# Links into REPLACED_APPS belong to this installation: each app there is being
+# removed, or is already gone.
+points_into_replaced_app() {
+  local app
+  for app in ${REPLACED_APPS[@]+"${REPLACED_APPS[@]}"}; do
+    [[ "$1" != "$app/Contents/MacOS/"* ]] || return 0
+  done
+  return 1
 }
 
 if [[ -n "$FROM_DIR" ]]; then
@@ -575,32 +695,49 @@ if [[ "$OS" == "linux" ]]; then
 else
   # macOS: the signed .app bundle is the only artifact; it carries the
   # runt/runtimed/nteract-mcp sidecars in Contents/MacOS. Desktop installs
-  # place it where Finder, Spotlight, and the channel's app-launch
-  # candidates look; headless installs keep it under the prefix so a
-  # workstation box never grows an Applications entry.
+  # place it in an Applications directory, where Finder, Spotlight, and the
+  # channel's app-launch candidates look; headless installs keep it under the
+  # prefix so a workstation box never grows an Applications entry.
   fetch_asset "$BUNDLE_ASSET" "$TMP_DIR/$BUNDLE_ASSET"
   verify_downloads
   if [[ "$HEADLESS" == "0" ]]; then
-    # ~/Applications, not /Applications: the whole install is per-user by
-    # design (per-user daemon service, per-user bin links), and the
-    # channel's app-launch candidates search ~/Applications too.
     install_app_bundle "$TMP_DIR/$BUNDLE_ASSET" "$APPLICATIONS_DIR"
   else
     install_app_bundle "$TMP_DIR/$BUNDLE_ASSET" "$PREFIX"
   fi
 
   MACOS_BIN="$APP_DEST/Contents/MacOS"
-  for sidecar in runt runtimed nteract-mcp nteract-cli; do
-    if [[ ! -x "$MACOS_BIN/$sidecar" ]]; then
-      echo "Bundle is missing expected sidecar: $MACOS_BIN/$sidecar" >&2
-      exit 1
-    fi
-  done
-
   RUNT_BIN="$MACOS_BIN/runt"
   GLOBAL_CLI_BIN="$MACOS_BIN/nteract-cli"
   DAEMON_BIN="$MACOS_BIN/runtimed"
   MCP_BIN="$MACOS_BIN/nteract-mcp"
+fi
+
+# A default macOS install keeps one copy per channel, so it retires those in
+# ~/Applications. Only a real bundle in a real directory with this channel's
+# identifier qualifies. Anything reached through a symlink stays, as does the
+# installed app reached by another path.
+REPLACED_APPS=()
+OLD_APPS=()
+if [[ "$DEFAULT_APPLICATIONS_DIR" == "1" ]]; then
+  user_apps="${HOME%/}/Applications"
+  names=("$APP_BASENAME")
+  # Names older Nightly releases installed under; app lookup still finds them.
+  [[ "$CHANNEL" != "nightly" ]] || names+=("nteract-nightly.app" "nteract (Nightly).app")
+  for name in "${names[@]}"; do
+    candidate="$user_apps/$name"
+    if [[ ! -e "$candidate" && ! -L "$candidate" ]]; then
+      REPLACED_APPS+=("$candidate")
+    elif [[ "$candidate" -ef "$APP_DEST" ]]; then
+      :
+    elif [[ ! -L "$user_apps" && ! -L "$candidate" &&
+            "$(bundle_identifier_of "$candidate")" == "$BUNDLE_ID" ]]; then
+      REPLACED_APPS+=("$candidate")
+      OLD_APPS+=("$candidate")
+    else
+      echo "Note: kept $candidate. It is reached through a symlink or is not a $BUNDLE_ID app. If it is an old nteract copy, remove it yourself." >&2
+    fi
+  done
 fi
 
 # The app has its own command so CLI `open` cannot recurse into itself.
@@ -636,6 +773,8 @@ if [[ ! -e "$GLOBAL_CLI_LINK" && ! -L "$GLOBAL_CLI_LINK" ]]; then
   select_cli=1
 elif [[ -n "$current_target" && "$current_target" == "$GLOBAL_CLI_BIN" ]]; then
   select_cli=1
+elif points_into_replaced_app "$current_target"; then
+  select_cli=1
 elif [[ "$OS" == "linux" && "$CHANNEL" == "stable" && "$current_target" == "$APPIMAGE_DEST" ]]; then
   # Migrate only the exact legacy stable AppImage alias owned by this prefix.
   select_cli=1
@@ -666,7 +805,8 @@ install_compatibility_link() {
   [[ ! -L "$link" ]] || current="$(readlink "$link")"
   if [[ -e "$link" || -L "$link" ]]; then
     if [[ -z "$current" ]] ||
-       [[ "$current" != "$target" && ( -z "$previous" || "$current" != "$previous" ) ]]; then
+       { [[ "$current" != "$target" && ( -z "$previous" || "$current" != "$previous" ) ]] &&
+         ! points_into_replaced_app "$current"; }; then
       echo "Preserved existing $link. Installed backend available at $target." >&2
       return
     fi
@@ -684,6 +824,34 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   echo "Note: $BIN_DIR is not on PATH for this shell. Add it to use the nteract command directly." >&2
 fi
 
+# Remove the old copy before doctor runs: when both copies are the same
+# version, doctor moves the daemon service only if its binary is gone.
+for old_app in ${OLD_APPS[@]+"${OLD_APPS[@]}"}; do
+  if rm -rf "$old_app"; then
+    echo "Removed the older copy at $old_app"
+  else
+    echo "Warning: could not remove $old_app. Remove it so only $APP_DEST remains." >&2
+  fi
+done
+
+# Links this run does not manage, such as a system-wide command or one left
+# from another --bin-dir, are reported rather than changed.
+if [[ "$DEFAULT_APPLICATIONS_DIR" == "1" ]]; then
+  IFS=: read -r -a path_dirs <<< "$PATH"
+  scanned=":"
+  for link_dir in "${HOME%/}/.local/bin" "$SYSTEM_BIN_DIR" ${path_dirs[@]+"${path_dirs[@]}"}; do
+    [[ -n "$link_dir" && "$scanned" != *":$link_dir:"* ]] || continue
+    scanned="$scanned$link_dir:"
+    for link in "$link_dir"/*; do
+      [[ -L "$link" && ! -e "$link" ]] || continue
+      link_target="$(readlink "$link")"
+      points_into_replaced_app "$link_target" || continue
+      echo "Warning: $link points into a removed app. Repoint it, with sudo if needed:" >&2
+      echo "  ln -sfn \"$APP_DEST/Contents/MacOS/${link_target##*/}\" \"$link\"" >&2
+    done
+  done
+fi
+
 # Avoid accidentally installing a per-worktree dev daemon when the installer is
 # run from a checkout with RUNTIMED_DEV set (common for contributors/agents).
 RUNT_DIR="$(dirname "$RUNT_BIN")"
@@ -695,6 +863,21 @@ if [[ "$HEADLESS" == "0" ]]; then
   echo "Repairing daemon service with $RUNT_BIN ${DOCTOR_ARGS[*]}"
   env -u RUNTIMED_DEV -u RUNTIMED_WORKSPACE_PATH PATH="$RUNT_DIR:$BIN_DIR:$PATH" \
     "$RUNT_BIN" "${DOCTOR_ARGS[@]}"
+
+  # doctor reports a failed repair but exits 0, so check the one outcome that
+  # would leave the service launching a removed binary.
+  if [[ "$DEFAULT_APPLICATIONS_DIR" == "1" ]]; then
+    launch_label="io.nteract.runtimed"
+    [[ "$CHANNEL" != "nightly" ]] || launch_label="io.nteract.runtimed.nightly"
+    launch_agent="${HOME%/}/Library/LaunchAgents/$launch_label.plist"
+    for replaced in ${REPLACED_APPS[@]+"${REPLACED_APPS[@]}"}; do
+      if [[ -f "$launch_agent" ]] && grep -qF "<string>$replaced/Contents/MacOS/" "$launch_agent"; then
+        echo "The daemon service in $launch_agent still points into $replaced, which was removed." >&2
+        echo "Make that file writable, then run: \"$RUNT_BIN\" daemon doctor --fix" >&2
+        exit 1
+      fi
+    done
+  fi
 fi
 
 echo
