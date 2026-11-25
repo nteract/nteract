@@ -81,6 +81,14 @@ AppImage or signed .app bundle, CLI/daemon, and per-user service
 curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash
 ```
 
+On macOS the app goes in `/Applications`. The installer also removes the same
+channel's app from `~/Applications`, so only one copy remains. If your account
+cannot write to `/Applications`, pass a directory of your own:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --applications-dir "$HOME/Applications"
+```
+
 macOS users can equally drag the DMG from GitHub Releases. DEB/RPM/APT
 installs are not currently supported because `runtimed` is a per-user daemon
 managed by the app and CLI, not by system package-manager scripts.
