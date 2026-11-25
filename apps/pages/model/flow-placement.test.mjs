@@ -140,3 +140,56 @@ test("with blocks deleted, a batch's appends make one new block and fill it", ()
   assert.equal(keys.length, 1);
   assert.equal(all(after), "One\n\nTwo");
 });
+
+test("an append never lands in a block a later operation deletes or rewrites", () => {
+  const doc = page("Old body");
+  const block = blockAddress(doc, KEY);
+  for (const operations of [
+    [
+      { op: "insert_markdown", markdown: "Kept" },
+      { op: "delete_block", node_id: block },
+    ],
+    [
+      { op: "delete_block", node_id: block },
+      { op: "insert_markdown", markdown: "Kept" },
+    ],
+  ]) {
+    const { doc: after } = edit(doc, operations);
+    assert.equal(all(after), "Kept", JSON.stringify(operations.map((op) => op.op)));
+  }
+  const { doc: rewritten } = edit(doc, [
+    { op: "insert_markdown", markdown: "Kept", after_node_id: null },
+    { op: "replace_block_markdown", node_id: block, markdown: "New body" },
+  ]);
+  assert.equal(all(rewritten), "Kept\n\nNew body");
+  // A rewrite earlier in the batch is followed by the appends, in its block.
+  const { doc: first } = edit(doc, [
+    { op: "replace_block_markdown", node_id: block, markdown: "New body" },
+    { op: "insert_markdown", markdown: "Then this" },
+  ]);
+  assert.deepEqual(orderedBlockIds(first), [KEY]);
+  assert.equal(all(first), "New body\n\nThen this");
+});
+
+test("an agent's first append and a person's first keystrokes in a blank Page both survive", () => {
+  const doc = page("");
+  const person = A.change(A.clone(doc, { actor: "0e".repeat(16) }), (draft) => {
+    A.splice(draft, ["blocks", KEY, "richText"], draft.blocks[KEY].richText.length, 0, "Typed");
+  });
+  const { doc: agent } = edit(doc, [{ op: "insert_markdown", markdown: "Agent text." }]);
+  const merged = all(A.merge(agent, person));
+  assert.match(merged, /Typed/);
+  assert.match(merged, /Agent text\./);
+});
+
+test("an append and a person typing at the end of the last paragraph both survive", () => {
+  const doc = page("Alpha\n\nBeta");
+  const person = A.change(A.clone(doc, { actor: "0e".repeat(16) }), (draft) => {
+    A.splice(draft, ["blocks", KEY, "richText"], draft.blocks[KEY].richText.length, 0, " typed");
+  });
+  const { doc: agent } = edit(doc, [{ op: "insert_markdown", markdown: "Gamma" }]);
+  const merged = A.merge(agent, person);
+  assert.match(all(merged), /typed/);
+  assert.match(all(merged), /Gamma/);
+  assert.deepEqual(orderedBlockIds(merged), [KEY]);
+});

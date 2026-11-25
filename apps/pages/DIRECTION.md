@@ -134,9 +134,9 @@ lists, images, views and dataframes in order. Blocks are a storage detail
      before the first node of the first
      ([model/flow-placement.mjs](model/flow-placement.mjs)). Such an insert
      makes a block only where it can't go inside: the Page has none, the
-     content would join a list of the same kind at that end, or the edge
-     block is past the passage limit or holds content this build can't
-     write in. A block's id as `after_node_id` still makes one, until block
+     content would join a list of the same kind at that end, a later operation
+     in the batch deletes or rewrites the edge block, or that block is past the passage
+     limit or holds content this build can't write in. A block's id as `after_node_id` still makes one, until block
      ids leave the contract.
    - **`node_id` names nodes only.** Block ids leave the agent contract.
      `replace_block_markdown` gives way to node-scoped writes (item 4),

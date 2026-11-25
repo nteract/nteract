@@ -14,7 +14,10 @@
 //   can't name;
 // - the new content would join a list of the same kind at that edge;
 // - for null, the first block opens with unmarked text the batch didn't
-//   repair.
+//   repair;
+// - a later operation in the batch deletes the block or rewrites it with
+//   Markdown (delete_block, replace_block_markdown), which would drop the
+//   insert.
 // A blank edge block (a new Page's empty paragraph) takes the content in
 // place of its empty paragraph.
 import { isBlankBlock } from "./richtext-format.mjs";
@@ -50,12 +53,15 @@ export function flowBlock(doc, op) {
  * anchor, at `edge` of the Page: `{ kind: "node", key, index, start, end }`
  * for insertInPlace (index -1 before the block's first node), `{ blank:
  * true, key }` for a blank edge block, or null for a new block.
- * `reads` are the batch's reads (model/block-reads.mjs).
+ * `reads` are the batch's reads (model/block-reads.mjs). `replaced` holds
+ * the keys of blocks a later operation in the batch deletes or rewrites
+ * whole.
  */
-export function flowAnchor(doc, spans, edge, { budget, reads }) {
+export function flowAnchor(doc, spans, edge, { budget, reads, replaced }) {
   const keys = orderedBlockIds(doc);
   if (!keys.length) return null;
   const key = edge === "end" ? keys.at(-1) : keys[0];
+  if (replaced?.has(key)) return null;
   const length = doc.blocks[key].richText.length;
   const adding = spans.reduce((sum, span) => sum + width(span), 0);
   if (length + adding > MAX_PASSAGE_BLOCK_LENGTH) return null;

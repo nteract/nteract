@@ -318,7 +318,9 @@ export function validateEditFields(op) {
 // block that holds a node it was given. An insert's after_node_id takes a
 // block's id, which puts the new content in a block of its own after it, or a
 // top-level node's id, which writes it into that node's block directly after
-// the node (model/insert-in-place.mjs); omitted appends and null prepends.
+// the node (model/insert-in-place.mjs). Omitted writes after the Page's last
+// node and null before its first, inside the edge block where they can go
+// (model/flow-placement.mjs).
 // move_block's takes a block's id only.
 const BLOCK = ["block"];
 const PLACE = ["block", "node"];
@@ -807,6 +809,18 @@ function applyOperation(doc, { operation, arguments: args = {}, trace, comments 
     const target = starts[i].node_id;
     return forOperation(i, op, () => anchorOccurrence(doc, target.key, scoped(op, target), reads));
   });
+  // For each operation, the blocks a later operation in the batch deletes or
+  // rewrites whole: an insert with no anchor never writes into one, since
+  // that later operation would drop it.
+  const replaced = operations.map(() => new Set());
+  for (let i = operations.length - 1; i > 0; i--) {
+    const op = operations[i];
+    for (const key of replaced[i]) replaced[i - 1].add(key);
+    if (op.op === "delete_block" || op.op === "replace_block_markdown") {
+      const key = blockOf(index, op.node_id);
+      if (key !== undefined) replaced[i - 1].add(key);
+    }
+  }
   const budget = { writes: 0 };
   const edits = [];
   for (const [i, op] of operations.entries()) {
@@ -821,6 +835,7 @@ function applyOperation(doc, { operation, arguments: args = {}, trace, comments 
         budget,
         comments,
         reads,
+        replaced: replaced[i],
       }),
     );
     reads.settle(touched);

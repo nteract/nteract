@@ -973,8 +973,8 @@ const pageBlocks = (page) => (page.blocks ?? [page.markdown]).map(importable);
  * between blank lines and outside a code fence; anywhere else (in a quote or
  * list, say) it stays Markdown, and so a link.
  *
- * Each dataframe unit becomes its own block on the target, so a dataframe
- * that sat inside a block splits it there.
+ * Each unit becomes its own insert on the target, in order. A host that
+ * writes anchorless inserts in place keeps them in one block.
  */
 export function bodyUnits(blocks, page, assets = {}) {
   // Frames by src, in outline order. Two dataframes can show one asset under

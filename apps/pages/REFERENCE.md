@@ -2898,11 +2898,13 @@ For agents, importing bytes and inserting content are separate operations:
    CSV uses the same named and unnamed forms with `media_type: "text/csv"` in the node attrs.
 2. Read the current Page, then call guarded `edit_page` with that `insert`
    operation: for an image, `insert_image`, `asset_id`, alt text, and optional
-   `after_node_id` (omitted appends; `null` prepends). The host verifies the asset belongs to this Page and writes a
-   paragraph holding the image: in a new block, or inside a node's block
-   directly after it when `after_node_id` is a top-level node's id. Its
-   `result.edits` entry returns the new block's `node_id` and its `nodes` (or,
-   inside a node's block, that block as `block` and the new node in `nodes`),
+   `after_node_id`. The host verifies the asset belongs to this Page and writes a
+   paragraph holding the image: inside a node's block directly after it when
+   `after_node_id` is a top-level node's id, after the Page's last node when
+   it is omitted, before its first when it is `null`, or in a new block after
+   a block whose id it names. Its `result.edits` entry returns the new block's
+   `node_id` and its `nodes` (or, inside an existing block, that block as
+   `block` and the new node in `nodes`),
    the image's id as `image`, and the asset reference; the receipt adds
    updated heads and the Page URL. Exact retries reuse that result.
 3. Read back the block. Upload success alone is not insertion or proof of rendering.
@@ -4273,8 +4275,15 @@ still replay the recorded receipt; these guards run only for new intents.
   when the Page has no block, the edge block would pass
   `MAX_PASSAGE_BLOCK_LENGTH` or the batch's in-place budget, it holds
   content this build reads lossily or nodes it can't name, or the new
-  content would join a list of the same kind at that end; the receipt then
-  reports the new block's `node_id` and `nodes`.
+  content would join a list of the same kind at that end. It does the same
+  when a later operation in the batch deletes the edge block or rewrites it
+  with `replace_block_markdown`, so no later operation drops the insert, and for `null` when the first block opens with unmarked text the
+  batch didn't repair. The receipt then reports the new block's `node_id` and
+  `nodes`. The batch repairs the edge block's markers before any operation
+  runs, whether or not the insert lands there. Concurrent writers that
+  append at the same end share the last block: two lists of the same kind
+  appended at once merge into one, and text a person types at the end of the
+  last paragraph can land inside the agent's last new node.
 - **Splice & mark preservation:** in-place inserts repair block markers, then
   run one `splitBlock` per marker and one `splice` per text run at the end of
   the anchor's range without rewriting existing characters or markers, keeping

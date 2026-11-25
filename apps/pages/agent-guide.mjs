@@ -796,8 +796,9 @@ required. Duplicate image targets in a batch are refused. Unknown native attrs
 are preserved. Comments accept baseline images, not theme variants.
 
 The receipt's result.edits has an entry per insert_image, in operation order:
-the new block's node_id and its nodes, or for an insert after a node the
-block it went into as block and the new node in nodes; then the image's id as
+the new block's node_id and its nodes, or for an insert that went into an
+existing block, after a node or at either end of the Page, that block as
+block and the new node in nodes; then the image's id as
 image, asset_id, asset_url and alt, plus the new revision and the Page url. The MCP structured
 result matches its text receipt. Save the exact edit request and retry it after
 an uncertain result: it returns the original receipt without another block or
@@ -1290,9 +1291,10 @@ content into that node's block directly after it, or a block's id, which puts
 it in a new block after that block. With after_node_id omitted the content
 goes after the Page's last node, and with null before its first, inside the
 Page's last or first block: a Page built by appends stays one block. It gets
-a block of its own only where it can't go inside: it would join a list of the
-same kind at that end, or that block is too long or holds content this
-version can't write in.
+a block of its own only where it can't go inside: the Page has no block, it
+would join a list of the same kind at that end, a later operation in the
+same batch deletes or rewrites that block, or that block is too long or holds content this version
+can't write in.
 delete_node takes a node's id, set_image an image's. move_nodes takes node ids
 for node_id, through_node_id and after_node_id; see Move a section.
 replace_match, format_match

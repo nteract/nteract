@@ -258,7 +258,7 @@ try {
   );
   complete(stage);
 
-  stage = "inserting a duplicate heading reports its new opening block";
+  stage = "inserting a duplicate heading reports its new opening heading";
   const current = await read();
   const insertArgs = {
     page_id: pageId,
@@ -268,8 +268,9 @@ try {
   };
   const inserted = await mcp("edit_page", insertArgs);
   const withTitle = await read();
-  assert.notEqual(withTitle.blocks[0].node_id, initial.blocks[0].node_id);
-  assert.equal(withTitle.blocks[0].markdown, `# ${fixtureTitle}`);
+  // A null anchor writes before the first node, inside the first block.
+  assert.equal(withTitle.blocks[0].node_id, initial.blocks[0].node_id);
+  assert.equal(withTitle.blocks[0].markdown, `# ${fixtureTitle}\n\n${introduction}`);
   const titleHeading = await openingHeading();
   warning(inserted, titleHeading);
   complete(stage);
@@ -293,8 +294,12 @@ try {
   assert.deepEqual(mutationReceipt(await http("edit_page", insertArgs)), mutationReceipt(inserted));
   const final = await read();
   assert.deepEqual(final.revision, patched.revision);
-  assert.equal(final.blocks.length, 2, "Exact retry must not insert another heading");
-  assert.equal(final.blocks[1].markdown, introduction.replace("Keep", "Preserve"));
+  assert.equal(final.blocks.length, 1);
+  assert.equal(
+    final.blocks[0].markdown,
+    `# ${fixtureTitle}\n\n${introduction.replace("Keep", "Preserve")}`,
+    "Exact retry must not insert another heading",
+  );
   complete(stage);
   report.result = "pass";
 } catch (error) {
