@@ -1373,15 +1373,18 @@ fn heads_confirmed_by_peer(target_heads: &[ChangeHash], shared_heads: &[ChangeHa
 }
 
 /// Publish a snapshot from the current document state.
+///
+/// The send happens while the doc lock is held. `DocHandle::with_doc` publishes
+/// under the same lock, so snapshots reach the watch channel in doc order and a
+/// snapshot built before a local mutation never replaces the one built after
+/// it. Readers drop their watch borrow before taking the doc lock, so the
+/// doc-then-watch order cannot deadlock.
 fn publish_snapshot(
     doc: &Arc<Mutex<SharedDocState>>,
     snapshot_tx: &Arc<tokio::sync::watch::Sender<NotebookSnapshot>>,
 ) {
-    let snapshot = {
-        let state = doc.lock().unwrap_or_else(|e| e.into_inner());
-        NotebookSnapshot::from_doc(&state.doc)
-    };
-    let _ = snapshot_tx.send(snapshot);
+    let state = doc.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = snapshot_tx.send(NotebookSnapshot::from_doc(&state.doc));
 }
 
 fn mark_disconnected(status_tx: &watch::Sender<SyncStatus>) {
@@ -2659,5 +2662,57 @@ mod tests {
 
         drop(handle);
         sync_task.await.unwrap();
+    }
+
+    /// The sync task publishes a snapshot built from the doc. If it let go of
+    /// the doc lock before sending, a local mutation could publish its newer
+    /// snapshot first and then be overwritten by the older one, so a caller
+    /// would read back a cell it just deleted. Park the publisher at `send` by
+    /// holding a watch borrow, then check that no mutation gets in until the
+    /// snapshot has landed.
+    #[test]
+    fn publish_snapshot_holds_doc_lock_until_sent() {
+        use std::time::{Duration, Instant};
+
+        let (handle, config) = test_handle_and_config();
+        handle
+            .add_cell_with_source("cell-a", "code", None, "x = 1")
+            .unwrap();
+        let doc = Arc::clone(&config.doc);
+        let snapshot_tx = Arc::clone(&config.snapshot_tx);
+        let reader = handle.subscribe();
+
+        let parked_send = reader.borrow();
+        let publisher = {
+            let doc = Arc::clone(&doc);
+            std::thread::spawn(move || publish_snapshot(&doc, &snapshot_tx))
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while doc.try_lock().is_ok() {
+            assert!(
+                Instant::now() < deadline,
+                "publisher must hold the doc lock while its send is parked"
+            );
+            std::thread::yield_now();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            doc.try_lock().is_err(),
+            "publisher released the doc lock before its snapshot was sent"
+        );
+
+        let deleter = {
+            let handle = handle.clone();
+            std::thread::spawn(move || handle.delete_cell("cell-a").unwrap())
+        };
+        drop(parked_send);
+        publisher.join().unwrap();
+        assert!(deleter.join().unwrap());
+
+        assert!(
+            handle.get_cell("cell-a").is_none(),
+            "a deleted cell must not come back from an older snapshot"
+        );
     }
 }
