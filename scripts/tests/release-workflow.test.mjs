@@ -389,7 +389,7 @@ function needs(id) {
 
 test("plugin publication waits for a successful release and remains optional", () => {
   const plugin = jobs.get("publish-plugin");
-  assert.deepEqual(needs("publish-plugin").sort(), ["compute-version", "prerelease"]);
+  assert.deepEqual(needs("publish-plugin").sort(), ["compute-version", "prerelease", "publish-pypi"]);
   // With no status-function override, GitHub requires successful dependencies.
   assert.match(plugin, /^    if: inputs\.publish_plugin_channel != ''$/m);
   assert.doesNotMatch(plugin, /^\s+continue-on-error:/m);
@@ -425,9 +425,15 @@ test("the final tag check uses the built source and precedes release publication
   assert.match(step, /SOURCE_SHA: \$\{\{ needs\.compute-version\.outputs\.source_sha \}\}/);
   assert.match(step, /run: bash scripts\/ci\/check-release-tag\.sh "\$TAG_NAME" "\$SOURCE_SHA"/);
   assert.doesNotMatch(step, /^\s+(?:if|continue-on-error):/m);
-  for (const publication of ["run: uv publish ", "uses: softprops/action-gh-release@", "gh release upload "]) {
+  for (const publication of ["uses: softprops/action-gh-release@", "gh release upload "]) {
     assert.ok(body.indexOf(publication) > check, `${publication} must follow tag verification`);
   }
+  // PyPI is irreversible and its job can be rerun alone, long after prerelease
+  // checked the tag, so it checks the tag itself before it uploads.
+  const pypi = jobs.get("publish-pypi");
+  const pypiCheck = pypi.indexOf("      - name: Verify release tag matches built source\n");
+  assert.ok(pypiCheck >= 0 && pypi.indexOf("run: uv publish ") > pypiCheck, "uv publish must follow tag verification");
+  assert.match(pypi.slice(pypiCheck).split(/\n      - /)[0], /run: bash scripts\/ci\/check-release-tag\.sh "\$TAG_NAME" "\$SOURCE_SHA" --require$/m);
 });
 
 test("reserve the immutable tag before any build and require it at publication", () => {
@@ -442,10 +448,11 @@ test("reserve the immutable tag before any build and require it at publication",
   assert.doesNotMatch(body, /^\s+target_commitish:/m);
   const github = body.indexOf("      - name: Create GitHub Release\n");
   const recheck = body.indexOf("      - name: Verify published release tag still matches built source\n");
-  const pypi = body.indexOf("      - name: Publish runtimed to PyPI\n");
-  const updater = body.indexOf("      - name: Update ");
-  assert.ok(github >= 0 && recheck > github && pypi > recheck && updater > pypi);
-  assert.match(body.slice(pypi, updater), /--trusted-publishing always --check-url/);
+  const updater = body.indexOf("      - name: Update ${{ inputs.updater_channel_tag }} updater channel\n");
+  const notify = body.indexOf("      - name: Notify Discord\n");
+  // The updater channel follows the confirmed GitHub release, in the same job.
+  assert.ok(github >= 0 && recheck > github && updater > recheck && notify > updater);
+  assert.match(body.slice(updater, notify), /gh release upload "\$RELEASE_UPDATER_CHANNEL_TAG" release-assets\/latest\.json --clobber/);
 });
 
 test("changelog excludes reserved tags without touching the remote", () => {
@@ -535,8 +542,41 @@ test("every release job that reads a secret or mints an OIDC token runs in its e
   assert.deepEqual(gated.sort(), [
     "build-notebook-linux", "build-notebook-macos-arm64", "build-notebook-macos-x64",
     "build-notebook-windows-arm64", "build-notebook-windows-x64",
-    "prerelease", "publish-plugin", "recover-nightly-wheel", "sign-release-checksums",
+    "prerelease", "publish-plugin", "publish-pypi", "recover-nightly-wheel", "sign-release-checksums",
   ]);
+});
+
+test("PyPI publishes from its own job, after the release and the updater channel", () => {
+  const prerelease = parsedRelease.jobs.prerelease;
+  const pypi = parsedRelease.jobs["publish-pypi"];
+  // A failed upload is rerun alone. Rerunning prerelease would replace release
+  // assets and the updater manifest that desktop clients already read.
+  assert.doesNotMatch(jobs.get("prerelease"), /uv publish|setup-uv/);
+  assert.deepEqual(prerelease.permissions, {contents: "write"});
+  assert.deepEqual(needs("publish-pypi").sort(), ["compute-version", "prerelease"]);
+  assert.equal(pypi.if, undefined);
+  assert.equal(pypi["continue-on-error"], undefined);
+  // The trusted publisher names this workflow file and the job environment.
+  assert.equal(pypi.environment, publishEnvironment);
+  assert.deepEqual(pypi.permissions, {contents: "read", "id-token": "write"});
+  assert.doesNotMatch(JSON.stringify(pypi), /secrets\./);
+  for (const step of pypi.steps) {
+    if (step.uses) assert.match(step.uses, /@[0-9a-f]{40}$/, `${step.uses} must be pinned to a commit`);
+    // A skipped or tolerated step would release what waits on this job
+    // without a verified, complete upload.
+    assert.equal(step.if, undefined, `${step.name} must be unconditional`);
+    assert.equal(step["continue-on-error"], undefined, `${step.name} must fail closed`);
+  }
+  // The upload is the wheel set the release checksums list, no more and no less.
+  const names = pypi.steps.map(step => step.name);
+  const verify = pypi.steps[names.indexOf("Verify wheels against release checksums")];
+  assert.ok(names.indexOf("Verify wheels against release checksums") < names.indexOf("Publish runtimed to PyPI"));
+  assert.match(verify.run, /sha256sum --check --strict "\$RUNNER_TEMP\/wheel-sums"/);
+  assert.match(verify.run, /test "\$listed" -eq "\$present"/);
+  // --check-url takes the index root; uv appends the project name itself.
+  assert.equal(pypi.steps.at(-1).run, "uv publish --trusted-publishing always --check-url https://pypi.org/simple/ ./wheels/*.whl");
+  // What waited on PyPI inside prerelease still waits on it.
+  assert.ok(needs("image-runtime-peer-publish").includes("publish-pypi"));
 });
 
 test("release checksums are written before publication, signed apart from publishing, and attested", () => {
@@ -871,7 +911,7 @@ test("runtime-peer image publication keeps packages:write scoped to the two imag
   assert.match(build, /outputs:\n\s+digest: \$\{\{ steps\.push\.outputs\.DIGEST \}\}/, "build exports the pushed digest");
 
   const publish = jobs.get("image-runtime-peer-publish");
-  assert.match(publish, /needs: \[compute-version, prerelease, image-runtime-peer-build\]/);
+  assert.match(publish, /needs: \[compute-version, prerelease, publish-pypi, image-runtime-peer-build\]/);
   assert.match(publish, /DIGEST: \$\{\{ needs\.image-runtime-peer-build\.outputs\.digest \}\}/, "publish consumes the build digest");
   assert.match(publish, /docker buildx imagetools create[\s\S]*?"\$IMAGE@\$DIGEST"/, "promotion is by digest, not by re-pulling a mutable tag");
   // With one manifest source, imagetools wraps it in a new index by default,

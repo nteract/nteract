@@ -23,8 +23,8 @@ tokens, and the publishing jobs never see the signing keys.
 |---|---|---|---|
 | `release-signing` | branch `main` | none, so the 09:00 UTC schedule runs unattended | `build-notebook-*` and `sign-release-checksums` jobs in `release-common.yml` when called from `release-nightly.yml` |
 | `release-signing-stable` | branch `main`, tag `v*` | `rgbkrk`, `intentionally-left-nil`; prevent self-review | the same jobs when called from `release-stable.yml` |
-| `release-nightly` | branch `main` | none | `prerelease`, `publish-release-checksums-signature`, `publish-plugin`, `recover-nightly-wheel` for nightly |
-| `release-stable` | branch `main`, tag `v*` | `rgbkrk`, `intentionally-left-nil`; prevent self-review | `prerelease`, `publish-release-checksums-signature`, `publish-plugin` for stable |
+| `release-nightly` | branch `main` | none | `prerelease`, `publish-pypi`, `publish-release-checksums-signature`, `publish-plugin`, `recover-nightly-wheel` for nightly |
+| `release-stable` | branch `main`, tag `v*` | `rgbkrk`, `intentionally-left-nil`; prevent self-review | `prerelease`, `publish-pypi`, `publish-release-checksums-signature`, `publish-plugin` for stable |
 | `npm-publish` | branch `main` | none | the `publish-*` jobs in `publish-npm.yml` (npm OIDC only, no secrets) |
 
 The stable environments admit `v*` tags because a stable release promotes a
@@ -33,11 +33,12 @@ create a `v*` tag, so these environments need reviewers. Prevent self-review
 means a stolen token of the person who dispatched the run cannot approve it; the
 other reviewer must. Turn it off only if a second reviewer is not available. A
 stable run asks for approval at each job that enters a reviewed environment: the
-signing builds (`release-signing-stable`), `prerelease` and `publish-plugin`
-(`release-stable`), then `sign-release-checksums` (`release-signing-stable`) and
-`publish-release-checksums-signature` (`release-stable`) after the release is
-published. The run does not conclude until those two finish, so npm, WASM and
-editor publishing, which start on a successful run, wait behind them.
+signing builds (`release-signing-stable`), then `prerelease` (`release-stable`).
+Once the release is published, `publish-pypi` (`release-stable`) and
+`sign-release-checksums` (`release-signing-stable`) ask at the same time. After
+them come `publish-plugin` and `publish-release-checksums-signature`
+(`release-stable`). The run does not conclude until all of them finish, so npm,
+WASM and editor publishing, which start on a successful run, wait behind them.
 
 ## Windows signing by OIDC
 
@@ -172,9 +173,13 @@ workflow file on any ref, which is how a branch copy of a workflow publishes.
   `@runtimed/node-<target>` packages, `@nteract/pi`, `@runtimed/wasm`,
   `@nteract/sift` and `@nteract/sift-csv`. Package Settings → Trusted
   Publisher → Environment `npm-publish`.
-- PyPI, project `runtimed`: the publisher for `release-nightly.yml` gets
-  environment `release-nightly`; the one for `release-stable.yml` gets
-  `release-stable`.
+- PyPI, project `runtimed`: two publishers, both for workflow
+  `release-common.yml`. One names environment `release-nightly`, the other
+  `release-stable`. PyPI matches the file that defines the publish job
+  (`job_workflow_ref`), and `publish-pypi` lives in the reusable workflow. A
+  publisher that names `release-nightly.yml` or `release-stable.yml` never
+  matches while the job is there, and the upload fails with
+  `invalid-publisher`.
 
 Set these after the pull request that adds the `environment:` lines is on
 `main`, or the next release fails at the publish step.
@@ -274,8 +279,9 @@ until these settings exist.
   `secrets: inherit` passes organization secrets to every release job, and any
   workflow can read them directly.
 - [ ] npm trusted publishers for all ten packages name environment
-  `npm-publish`. PyPI `runtimed` publishers name `release-nightly`
-  (`release-nightly.yml`) and `release-stable` (`release-stable.yml`).
+  `npm-publish`. PyPI `runtimed` has two publishers for workflow
+  `release-common.yml`: one with environment `release-nightly`, one with
+  `release-stable`.
 - [ ] Code owner review ruleset and release tag ruleset applied.
 - [ ] Actions settings below.
 

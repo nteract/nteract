@@ -74,8 +74,9 @@ Nightly. With the proposed 2.8.0 base, Desktop Nightly would be
 check wheel metadata rather than assuming identical full version strings.
 
 Publication is not atomic. `prerelease` creates the GitHub Release first, then
-publishes `runtimed` wheels to PyPI, then updates the rolling updater channel.
-`publish-plugin` runs after `prerelease` (`needs: [compute-version, prerelease]`).
+updates the rolling updater channel. `publish-pypi` then publishes `runtimed`
+wheels to PyPI. `publish-plugin` runs after both
+(`needs: [compute-version, prerelease, publish-pypi]`).
 A failed run can therefore already have changed GitHub assets, PyPI, the rolling
 updater channel, or plugins. A green subset of jobs is not a completed release.
 
