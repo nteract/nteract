@@ -95,6 +95,45 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.nteract.io | bash -s -- --cli
 
 Use `nteract` for notebook, workstation, and MCP operations. CLI-only installation does not configure or start a local daemon service. The desktop app bundles the same CLI. Existing `runt`, `runt-nightly`, and `nteract-mcp` commands remain compatible. See the [CLI guide](docs/runbooks/cli.md) for runtime startup, channel selection, and scripting behavior.
 
+### Verify a release
+
+Each release publishes `SHA256SUMS`, with one SHA-256 line per release file,
+and `SHA256SUMS.minisig`, a [minisign](https://jedisct1.github.io/minisign/)
+signature whose trusted comment names the release tag. The signing key:
+
+```text
+RWS8zmGqVBZsmzkkrdjXigjInaliPhFjek6RO6+jUxxIzOfAJyo+oHhM
+```
+
+The installer checks every download against `SHA256SUMS` before installing
+anything. When `minisign` is on `PATH`, it also checks the signature and the
+tag. Without `minisign`, it says the signature was not checked. Releases
+without `SHA256SUMS` install with a warning.
+
+To make the checksum file, the signature and `minisign` mandatory, pass
+`--require-signature` or set `NTERACT_REQUIRE_SIGNATURE=1`. Run the installer
+from the release you are installing:
+
+```bash
+curl -fsSL https://github.com/nteract/nteract/releases/download/<tag>/install-linux-release \
+  | bash -s -- --require-signature
+```
+
+To check a manual download, put it next to `SHA256SUMS` and
+`SHA256SUMS.minisig` from the same release:
+
+```bash
+minisign -Vm SHA256SUMS -P RWS8zmGqVBZsmzkkrdjXigjInaliPhFjek6RO6+jUxxIzOfAJyo+oHhM
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+The trusted comment printed by `minisign` must read `nteract release <tag>`.
+Every release file also has a GitHub build provenance attestation:
+
+```bash
+gh attestation verify nteract-stable-linux-x64.AppImage --repo nteract/nteract
+```
+
 ## Runtime model
 
 nteract notebooks store content in `NotebookDoc` and live kernel and execution

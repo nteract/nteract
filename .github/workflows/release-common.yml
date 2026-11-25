@@ -70,8 +70,9 @@ env:
 
 # Release credentials live in GitHub environments, not at repository level.
 # Signing builds run in `release-signing` (nightly) or `release-signing-stable`:
-# the Tauri updater key, the Apple certificate, and the Azure Artifact Signing
-# federated credential, which names these environments. Publishing jobs run in
+# the Tauri updater key, the Apple certificate, the Azure Artifact Signing
+# federated credential, which names these environments, and the minisign key
+# that signs SHA256SUMS. Publishing jobs run in
 # `release-nightly` or `release-stable`: the plugin deploy token, the Discord
 # webhook and PyPI trusted publishing. Nightly environments admit only `main`;
 # stable ones also admit `v*` tags and require reviewers. A job that needs a
@@ -2398,6 +2399,18 @@ jobs:
             echo "**Commit:** \`${COMMIT_SHA}\`"
           } > release-body.md
 
+      # SHA256SUMS covers every file this release uploads. sign-release-checksums
+      # signs this exact artifact; attest-release-assets attests its digests.
+      - name: Write release checksums
+        run: bash scripts/ci/release-checksums.sh write release-assets wheels
+
+      - name: Upload release checksums
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-checksums
+          path: release-assets/SHA256SUMS
+          if-no-files-found: error
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         env:
@@ -2443,6 +2456,7 @@ jobs:
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-x64.exe.sig
             ./release-assets/nteract-${{ inputs.version_suffix }}-windows-arm64.exe.sig
             ./release-assets/latest.json
+            ./release-assets/SHA256SUMS
             ./wheels/*.whl
 
       - name: Verify published release tag still matches built source
@@ -2494,3 +2508,124 @@ jobs:
             --arg url "$RUN_URL" \
             '{embeds: [{title: $title, description: $description, url: $url, color: 3066993}]}' \
             | curl -H "Content-Type: application/json" --data-binary @- "$DISCORD_WEBHOOK"
+
+  # The checksum signing key lives only in the signing environments and only
+  # this job reads it. It can read the repository but not publish.
+  sign-release-checksums:
+    environment: ${{ inputs.version_suffix == 'stable' && 'release-signing-stable' || 'release-signing' }}
+    name: Sign release checksums
+    needs: [compute-version, prerelease]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      TAG_NAME: v${{ needs.compute-version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ env.NTERACT_BUILD_GIT_HASH }}
+          persist-credentials: false
+
+      - name: Download release checksums
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-checksums
+          path: release-checksums
+
+      - name: Install pinned minisign
+        run: |
+          bash scripts/ci/release-checksums.sh install-minisign "$RUNNER_TEMP/minisign-bin"
+          echo "MINISIGN=$RUNNER_TEMP/minisign-bin/minisign" >> "$GITHUB_ENV"
+
+      - name: Sign SHA256SUMS
+        env:
+          RELEASE_CHECKSUMS_SIGNING_KEY: ${{ secrets.RELEASE_CHECKSUMS_SIGNING_KEY }}
+          RELEASE_CHECKSUMS_SIGNING_KEY_PASSWORD: ${{ secrets.RELEASE_CHECKSUMS_SIGNING_KEY_PASSWORD }}
+        run: bash scripts/ci/release-checksums.sh sign release-checksums/SHA256SUMS "$TAG_NAME"
+
+      # The installer pins the public key users verify against. Checking here
+      # makes a key mismatch fail this job instead of every install.
+      - name: Verify the signature against the installer's pinned key
+        run: |
+          PUBLIC_KEY="$(bash scripts/ci/release-checksums.sh public-key scripts/install-linux-release)"
+          bash scripts/ci/release-checksums.sh verify release-checksums/SHA256SUMS "$TAG_NAME" "$PUBLIC_KEY"
+
+      # Same directory as KEY_DIR in scripts/ci/release-checksums.sh.
+      - name: Remove the decoded signing key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/nteract-release-checksums-key"
+
+      - name: Upload signature
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-checksums-signature
+          path: release-checksums/SHA256SUMS.minisig
+          if-no-files-found: error
+
+  publish-release-checksums-signature:
+    environment: ${{ inputs.version_suffix == 'stable' && 'release-stable' || 'release-nightly' }}
+    name: Publish release checksums signature
+    needs: [compute-version, prerelease, sign-release-checksums]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      TAG_NAME: v${{ needs.compute-version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download release checksums
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-checksums
+          path: signed
+
+      - name: Download signature
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-checksums-signature
+          path: signed
+
+      # The signature is published only next to the exact bytes it signs, and
+      # only when every name it lists is an asset of this release.
+      - name: Confirm the published SHA256SUMS is the signed one
+        run: |
+          gh release download "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir published
+          if ! cmp signed/SHA256SUMS published/SHA256SUMS; then
+            echo "::error::SHA256SUMS on release $TAG_NAME differs from the signed artifact"
+            exit 1
+          fi
+          gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
+            | LC_ALL=C sort > published-names
+          awk '{print $2}' signed/SHA256SUMS | LC_ALL=C sort > signed-names
+          missing="$(LC_ALL=C comm -23 signed-names published-names)"
+          if [ -n "$missing" ]; then
+            echo "::error::SHA256SUMS lists files that are not assets of $TAG_NAME: $missing"
+            exit 1
+          fi
+
+      - name: Upload SHA256SUMS.minisig
+        run: gh release upload "$TAG_NAME" signed/SHA256SUMS.minisig --repo "$GITHUB_REPOSITORY" --clobber
+
+  attest-release-assets:
+    name: Attest release assets
+    needs: [prerelease]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download release checksums
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-checksums
+          path: release-checksums
+
+      - name: Attest every release asset
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: release-checksums/SHA256SUMS

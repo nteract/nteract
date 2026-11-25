@@ -29,11 +29,13 @@ jobs:
     # scopes; each job in release-common.yml narrows further with its own
     # `permissions:` block. `packages: write` exists only so the two
     # runtime-peer image jobs can push to ghcr.io/nteract/runtime-peer.
+    # `attestations: write` exists only for attest-release-assets.
     permissions:
       contents: write
       id-token: write
       packages: write
       actions: read
+      attestations: write
     secrets: inherit
     with:
       recovery_run_id: ${{ inputs.recovery_run_id || '' }}

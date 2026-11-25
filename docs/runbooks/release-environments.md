@@ -21,10 +21,10 @@ tokens, and the publishing jobs never see the signing keys.
 
 | Environment | Deployment refs | Required reviewers | Used by |
 |---|---|---|---|
-| `release-signing` | branch `main` | none, so the 09:00 UTC schedule runs unattended | `build-notebook-*` jobs in `release-common.yml` when called from `release-nightly.yml` |
+| `release-signing` | branch `main` | none, so the 09:00 UTC schedule runs unattended | `build-notebook-*` and `sign-release-checksums` jobs in `release-common.yml` when called from `release-nightly.yml` |
 | `release-signing-stable` | branch `main`, tag `v*` | `rgbkrk`, `intentionally-left-nil`; prevent self-review | the same jobs when called from `release-stable.yml` |
-| `release-nightly` | branch `main` | none | `prerelease`, `publish-plugin`, `recover-nightly-wheel` for nightly |
-| `release-stable` | branch `main`, tag `v*` | `rgbkrk`, `intentionally-left-nil`; prevent self-review | `prerelease`, `publish-plugin` for stable |
+| `release-nightly` | branch `main` | none | `prerelease`, `publish-release-checksums-signature`, `publish-plugin`, `recover-nightly-wheel` for nightly |
+| `release-stable` | branch `main`, tag `v*` | `rgbkrk`, `intentionally-left-nil`; prevent self-review | `prerelease`, `publish-release-checksums-signature`, `publish-plugin` for stable |
 | `npm-publish` | branch `main` | none | the `publish-*` jobs in `publish-npm.yml` (npm OIDC only, no secrets) |
 
 The stable environments admit `v*` tags because a stable release promotes a
@@ -32,9 +32,11 @@ nightly tag such as `v2.10.1-nightly.202611161728`. Anyone with push access can
 create a `v*` tag, so these environments need reviewers. Prevent self-review
 means a stolen token of the person who dispatched the run cannot approve it; the
 other reviewer must. Turn it off only if a second reviewer is not available. A
-stable run asks twice: once when the signing builds start
-(`release-signing-stable`), and again when `prerelease` and `publish-plugin`
-start (`release-stable`).
+stable run asks for approval at each job that enters a reviewed environment: the
+signing builds (`release-signing-stable`), `prerelease` and `publish-plugin`
+(`release-stable`), then `sign-release-checksums` (`release-signing-stable`) and
+`publish-release-checksums-signature` (`release-stable`) after the release is
+published.
 
 ## Windows signing by OIDC
 
@@ -111,6 +113,7 @@ the environment and then deleted at repository level. Use the rotated values.
 | Secret | Environments | Read by |
 |---|---|---|
 | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | `release-signing`, `release-signing-stable` | every `build-notebook-*` job |
+| `RELEASE_CHECKSUMS_SIGNING_KEY` (base64 of the minisign secret key file), `RELEASE_CHECKSUMS_SIGNING_KEY_PASSWORD` | `release-signing`, `release-signing-stable` | `sign-release-checksums` only. A separate key from the Tauri updater key. |
 | `NUMFOCUS_APPLE_CERTIFICATE`, `NUMFOCUS_APPLE_CERTIFICATE_PASSWORD`, `NUMFOCUS_APPLE_SIGNING_IDENTITY`, `NUMFOCUS_APPLE_API_ISSUER`, `NUMFOCUS_APPLE_API_KEY`, `NUMFOCUS_APPLE_API_PRIVATE_KEY` | `release-signing`, `release-signing-stable` | `build-notebook-macos-arm64`, `build-notebook-macos-x64` |
 | `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` | `release-signing`, `release-signing-stable` | `build-notebook-windows-x64`, `build-notebook-windows-arm64`. Identifiers, not credentials. |
 | `CLAUDE_PLUGIN_DEPLOY_TOKEN` | `release-nightly`, `release-stable` | `publish-plugin` |

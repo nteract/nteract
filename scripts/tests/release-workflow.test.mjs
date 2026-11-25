@@ -517,17 +517,56 @@ test("every release job that reads a secret or mints an OIDC token runs in its e
   for (const [id, job] of Object.entries(parsedRelease.jobs)) {
     const secrets = [...JSON.stringify(job).matchAll(/secrets\.([A-Z0-9_]+)/g)].map(match => match[1]).filter(name => name !== "GITHUB_TOKEN");
     if (secrets.length === 0 && job.permissions?.["id-token"] !== "write") continue;
+    // Its OIDC token reaches only Sigstore and the attestations API. With no
+    // environment claim, the token cannot satisfy the Azure credentials or
+    // PyPI publishers, which name release environments.
+    if (id === "attest-release-assets") continue;
     gated.push(id);
     const environment = id === "recover-nightly-wheel"
       ? "release-nightly"
-      : id.startsWith("build-notebook-") ? signingEnvironment : publishEnvironment;
+      : id.startsWith("build-notebook-") || id === "sign-release-checksums" ? signingEnvironment : publishEnvironment;
     assert.equal(job.environment, environment, `${id} must run in its release environment`);
   }
   assert.deepEqual(gated.sort(), [
     "build-notebook-linux", "build-notebook-macos-arm64", "build-notebook-macos-x64",
     "build-notebook-windows-arm64", "build-notebook-windows-x64",
-    "prerelease", "publish-plugin", "recover-nightly-wheel",
+    "prerelease", "publish-plugin", "recover-nightly-wheel", "sign-release-checksums",
   ]);
+});
+
+test("release checksums are written before publication, signed apart from publishing, and attested", () => {
+  const prerelease = jobs.get("prerelease");
+  const write = prerelease.indexOf("      - name: Write release checksums\n");
+  const create = prerelease.indexOf("      - name: Create GitHub Release\n");
+  assert.ok(write >= 0 && write < create, "SHA256SUMS is written before the release is created");
+  assert.match(workflowStep(prerelease, "Write release checksums"), /release-checksums\.sh write release-assets wheels$/m);
+  assert.match(workflowStep(prerelease, "Create GitHub Release"), /^            \.\/release-assets\/SHA256SUMS$/m);
+
+  const sign = parsedRelease.jobs["sign-release-checksums"];
+  const publish = parsedRelease.jobs["publish-release-checksums-signature"];
+  const attest = parsedRelease.jobs["attest-release-assets"];
+  assert.deepEqual(sign.permissions, {contents: "read"});
+  assert.deepEqual(publish.permissions, {contents: "write"});
+  assert.equal(publish.environment, publishEnvironment);
+  assert.deepEqual(attest.permissions, {contents: "read", "id-token": "write", attestations: "write"});
+  assert.equal(attest.environment, undefined);
+  assert.ok(sign.needs.includes("prerelease") && publish.needs.includes("sign-release-checksums") && attest.needs.includes("prerelease"));
+
+  // Only the sign job reads the checksum key, and it checks the signature
+  // against the key the installer pins before anything is published.
+  for (const [id, job] of Object.entries(parsedRelease.jobs)) {
+    assert.equal(JSON.stringify(job).includes("RELEASE_CHECKSUMS_SIGNING_KEY"), id === "sign-release-checksums", `${id} checksum key access`);
+  }
+  const signBody = jobs.get("sign-release-checksums");
+  assert.match(signBody, /public-key scripts\/install-linux-release/);
+  assert.match(workflowStep(signBody, "Remove the decoded signing key"), /if: always\(\)/);
+  assert.match(workflowStep(jobs.get("publish-release-checksums-signature"), "Confirm the published SHA256SUMS is the signed one"), /cmp signed\/SHA256SUMS published\/SHA256SUMS/);
+
+  for (const id of ["sign-release-checksums", "publish-release-checksums-signature", "attest-release-assets"]) {
+    for (const step of parsedRelease.jobs[id].steps.filter(step => step.uses)) {
+      assert.match(step.uses, /^actions\/[a-z-]+@[0-9a-f]{40}$/, `${id} pins ${step.uses} to a commit`);
+    }
+  }
 });
 
 test("Windows signing exchanges a GitHub OIDC token, with no client secret", () => {
@@ -829,7 +868,7 @@ test("runtime-peer image publication keeps packages:write scoped to the two imag
   for (const name of ["release-nightly", "release-stable"]) {
     const caller = workflow(name);
     assert.doesNotMatch(caller, /^permissions:/m, `${name} must not grant workflow-wide permissions`);
-    assert.match(workflowJobs(caller).get("release"), /^    permissions:\n      contents: write\n      id-token: write\n      packages: write\n      actions: read\n/m, `${name} release job ceiling includes recovery metadata access`);
+    assert.match(workflowJobs(caller).get("release"), /^    permissions:\n      contents: write\n      id-token: write\n      packages: write\n      actions: read\n      attestations: write\n/m, `${name} release job ceiling includes recovery metadata access`);
   }
 });
 

@@ -54,6 +54,7 @@ Stable releases run when a `v*` tag is pushed (or manually), and nightly pre-rel
 | Standalone MCP server (Linux ARM64) | `nteract-mcp-linux-arm64` |
 | Notebook UI | `nteract-{channel}-notebook-ui.tar.gz` + `.sha256` |
 | Updater manifest | `latest.json` |
+| Release checksums | `SHA256SUMS` + `SHA256SUMS.minisig` |
 
 - **macOS:** Builds are signed and notarized. Standalone `runtimed` assets are published outside the notarized `.app`, so they carry no notarization; an embedding host must sign them under its own identity.
 - **Windows:** Builds use Azure Artifact Signing through `signtool.exe` and Microsoft's signing dlib. `scripts/ci/windows-sign.ps1` signs each file with a GitHub OIDC token exchanged through a federated credential; there is no client secret.
@@ -64,6 +65,36 @@ Linux users can also install the released AppImage with:
 ```bash
 curl -fsSL https://sh.nteract.io | bash
 ```
+
+### Signed checksums
+
+`prerelease` writes `SHA256SUMS` with `scripts/ci/release-checksums.sh write release-assets wheels` just before it creates the GitHub release. The file lists every uploaded file in GNU coreutils format, sorted by name. It ships as a release asset and as the `release-checksums` workflow artifact. Three jobs run after `prerelease`:
+
+| Job | Environment | Permissions | Does |
+|-----|-------------|-------------|------|
+| `sign-release-checksums` | `release-signing` (nightly), `release-signing-stable` (stable) | `contents: read` | Installs the pinned minisign binary, signs the artifact with trusted comment `nteract release <tag>`, verifies the signature against the key pinned in `scripts/install-linux-release`, and uploads `SHA256SUMS.minisig` as an artifact. |
+| `publish-release-checksums-signature` | `release-nightly`, `release-stable` | `contents: write` | Confirms the release's `SHA256SUMS` is byte-identical to the signed artifact and lists only release assets, then uploads `SHA256SUMS.minisig` to the release. |
+| `attest-release-assets` | none | `contents: read`, `id-token: write`, `attestations: write` | Creates a build provenance attestation for every file in `SHA256SUMS`. |
+
+A failure in these jobs leaves the release published without a signature or attestation. The installer still checks checksums and warns that the signature was not checked. Rerun the failed job; the upload replaces any earlier `.minisig`.
+
+The signing environments hold two secrets for the checksum key, separate from the Tauri updater key:
+
+- `RELEASE_CHECKSUMS_SIGNING_KEY`: base64 of the minisign secret key file.
+- `RELEASE_CHECKSUMS_SIGNING_KEY_PASSWORD`: its password.
+
+The current key ID is `9B6C1654AA61CEBC`, public key `RWS8zmGqVBZsmzkkrdjXigjInaliPhFjek6RO6+jUxxIzOfAJyo+oHhM`.
+
+To rotate the key:
+
+1. Generate a pair offline with `minisign -G -p release.pub -s release.key`, with a password.
+2. Replace `NTERACT_RELEASE_PUBLIC_KEY` in `scripts/install-linux-release` with the second line of `release.pub`, and update the key in `README.md` and here. Merge that first.
+3. Set both secrets in `release-signing` and `release-signing-stable`: `base64 < release.key | gh secret set RELEASE_CHECKSUMS_SIGNING_KEY --env <environment> -R nteract/nteract`, and the password the same way.
+4. The next release's sign job verifies against the new pinned key. A mismatch fails that job, not user installs.
+
+Releases signed by the old key keep verifying with installers from those releases, which pin the key they were signed with.
+
+To move the minisign pin, follow the comment above `MINISIGN_VERSION` in `scripts/ci/release-checksums.sh`: download the new `minisign-<version>-linux.tar.gz` and its `.minisig`, verify them against the key in the minisign README, then replace the version and SHA-256.
 
 ## Attribution handoff for embedders
 

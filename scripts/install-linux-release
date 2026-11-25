@@ -14,6 +14,14 @@
 # Desktop installs repair/install the per-user daemon service with
 # `nteract daemon doctor --fix` (systemd on Linux, launchd on macOS) and start
 # it by default. CLI-only installs leave runtime services alone.
+#
+# Downloads are checked before anything is installed. When the release has a
+# SHA256SUMS asset, every downloaded asset must match its line. When it also
+# has SHA256SUMS.minisig and `minisign` is on PATH, the signature must verify
+# against NTERACT_RELEASE_PUBLIC_KEY and its trusted comment must name the tag
+# being installed. Releases without SHA256SUMS install with a warning.
+# --require-signature (or NTERACT_REQUIRE_SIGNATURE=1) makes the checksum
+# file, the signature and minisign all mandatory.
 
 set -euo pipefail
 
@@ -47,6 +55,9 @@ Options:
                        Applies to desktop installs only.
   --default-cli        Select this installation for the shared nteract command.
                        Existing unrelated commands are always preserved.
+  --require-signature  Fail unless the release's SHA256SUMS, its minisign
+                       signature and a local `minisign` are all present and
+                       verify. Also set by NTERACT_REQUIRE_SIGNATURE=1.
   -h, --help           Show this help.
 
 Installs, for stable on Linux (<arch> is x64 or arm64):
@@ -116,12 +127,18 @@ REPO="nteract/nteract"
 # release installer with no args installs the exact channel and tag it came from.
 DEFAULT_CHANNEL="stable"
 DEFAULT_TAG=""
+# Minisign key that signs each release's SHA256SUMS (key ID 9B6C1654AA61CEBC).
+# The release workflow checks its signature against this line before
+# publishing it, so a key rotation lands here first.
+NTERACT_RELEASE_PUBLIC_KEY="RWS8zmGqVBZsmzkkrdjXigjInaliPhFjek6RO6+jUxxIzOfAJyo+oHhM"
 CHANNEL="$DEFAULT_CHANNEL"
 TAG=""
 FROM_DIR=""
 NO_START=0
 HEADLESS=0
 DEFAULT_CLI=0
+REQUIRE_SIGNATURE=0
+[[ "${NTERACT_REQUIRE_SIGNATURE:-0}" != "1" ]] || REQUIRE_SIGNATURE=1
 XDG_DATA_HOME_DEFAULT="${XDG_DATA_HOME:-$HOME/.local/share}"
 PREFIX=""
 BIN_DIR="$HOME/.local/bin"
@@ -174,6 +191,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-start)
       NO_START=1
+      shift
+      ;;
+    --require-signature)
+      REQUIRE_SIGNATURE=1
       shift
       ;;
     -h|--help)
@@ -242,11 +263,7 @@ cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
 base_url() {
-  if [[ -n "$TAG" ]]; then
-    printf 'https://github.com/%s/releases/download/%s' "$REPO" "$TAG"
-  else
-    printf 'https://github.com/%s/releases/latest/download' "$REPO"
-  fi
+  printf 'https://github.com/%s/releases/download/%s' "$REPO" "$TAG"
 }
 
 download_url() {
@@ -262,9 +279,14 @@ download_url() {
   fi
 }
 
+FETCHED_ASSETS=()
+FETCHED_PATHS=()
+
 fetch_asset() {
   local asset="$1"
   local dest="$2"
+  FETCHED_ASSETS+=("$asset")
+  FETCHED_PATHS+=("$dest")
   if [[ -n "$FROM_DIR" ]]; then
     local src="$FROM_DIR/$asset"
     if [[ ! -f "$src" ]]; then
@@ -280,6 +302,150 @@ fetch_asset() {
     download_url "$url" "$dest"
   fi
   chmod 0755 "$dest"
+}
+
+# Fetch a release file that older releases lack. Returns 1 when the release
+# does not have it (HTTP 404, or wget's server-error exit); any other failure
+# stops the install so a flaky network never reads as "no checksums".
+fetch_optional() {
+  local asset="$1"
+  local dest="$2"
+  rm -f "$dest"
+  if [[ -n "$FROM_DIR" ]]; then
+    [[ -f "$FROM_DIR/$asset" ]] || return 1
+    cp "$FROM_DIR/$asset" "$dest"
+    return 0
+  fi
+  local url
+  url="$(base_url)/$asset"
+  if command -v curl >/dev/null 2>&1; then
+    local code="" status=0
+    code="$(curl --fail --location --silent --show-error --output "$dest" \
+      --write-out '%{http_code}' "$url" 2>"$TMP_DIR/curl-error")" || status=$?
+    if [[ "$status" == 0 ]]; then
+      return 0
+    fi
+    rm -f "$dest"
+    [[ "$code" != "404" ]] || return 1
+    cat "$TMP_DIR/curl-error" >&2
+    echo "Could not download $url" >&2
+    exit 1
+  elif command -v wget >/dev/null 2>&1; then
+    local status=0
+    wget -q -O "$dest" "$url" || status=$?
+    if [[ "$status" == 0 ]]; then
+      return 0
+    fi
+    rm -f "$dest"
+    [[ "$status" != 8 ]] || return 1
+    echo "Could not download $url" >&2
+    exit 1
+  else
+    echo "curl or wget is required to install nteract." >&2
+    exit 1
+  fi
+}
+
+# A tag the installer can bind the signature to: GitHub's latest release is
+# resolved once, so every asset comes from that one release.
+resolve_latest_tag() {
+  local url="https://github.com/$REPO/releases/latest"
+  local effective=""
+  if command -v curl >/dev/null 2>&1; then
+    effective="$(curl --fail --location --silent --show-error --output /dev/null \
+      --write-out '%{url_effective}' "$url")" || effective=""
+  elif command -v wget >/dev/null 2>&1; then
+    effective="$(wget --max-redirect=0 --server-response --spider "$url" 2>&1 |
+      sed -n 's/^ *[Ll]ocation: *\([^[:space:]]*\).*$/\1/p' | head -n 1)" || effective=""
+  fi
+  local tag="${effective##*/releases/tag/}"
+  if [[ -z "$effective" || "$tag" == "$effective" || -z "$tag" || "$tag" == */* ]]; then
+    echo "Could not resolve the latest release of $REPO. Pass --tag <tag>." >&2
+    exit 1
+  fi
+  printf '%s' "$tag"
+}
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    echo "sha256sum or shasum is required to check this release's SHA256SUMS." >&2
+    exit 1
+  fi
+}
+
+# Check the signature on SHA256SUMS, then every fetched asset against it.
+# Runs before any file is installed.
+verify_downloads() {
+  local sums="$TMP_DIR/SHA256SUMS"
+  local sig="$sums.minisig"
+  if ! fetch_optional SHA256SUMS "$sums"; then
+    if [[ "$REQUIRE_SIGNATURE" == "1" ]]; then
+      echo "This release has no SHA256SUMS; --require-signature cannot be met." >&2
+      exit 1
+    fi
+    echo "Warning: this release has no SHA256SUMS; downloads were not checked." >&2
+    return 0
+  fi
+
+  local has_sig=0 has_minisign=0
+  if fetch_optional SHA256SUMS.minisig "$sig"; then
+    has_sig=1
+  fi
+  if command -v minisign >/dev/null 2>&1; then
+    has_minisign=1
+  fi
+
+  if [[ "$has_sig" == "1" && "$has_minisign" == "1" ]]; then
+    if [[ -z "$EXPECTED_TAG" && "$REQUIRE_SIGNATURE" == "1" ]]; then
+      echo "No release tag is known for --from-dir, so the signature cannot be bound to a release." >&2
+      echo "Use the install-linux-release asset from the same release." >&2
+      exit 1
+    fi
+    local comment
+    if ! comment="$(minisign -V -m "$sums" -x "$sig" -P "$NTERACT_RELEASE_PUBLIC_KEY" -Q)"; then
+      echo "SHA256SUMS signature does not verify against the nteract release key. Not installing." >&2
+      exit 1
+    fi
+    if [[ -n "$EXPECTED_TAG" ]]; then
+      if [[ "$comment" != "nteract release $EXPECTED_TAG" ]]; then
+        echo "SHA256SUMS is signed for '$comment', not 'nteract release $EXPECTED_TAG'. Not installing." >&2
+        exit 1
+      fi
+      echo "Verified SHA256SUMS signature for $EXPECTED_TAG"
+    else
+      echo "Note: SHA256SUMS signature verified ('$comment'); no tag is known for --from-dir, so the tag was not matched." >&2
+    fi
+  elif [[ "$REQUIRE_SIGNATURE" == "1" ]]; then
+    if [[ "$has_sig" == "0" ]]; then
+      echo "This release has no SHA256SUMS.minisig; --require-signature cannot be met." >&2
+    else
+      echo "minisign is not on PATH; --require-signature cannot be met." >&2
+    fi
+    exit 1
+  elif [[ "$has_sig" == "0" ]]; then
+    echo "Note: this release has no SHA256SUMS.minisig; the signature was not checked." >&2
+  else
+    echo "Note: minisign is not on PATH; the signature was not checked. Install minisign to check it; --require-signature makes it mandatory." >&2
+  fi
+
+  local i asset expected actual
+  for i in "${!FETCHED_ASSETS[@]}"; do
+    asset="${FETCHED_ASSETS[$i]}"
+    expected="$(awk -v name="$asset" '$2 == name || $2 == "*" name { print $1; n++ } END { if (n != 1) exit 1 }' "$sums")" || {
+      echo "SHA256SUMS has no single entry for $asset. Not installing." >&2
+      exit 1
+    }
+    actual="$(sha256_of "${FETCHED_PATHS[$i]}")"
+    if [[ "$actual" != "$expected" ]]; then
+      echo "SHA-256 mismatch for $asset: expected $expected, got $actual. Not installing." >&2
+      exit 1
+    fi
+  done
+  echo "Checked ${#FETCHED_ASSETS[@]} downloads against SHA256SUMS"
 }
 
 atomic_install() {
@@ -318,6 +484,15 @@ install_app_bundle() {
   echo "Installed $APP_DEST"
 }
 
+if [[ -n "$FROM_DIR" ]]; then
+  # A release's own installer carries its tag; a checkout's copy knows none.
+  EXPECTED_TAG=""
+  [[ "$CHANNEL" != "$DEFAULT_CHANNEL" ]] || EXPECTED_TAG="$DEFAULT_TAG"
+else
+  [[ -n "$TAG" ]] || TAG="$(resolve_latest_tag)"
+  EXPECTED_TAG="$TAG"
+fi
+
 mkdir -p "$PREFIX" "$BIN_DIR"
 PREFIX="$(cd "$PREFIX" && pwd -L)"
 BIN_DIR="$(cd "$BIN_DIR" && pwd -L)"
@@ -334,6 +509,7 @@ if [[ "$OS" == "linux" ]]; then
   fetch_asset "$GLOBAL_CLI_ASSET" "$TMP_DIR/nteract-cli"
   fetch_asset "$DAEMON_ASSET" "$TMP_DIR/$DAEMON_NAME"
   fetch_asset "$MCP_ASSET" "$TMP_DIR/$MCP_NAME"
+  verify_downloads
 
   if [[ "$HEADLESS" == "0" ]]; then
     atomic_install "$TMP_DIR/$APPIMAGE_ASSET" "$APPIMAGE_DEST"
@@ -354,6 +530,7 @@ else
   # candidates look; headless installs keep it under the prefix so a
   # workstation box never grows an Applications entry.
   fetch_asset "$BUNDLE_ASSET" "$TMP_DIR/$BUNDLE_ASSET"
+  verify_downloads
   if [[ "$HEADLESS" == "0" ]]; then
     # ~/Applications, not /Applications: the whole install is per-user by
     # design (per-user daemon service, per-user bin links), and the

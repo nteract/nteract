@@ -141,6 +141,8 @@ if [[ -z "\$out" || -z "\$url" ]]; then
 fi
 asset="\${url##*/}"
 echo "wget \$asset -> \$out" >> "$log"
+# Real wget exits 8 when the server answers with an error such as 404.
+[[ -f "$assets/\$asset" ]] || exit 8
 cp "$assets/\$asset" "\$out"
 EOF
   chmod 0755 "$dir/wget"
@@ -194,7 +196,7 @@ WGET_DOWNLOAD_LOG="$WORK/wget-downloads.log"
 make_linux_fixtures "$WORK/wget-assets" "$WGET_LOG"
 make_fetch_tool_path_without_curl "$WORK/no-curl-tools" "$WORK/wget-assets" "$WGET_DOWNLOAD_LOG"
 PATH="$WORK/shim-linux:$WORK/no-curl-tools" run_installer "$WGET_HOME" \
-  --tag v9.9.9-stable.202601010101 --no-start > "$WORK/wget-out.log"
+  --tag v9.9.9-stable.202601010101 --no-start > "$WORK/wget-out.log" 2>&1
 WGET_PREFIX="$WGET_HOME/.local/share/nteract/stable"
 assert_file "$WGET_PREFIX/nteract.AppImage"
 assert_link "$WGET_HOME/.local/bin/runt" "$WGET_PREFIX/bin/runt"
@@ -204,6 +206,8 @@ grep -q "wget runtimed-linux-x64" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: r
 grep -q "wget nteract-mcp-linux-x64" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: mcp asset was not downloaded with wget"
 grep -q "wget nteract-stable-linux-x64.AppImage" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: appimage asset was not downloaded with wget"
 grep -q "runt daemon doctor --fix --no-start" "$WGET_LOG" || fail "wget fallback: daemon doctor --fix --no-start not invoked"
+grep -q "wget SHA256SUMS" "$WGET_DOWNLOAD_LOG" || fail "wget fallback: SHA256SUMS was not requested"
+grep -q "this release has no SHA256SUMS" "$WORK/wget-out.log" || fail "wget fallback: missing SHA256SUMS should warn"
 
 note "linux nightly desktop install"
 NIGHTLY_HOME="$WORK/nightly-home"
@@ -413,6 +417,169 @@ for channel in stable nightly; do
     assert_link "$COMPAT_HOME/.local/bin/nteract" "$COMPAT_HOME/.local/share/nteract/$channel/bin/nteract-cli"
   done
 done
+
+note "release checksums: manifest tool"
+CHECKSUMS_TOOL="$SCRIPT_DIR/ci/release-checksums.sh"
+PINNED_KEY="RWS8zmGqVBZsmzkkrdjXigjInaliPhFjek6RO6+jUxxIzOfAJyo+oHhM"
+[[ "$(bash "$CHECKSUMS_TOOL" public-key "$INSTALLER")" == "$PINNED_KEY" ]] || fail "public-key: installer should pin key 9B6C1654AA61CEBC"
+MANIFEST_DIR="$WORK/manifest-assets"
+mkdir -p "$MANIFEST_DIR/extra"
+printf 'b\n' > "$MANIFEST_DIR/b-asset"
+printf 'a\n' > "$MANIFEST_DIR/a-asset"
+printf 'w\n' > "$MANIFEST_DIR/extra/wheel.whl"
+printf 'stale\n' > "$MANIFEST_DIR/SHA256SUMS.minisig"
+bash "$CHECKSUMS_TOOL" write "$MANIFEST_DIR" "$MANIFEST_DIR/extra" > /dev/null
+[[ "$(awk '{print $2}' "$MANIFEST_DIR/SHA256SUMS" | tr '\n' ' ')" == "a-asset b-asset wheel.whl " ]] || fail "write: manifest should list sorted asset names and skip itself and its signature"
+grep -Eqv '^[0-9a-f]{64}  [^ ]+$' "$MANIFEST_DIR/SHA256SUMS" && fail "write: manifest lines must be '<sha256>  <name>'"
+printf 'dup\n' > "$MANIFEST_DIR/extra/a-asset"
+if bash "$CHECKSUMS_TOOL" write "$MANIFEST_DIR" "$MANIFEST_DIR/extra" > /dev/null 2>&1; then
+  fail "write: duplicate asset names across directories should fail"
+fi
+if RELEASE_CHECKSUMS_SIGNING_KEY="" RELEASE_CHECKSUMS_SIGNING_KEY_PASSWORD="x" \
+  bash "$CHECKSUMS_TOOL" sign "$MANIFEST_DIR/SHA256SUMS" v1.0.0 > "$WORK/empty-key.log" 2>&1; then
+  fail "sign: empty key secret should fail"
+fi
+grep -q "RELEASE_CHECKSUMS_SIGNING_KEY is empty" "$WORK/empty-key.log" || fail "sign: empty key secret should be named"
+
+# Each case installs the Linux x64 CLI from a fresh fixture directory with an
+# installer stamped like a release asset: a tag, and a public key.
+VERIFY_TAG="v9.9.9-stable.202601010101"
+make_checksum_fixture() {
+  local dir="$1"
+  make_linux_fixtures "$dir" "$WORK/verify-calls.log"
+  bash "$CHECKSUMS_TOOL" write "$dir" > /dev/null
+}
+sign_fixture() {
+  local dir="$1" tag="$2" key="$3"
+  RELEASE_CHECKSUMS_SIGNING_KEY="$(base64 < "$key" | tr -d '\n')" \
+    RELEASE_CHECKSUMS_SIGNING_KEY_PASSWORD="$TEST_KEY_PASSWORD" \
+    RUNNER_TEMP="$WORK/runner-temp" \
+    bash "$CHECKSUMS_TOOL" sign "$dir/SHA256SUMS" "$tag" > /dev/null
+}
+stamp_installer() {
+  local dest="$1" key="$2" tag="$3"
+  sed \
+    -e "s|^NTERACT_RELEASE_PUBLIC_KEY=\".*\"$|NTERACT_RELEASE_PUBLIC_KEY=\"$key\"|" \
+    -e "s/^DEFAULT_TAG=\"\"$/DEFAULT_TAG=\"$tag\"/" \
+    "$INSTALLER" > "$dest"
+  grep -Fqx "NTERACT_RELEASE_PUBLIC_KEY=\"$key\"" "$dest" || fail "stamp: key line not replaced"
+}
+# verify_case <name> <pass|fail> <output text> <assets> [installer args...]
+# Runs $CASE_INSTALLER with PATH=$CASE_PATH.
+verify_case() {
+  local name="$1" expect="$2" pattern="$3" assets="$4"
+  shift 4
+  local slug="${name// /-}"
+  local home="$WORK/verify-home-$slug" out="$WORK/verify-out-$slug.log"
+  local status=0
+  INSTALLER_UNDER_TEST="$CASE_INSTALLER" PATH="$CASE_PATH" run_installer "$home" \
+    --from-dir "$assets" --cli "$@" > "$out" 2>&1 || status=$?
+  if [[ "$expect" == pass && "$status" != 0 ]]; then
+    fail "$name: install should succeed (exit $status): $(tail -n 3 "$out")"
+  elif [[ "$expect" == fail && "$status" == 0 ]]; then
+    fail "$name: install should fail"
+  fi
+  if [[ "$expect" == fail ]]; then
+    assert_missing "$home/.local/share/nteract/stable/bin/runt"
+  else
+    assert_link "$home/.local/bin/runt" "$home/.local/share/nteract/stable/bin/runt"
+  fi
+  grep -Fq -- "$pattern" "$out" || fail "$name: output should contain '$pattern': $(tail -n 3 "$out")"
+}
+
+# A PATH with every tool the installer and fixtures use, but no minisign.
+NO_MINISIGN_PATH="$WORK/no-minisign-tools"
+mkdir -p "$NO_MINISIGN_PATH"
+for tool in awk basename bash cat chmod cp dirname env find grep head ln mkdir mktemp mv readlink rm sed sha256sum shasum tail tar tr wc; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    ln -s "$(command -v "$tool")" "$NO_MINISIGN_PATH/$tool"
+  fi
+done
+NO_MINISIGN_PATH="$WORK/shim-linux:$NO_MINISIGN_PATH"
+
+note "release checksums: installer without a signature"
+UNSIGNED_INSTALLER="$WORK/install-linux-release-release-key"
+stamp_installer "$UNSIGNED_INSTALLER" "$PINNED_KEY" "$VERIFY_TAG"
+CASE_INSTALLER="$UNSIGNED_INSTALLER"
+CASE_PATH="$NO_MINISIGN_PATH"
+make_linux_fixtures "$WORK/verify-no-sums" "$WORK/verify-calls.log"
+verify_case "no checksum file" pass "Warning: this release has no SHA256SUMS" "$WORK/verify-no-sums"
+make_checksum_fixture "$WORK/verify-good-sums"
+verify_case "good checksums" pass "Checked 4 downloads against SHA256SUMS" "$WORK/verify-good-sums"
+grep -Fq "no SHA256SUMS.minisig; the signature was not checked" "$WORK/verify-out-good-checksums.log" || fail "good checksums: should note the unchecked signature"
+make_checksum_fixture "$WORK/verify-tampered"
+printf 'tampered\n' >> "$WORK/verify-tampered/runtimed-linux-x64"
+verify_case "tampered asset" fail "SHA-256 mismatch for runtimed-linux-x64" "$WORK/verify-tampered"
+make_checksum_fixture "$WORK/verify-missing-line"
+grep -v ' nteract-mcp-linux-x64$' "$WORK/verify-missing-line/SHA256SUMS" > "$WORK/verify-missing-line/SHA256SUMS.new"
+mv "$WORK/verify-missing-line/SHA256SUMS.new" "$WORK/verify-missing-line/SHA256SUMS"
+verify_case "missing checksum line" fail "SHA256SUMS has no single entry for nteract-mcp-linux-x64" "$WORK/verify-missing-line"
+verify_case "require without checksum file" fail "has no SHA256SUMS; --require-signature" "$WORK/verify-no-sums" --require-signature
+verify_case "require without signature" fail "has no SHA256SUMS.minisig; --require-signature" "$WORK/verify-good-sums" --require-signature
+
+MINISIGN_BIN="$(command -v minisign || true)"
+if [[ -z "$MINISIGN_BIN" ]]; then
+  echo "SKIP: minisign is not installed; signature cases did not run." >&2
+else
+  note "release checksums: signatures (throwaway keys)"
+  TEST_KEY_PASSWORD="throwaway password"
+  KEYS="$WORK/keys"
+  mkdir -p "$KEYS"
+  printf '%s\n%s\n' "$TEST_KEY_PASSWORD" "$TEST_KEY_PASSWORD" |
+    minisign -G -p "$KEYS/good.pub" -s "$KEYS/good.key" > /dev/null 2>&1
+  printf '%s\n%s\n' "$TEST_KEY_PASSWORD" "$TEST_KEY_PASSWORD" |
+    minisign -G -p "$KEYS/other.pub" -s "$KEYS/other.key" > /dev/null 2>&1
+  GOOD_PUB="$(sed -n 2p "$KEYS/good.pub")"
+  SIGNED_INSTALLER="$WORK/install-linux-release-test-key"
+  stamp_installer "$SIGNED_INSTALLER" "$GOOD_PUB" "$VERIFY_TAG"
+  CASE_INSTALLER="$SIGNED_INSTALLER"
+  WITH_MINISIGN_PATH="$WORK/with-minisign-tools"
+  mkdir -p "$WITH_MINISIGN_PATH"
+  ln -s "$MINISIGN_BIN" "$WITH_MINISIGN_PATH/minisign"
+  WITH_MINISIGN_PATH="$WITH_MINISIGN_PATH:$NO_MINISIGN_PATH"
+
+  make_checksum_fixture "$WORK/verify-signed"
+  sign_fixture "$WORK/verify-signed" "$VERIFY_TAG" "$KEYS/good.key"
+  assert_missing "$WORK/runner-temp/nteract-release-checksums-key"
+  bash "$CHECKSUMS_TOOL" verify "$WORK/verify-signed/SHA256SUMS" "$VERIFY_TAG" "$GOOD_PUB" > /dev/null || fail "verify: good signature should verify"
+  if bash "$CHECKSUMS_TOOL" verify "$WORK/verify-signed/SHA256SUMS" "$VERIFY_TAG" "$PINNED_KEY" > /dev/null 2>&1; then
+    fail "verify: signature should not verify against a different key"
+  fi
+  if bash "$CHECKSUMS_TOOL" verify "$WORK/verify-signed/SHA256SUMS" "v9.9.8-stable.202512310101" "$GOOD_PUB" > /dev/null 2>&1; then
+    fail "verify: signature should not verify for a different tag"
+  fi
+
+  CASE_PATH="$WITH_MINISIGN_PATH"
+  verify_case "good signature" pass "Verified SHA256SUMS signature for $VERIFY_TAG" "$WORK/verify-signed"
+  verify_case "good signature required" pass "Verified SHA256SUMS signature for $VERIFY_TAG" "$WORK/verify-signed" --require-signature
+  NTERACT_REQUIRE_SIGNATURE=1 verify_case "env require without signature" fail "has no SHA256SUMS.minisig; --require-signature" "$WORK/verify-good-sums"
+
+  make_checksum_fixture "$WORK/verify-bad-sig"
+  sign_fixture "$WORK/verify-bad-sig" "$VERIFY_TAG" "$KEYS/other.key"
+  verify_case "bad signature" fail "signature does not verify against the nteract release key" "$WORK/verify-bad-sig"
+
+  make_checksum_fixture "$WORK/verify-other-tag"
+  sign_fixture "$WORK/verify-other-tag" "v9.9.8-stable.202512310101" "$KEYS/good.key"
+  verify_case "signature for another tag" fail "signed for 'nteract release v9.9.8-stable.202512310101'" "$WORK/verify-other-tag"
+
+  make_checksum_fixture "$WORK/verify-signed-tampered"
+  sign_fixture "$WORK/verify-signed-tampered" "$VERIFY_TAG" "$KEYS/good.key"
+  printf 'tampered\n' >> "$WORK/verify-signed-tampered/runt-linux-x64"
+  verify_case "signed manifest with tampered asset" fail "SHA-256 mismatch for runt-linux-x64" "$WORK/verify-signed-tampered"
+
+  CASE_PATH="$NO_MINISIGN_PATH"
+  verify_case "signature without minisign" pass "minisign is not on PATH; the signature was not checked" "$WORK/verify-signed"
+  verify_case "require without minisign" fail "minisign is not on PATH; --require-signature" "$WORK/verify-signed" --require-signature
+
+  # A checkout's installer knows no tag: it checks the key but cannot bind
+  # the tag, which --require-signature refuses.
+  UNSTAMPED_INSTALLER="$WORK/install-linux-release-test-key-unstamped"
+  stamp_installer "$UNSTAMPED_INSTALLER" "$GOOD_PUB" ""
+  CASE_INSTALLER="$UNSTAMPED_INSTALLER"
+  CASE_PATH="$WITH_MINISIGN_PATH"
+  verify_case "unknown tag" pass "no tag is known for --from-dir" "$WORK/verify-signed"
+  verify_case "require with unknown tag" fail "No release tag is known for --from-dir" "$WORK/verify-signed" --require-signature
+fi
 
 note "unsupported platform is rejected with guidance"
 make_uname_shim "$WORK/shim-unsupported" "Linux" "armv7l"
