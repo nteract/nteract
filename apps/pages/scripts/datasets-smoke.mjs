@@ -97,6 +97,9 @@ const dataframe = (asset_id, title) => ({
   node: { type: "dataframe", attrs: { asset_id, ...(title && { title }) } },
 });
 const content = (page) => page.locator("wg-content").first();
+// The paragraph beside the tables, in whichever block's editor holds it. A
+// click on a block's middle can land on a table and select it.
+const intro = (page) => page.locator("wg-content").getByText("Intro", { exact: true });
 // Every table on the Page, whichever block's editor holds it.
 const tables = (page) => page.locator("wg-content section.wordgard-dataframe-table");
 const markdownOf = async () =>
@@ -646,7 +649,7 @@ try {
   await expect(selected(dropped)).toHaveCount(0);
   await owner.keyboard.press("ArrowDown");
   await expect(selected(dropped)).toHaveCount(1);
-  complete("Escape deselects; ArrowDown from the text above selects it again");
+  complete("Escape deselects; ArrowDown from the caret before it selects it again");
 
   await owner.keyboard.press("Enter");
   await expect
@@ -703,6 +706,24 @@ try {
   await expect.poll(drawnOutlines).toBe(1);
   complete("Selecting another table deselects the first");
 
+  // A table in a block of its own has its own editor: selecting it clears
+  // the selection the first block's editor holds.
+  const apart = await editPage([
+    { ...dataframe(dataset.asset_id, "Apart"), after_node_id: holderId },
+  ]);
+  assert.equal(apart.status, 200, JSON.stringify(apart.body));
+  const alone = tables(owner).filter({ hasText: "Apart" });
+  await alone.locator(".wordgard-dataframe-title").click();
+  await expect(selected(alone)).toHaveCount(1);
+  await expect(selected(other)).toHaveCount(0);
+  await expect.poll(drawnOutlines).toBe(1);
+  const removed = await editPage([
+    { op: "delete_block", node_id: apart.body.result.edits[0].node_id },
+  ]);
+  assert.equal(removed.status, 200, JSON.stringify(removed.body));
+  for (const page of [owner, viewer]) await expect(tables(page)).toHaveCount(2, { timeout: 15000 });
+  complete("Selecting a table in another block deselects the first");
+
   await owner.waitForTimeout(1200);
   assert.equal(
     await siftRoot.evaluate((element) => element.isConnected),
@@ -715,9 +736,7 @@ try {
   await owner.keyboard.press("ControlOrMeta+X");
   await expect(tables(owner)).toHaveCount(1, { timeout: 10000 });
   await expect(tables(viewer)).toHaveCount(1, { timeout: 15000 });
-  // Into the paragraph: the block holds the other table too, and a click on
-  // the block's middle would select that table.
-  await content(owner).getByText("Intro", { exact: true }).click();
+  await intro(owner).click();
   await owner.keyboard.press("ControlOrMeta+Home");
   await owner.keyboard.press("ControlOrMeta+V");
   await expect(tables(owner)).toHaveCount(2, { timeout: 10000 });
@@ -850,6 +869,9 @@ try {
   const foreign = `/api/pages/44444444-4444-4444-8444-444444444444/assets/${"a".repeat(64)}`;
   const notBrought = owner.getByRole("status").filter({ hasText: "wasn't brought over" });
   await content(owner).click();
+  // A scripted paste event reaches the Page's handler and no further: the
+  // editor's own paste reads a beforeinput, so this one inserts nothing.
+  // The drop below goes through the editor and lands the title.
   await pasteHTML(owner, figure(foreign, "Forged paste"));
   await expect(notBrought).toBeVisible();
   await expect(owner.getByRole("button", { name: "Bring data" })).toHaveCount(0);
