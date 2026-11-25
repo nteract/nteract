@@ -303,7 +303,20 @@ BUNDLE_ID="org.nteract.desktop"
 APPIMAGE_DEST="$PREFIX/$APPIMAGE_NAME.AppImage"
 SIDE_BIN_DIR="$PREFIX/bin"
 TMP_DIR="$(mktemp -d)"
-cleanup() { rm -rf "$TMP_DIR"; }
+APP_DEST=""
+SWAP_STAGING=""
+cleanup() {
+  # An interrupted app swap leaves the previous bundle in its staging
+  # directory. Put it back; keep the directory if that fails.
+  if [[ -n "$SWAP_STAGING" ]]; then
+    local previous="$SWAP_STAGING/previous"
+    if [[ ( -e "$previous" || -L "$previous" ) && ! -e "$APP_DEST" && ! -L "$APP_DEST" ]]; then
+      mv "$previous" "$APP_DEST" || true
+    fi
+    [[ -e "$previous" || -L "$previous" ]] || rm -rf "$SWAP_STAGING"
+  fi
+  rm -rf "$TMP_DIR"
+}
 trap cleanup EXIT
 
 base_url() {
@@ -553,19 +566,31 @@ install_app_bundle() {
   APP_DEST="$dest_dir/$APP_BASENAME"
 
   # Everything that can refuse the install runs before the destination changes.
-  local sidecar
-  for sidecar in runt runtimed nteract-mcp nteract-cli; do
-    if [[ ! -x "$app_src/Contents/MacOS/$sidecar" ]]; then
-      echo "Bundle is missing expected sidecar: Contents/MacOS/$sidecar in $archive" >&2
+  # `notebook` is the desktop app; the rest are its sidecars.
+  local executable
+  for executable in notebook runt runtimed nteract-mcp nteract-cli; do
+    if [[ ! -x "$app_src/Contents/MacOS/$executable" ]]; then
+      echo "Bundle is missing expected executable: Contents/MacOS/$executable in $archive" >&2
       exit 1
     fi
   done
 
+  # A default install replaces the shared app and removes older copies, so the
+  # incoming bundle must be this channel's app.
+  if [[ "$DEFAULT_APPLICATIONS_DIR" == "1" ]]; then
+    if [[ "$(bundle_identifier_of "$app_src")" != "$BUNDLE_ID" ]]; then
+      echo "The app in $archive is not a $BUNDLE_ID app. Nothing was replaced." >&2
+      exit 1
+    fi
+    # Other accounts run the shared app, whatever this shell's umask is.
+    chmod -R a+rX "$app_src"
+  fi
+
   # The default destination is shared by every account, and nothing says the
   # user meant to replace whatever has this name there.
   if [[ "$DEFAULT_APPLICATIONS_DIR" == "1" && ( -e "$APP_DEST" || -L "$APP_DEST" ) ]] &&
-     [[ "$(bundle_identifier_of "$APP_DEST")" != "$BUNDLE_ID" ]]; then
-    echo "Cannot replace $APP_DEST: it is not a $BUNDLE_ID app. It is unchanged." >&2
+     [[ -L "$APP_DEST" || "$(bundle_identifier_of "$APP_DEST")" != "$BUNDLE_ID" ]]; then
+    echo "Cannot replace $APP_DEST: it is a symlink or is not a $BUNDLE_ID app. It is unchanged." >&2
     echo "Move it out of the way and run the installer again, or pass --applications-dir." >&2
     exit 1
   fi
@@ -584,6 +609,7 @@ install_app_bundle() {
   # The existing bundle is renamed aside, so a refused rename leaves it whole.
   local staging
   staging="$(mktemp -d "$dest_dir/.nteract-install.XXXXXX")"
+  SWAP_STAGING="$staging"
   mv "$app_src" "$staging/new"
   if [[ -e "$APP_DEST" || -L "$APP_DEST" ]]; then
     if ! mv "$APP_DEST" "$staging/previous"; then
@@ -602,6 +628,7 @@ install_app_bundle() {
     echo "Could not install $APP_DEST." >&2
     exit 1
   fi
+  SWAP_STAGING=""
   rm -rf "$staging" || echo "Warning: could not remove $staging." >&2
   echo "Installed $APP_DEST"
 }
@@ -810,12 +837,18 @@ done
 # Links this run does not manage, such as a system-wide command or one left
 # from another --bin-dir, are reported rather than changed.
 if [[ "$DEFAULT_APPLICATIONS_DIR" == "1" ]]; then
-  for link in "${HOME%/}/.local/bin"/* "$SYSTEM_BIN_DIR"/*; do
-    [[ -L "$link" && ! -e "$link" ]] || continue
-    link_target="$(readlink "$link")"
-    points_into_replaced_app "$link_target" || continue
-    echo "Warning: $link points into a removed app. Repoint it, with sudo if needed:" >&2
-    echo "  ln -sfn \"$APP_DEST/Contents/MacOS/${link_target##*/}\" \"$link\"" >&2
+  IFS=: read -r -a path_dirs <<< "$PATH"
+  scanned=":"
+  for link_dir in "${HOME%/}/.local/bin" "$SYSTEM_BIN_DIR" ${path_dirs[@]+"${path_dirs[@]}"}; do
+    [[ -n "$link_dir" && "$scanned" != *":$link_dir:"* ]] || continue
+    scanned="$scanned$link_dir:"
+    for link in "$link_dir"/*; do
+      [[ -L "$link" && ! -e "$link" ]] || continue
+      link_target="$(readlink "$link")"
+      points_into_replaced_app "$link_target" || continue
+      echo "Warning: $link points into a removed app. Repoint it, with sudo if needed:" >&2
+      echo "  ln -sfn \"$APP_DEST/Contents/MacOS/${link_target##*/}\" \"$link\"" >&2
+    done
   done
 fi
 
@@ -830,6 +863,21 @@ if [[ "$HEADLESS" == "0" ]]; then
   echo "Repairing daemon service with $RUNT_BIN ${DOCTOR_ARGS[*]}"
   env -u RUNTIMED_DEV -u RUNTIMED_WORKSPACE_PATH PATH="$RUNT_DIR:$BIN_DIR:$PATH" \
     "$RUNT_BIN" "${DOCTOR_ARGS[@]}"
+
+  # doctor reports a failed repair but exits 0, so check the one outcome that
+  # would leave the service launching a removed binary.
+  if [[ "$DEFAULT_APPLICATIONS_DIR" == "1" ]]; then
+    launch_label="io.nteract.runtimed"
+    [[ "$CHANNEL" != "nightly" ]] || launch_label="io.nteract.runtimed.nightly"
+    launch_agent="${HOME%/}/Library/LaunchAgents/$launch_label.plist"
+    for replaced in ${REPLACED_APPS[@]+"${REPLACED_APPS[@]}"}; do
+      if [[ -f "$launch_agent" ]] && grep -qF "<string>$replaced/Contents/MacOS/" "$launch_agent"; then
+        echo "The daemon service in $launch_agent still points into $replaced, which was removed." >&2
+        echo "Make that file writable, then run: \"$RUNT_BIN\" daemon doctor --fix" >&2
+        exit 1
+      fi
+    done
+  fi
 fi
 
 echo

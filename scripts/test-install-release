@@ -104,7 +104,7 @@ make_darwin_fixtures() {
   local stage="$dir/.stage"
   local recorders="$dir/.recorders"
   mkdir -p "$dir" "$recorders" "$stage/$app/Contents/MacOS"
-  for tool in nteract nteract-cli runt runtimed nteract-mcp; do
+  for tool in notebook nteract nteract-cli runt runtimed nteract-mcp; do
     # macOS kills shell scripts whose executed path is inside
     # *.app/Contents/MacOS. Keep the recorder script outside the bundle and
     # put an executable symlink where the app sidecar would be.
@@ -519,7 +519,7 @@ refused_install() {
 note "darwin default refuses to replace another app of the same name"
 rm -rf "$NTERACT_SYSTEM_APPLICATIONS_DIR"
 make_app_bundle "$NTERACT_SYSTEM_APPLICATIONS_DIR/nteract.app" "io.nteract.nteract"
-refused_install other-app "$WORK/darwin-assets" "it is not a org.nteract.desktop app"
+refused_install other-app "$WORK/darwin-assets" "is not a org.nteract.desktop app. It is unchanged"
 
 note "darwin rejects an incomplete bundle before replacing the app"
 mkdir -p "$WORK/incomplete-assets/stage/nteract.app/Contents/MacOS"
@@ -527,7 +527,7 @@ tar -czf "$WORK/incomplete-assets/nteract-stable-darwin-arm64.app.tar.gz" \
   -C "$WORK/incomplete-assets/stage" "nteract.app"
 rm -rf "$NTERACT_SYSTEM_APPLICATIONS_DIR"
 make_app_bundle "$NTERACT_SYSTEM_APPLICATIONS_DIR/nteract.app" "org.nteract.desktop"
-refused_install incomplete "$WORK/incomplete-assets" "Bundle is missing expected sidecar"
+refused_install incomplete "$WORK/incomplete-assets" "Bundle is missing expected executable"
 
 note "darwin replace leaves other files beside the app alone"
 rm -rf "$NTERACT_SYSTEM_APPLICATIONS_DIR"
@@ -543,6 +543,82 @@ assert_file "$NTERACT_SYSTEM_APPLICATIONS_DIR/nteract.app/Contents/MacOS/runt"
 for kept in nteract.app.old nteract.app.new; do
   assert_file "$NTERACT_SYSTEM_APPLICATIONS_DIR/$kept/marker"
 done
+
+note "darwin rejects a bundle without the desktop executable"
+make_darwin_fixtures "$WORK/no-desktop-assets" "$WORK/no-desktop-calls.log"
+mkdir -p "$WORK/no-desktop-assets/stage"
+tar -xzf "$WORK/no-desktop-assets/nteract-stable-darwin-arm64.app.tar.gz" -C "$WORK/no-desktop-assets/stage"
+rm "$WORK/no-desktop-assets/stage/nteract.app/Contents/MacOS/notebook"
+tar -czf "$WORK/no-desktop-assets/nteract-stable-darwin-arm64.app.tar.gz" \
+  -C "$WORK/no-desktop-assets/stage" "nteract.app"
+rm -rf "$NTERACT_SYSTEM_APPLICATIONS_DIR"
+make_app_bundle "$NTERACT_SYSTEM_APPLICATIONS_DIR/nteract.app" "org.nteract.desktop"
+refused_install no-desktop "$WORK/no-desktop-assets" "Contents/MacOS/notebook"
+
+note "darwin default rejects a bundle for another channel"
+make_darwin_fixtures "$WORK/wrong-channel-assets" "$WORK/wrong-channel-calls.log" nightly
+mv "$WORK/wrong-channel-assets/nteract-nightly-darwin-arm64.app.tar.gz" \
+  "$WORK/wrong-channel-assets/nteract-stable-darwin-arm64.app.tar.gz"
+rm -rf "$NTERACT_SYSTEM_APPLICATIONS_DIR"
+make_app_bundle "$NTERACT_SYSTEM_APPLICATIONS_DIR/nteract.app" "org.nteract.desktop"
+refused_install wrong-channel "$WORK/wrong-channel-assets" "Nothing was replaced"
+
+note "darwin default leaves a symlinked system app alone"
+rm -rf "$NTERACT_SYSTEM_APPLICATIONS_DIR"
+mkdir -p "$NTERACT_SYSTEM_APPLICATIONS_DIR"
+make_app_bundle "$WORK/managed-elsewhere/nteract.app" "org.nteract.desktop"
+ln -s "$WORK/managed-elsewhere/nteract.app" "$NTERACT_SYSTEM_APPLICATIONS_DIR/nteract.app"
+refused_install system-symlink "$WORK/darwin-assets" "is a symlink or is not"
+assert_link "$NTERACT_SYSTEM_APPLICATIONS_DIR/nteract.app" "$WORK/managed-elsewhere/nteract.app"
+
+note "darwin interrupted swap puts the previous app back"
+rm -rf "$NTERACT_SYSTEM_APPLICATIONS_DIR"
+make_app_bundle "$NTERACT_SYSTEM_APPLICATIONS_DIR/nteract.app" "org.nteract.desktop"
+# This mv ends the installer right after it sets the old app aside.
+mkdir -p "$WORK/shim-interrupt"
+cat > "$WORK/shim-interrupt/mv" <<EOF
+#!/usr/bin/env bash
+"$(command -v mv)" "\$@" || exit \$?
+case "\${2:-}" in
+  */.nteract-install.*/previous) kill -TERM "\$PPID" ;;
+esac
+EOF
+chmod 0755 "$WORK/shim-interrupt/mv"
+if PATH="$WORK/shim-interrupt:$WORK/shim-darwin:$PATH" run_installer "$WORK/interrupt-home" \
+  --from-dir "$WORK/darwin-assets" --no-start > "$WORK/interrupt.log" 2>&1; then
+  fail "darwin interrupt: install should not succeed"
+fi
+grep -qx "old runt" "$NTERACT_SYSTEM_APPLICATIONS_DIR/nteract.app/Contents/MacOS/runt" || fail "darwin interrupt: previous app should be back"
+[[ -z "$(find "$NTERACT_SYSTEM_APPLICATIONS_DIR" -maxdepth 1 -name '.nteract-install.*')" ]] || fail "darwin interrupt: staging directory left behind"
+
+note "darwin default app is readable by other accounts under a tight umask"
+UMASK_HOME="$WORK/umask-home"
+(umask 077 && darwin_install "$UMASK_HOME" "$WORK/darwin-assets")
+UMASK_APP="$NTERACT_SYSTEM_APPLICATIONS_DIR/nteract.app"
+assert_file "$UMASK_APP/Contents/MacOS/notebook"
+[[ -z "$(find "$UMASK_APP" ! -type l ! -perm -0044)" ]] || fail "darwin umask: app should be readable by everyone"
+[[ -z "$(find "$UMASK_APP" -type d ! -perm -0011)" ]] || fail "darwin umask: app directories should be searchable by everyone"
+
+note "darwin fails when the daemon service still points at a removed copy"
+STUCK_HOME="$WORK/stuck-service-home"
+make_app_bundle "$STUCK_HOME/Applications/nteract.app" "org.nteract.desktop"
+mkdir -p "$STUCK_HOME/Library/LaunchAgents"
+printf '<array>\n  <string>%s/Applications/nteract.app/Contents/MacOS/runtimed</string>\n</array>\n' \
+  "$STUCK_HOME" > "$STUCK_HOME/Library/LaunchAgents/io.nteract.runtimed.plist"
+if PATH="$WORK/shim-darwin:$PATH" run_installer "$STUCK_HOME" \
+  --from-dir "$WORK/darwin-assets" --no-start > "$STUCK_HOME.log" 2>&1; then
+  fail "darwin stuck service: install should fail"
+fi
+grep -q "still points into $STUCK_HOME/Applications/nteract.app" "$STUCK_HOME.log" || fail "darwin stuck service: should name the removed app"
+grep -q "install complete" "$STUCK_HOME.log" && fail "darwin stuck service: should not report completion"
+
+note "darwin default reports links on PATH from another command directory"
+PATH_HOME="$WORK/path-link-home"
+mkdir -p "$PATH_HOME/bin"
+make_app_bundle "$PATH_HOME/Applications/nteract.app" "org.nteract.desktop"
+ln -s "$PATH_HOME/Applications/nteract.app/Contents/MacOS/runt" "$PATH_HOME/bin/runt"
+PATH="$PATH:$PATH_HOME/bin" darwin_install "$PATH_HOME" "$WORK/darwin-assets"
+grep -qF "Warning: $PATH_HOME/bin/runt points into a removed app" "$PATH_HOME.log" || fail "darwin PATH link: should be reported"
 
 note "darwin explicit --applications-dir and --cli remove no other copy"
 for mode in explicit user-dir cli; do
