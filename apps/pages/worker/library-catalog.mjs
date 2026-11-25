@@ -13,6 +13,8 @@ const notFound = (method) =>
     status: 404,
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
+      "Access-Control-Allow-Origin": "*",
+      "Cross-Origin-Resource-Policy": "cross-origin",
       "X-Content-Type-Options": "nosniff",
       "Cache-Control": "no-store",
     },
@@ -74,7 +76,10 @@ async function fromArchive(env, key, method) {
  * reader: this route runs before any session or account code, reads no
  * cookie or credential and sets none.
  *
- * A file or revision neither holds answers 404 with no long-lived caching.
+ * A file or revision neither holds answers 404 with no long-lived caching,
+ * and with the same CORS headers, so a viewer on another origin that names
+ * this host as its library origin can read the 404 and fall back to its own
+ * build's revision.
  *
  * Serving this build's own manifest from its assets starts the archive of
  * this build's revision under `ctx.waitUntil`. The response never waits on

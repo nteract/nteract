@@ -2694,8 +2694,15 @@ login.
 Kilo's library origin is `https://libraries.kilousercontent.com`: the R2 bucket
 `nteract-pages-libraries` on the Kilo Code account, published by hand like the
 output shell. Publish a build's revision there before deploying that build to
-a deployment that names it. A public Pages deployment is also a library origin for builds that carry
-the same catalog revision: it already serves `/catalog/` this way.
+a deployment that names it. A public Pages deployment is also a library
+origin for builds that carry the same catalog revision: it serves `/catalog/`
+this way, 404s included.
+
+The setting must name a public host. Pages checks that it is an HTTPS origin
+but can't tell a public address from a private one; a library origin on the
+tailnet fails with the same `local` address space error. Set it with the
+deployment's other vars, as for `PAGES_TAILSCALE_LOGINS`; the installer's
+profiles don't carry it.
 
 Whoever can write to the library host can add catalog revisions, and a view's
 pin names a revision, so keep only catalogs from builds you trust there.

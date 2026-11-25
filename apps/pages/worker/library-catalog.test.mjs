@@ -118,6 +118,7 @@ for (const [what, path] of [
       assert.equal(response.status, 404);
       assert.equal(response.headers.get("cache-control"), "no-store");
       assert.equal(response.headers.get("content-type"), "text/plain; charset=utf-8");
+      assert.equal(response.headers.get("access-control-allow-origin"), "*");
       assert.equal(await response.text(), method === "GET" ? "No such library file\n" : "");
     }
   });
@@ -134,6 +135,7 @@ test("a catalog path outside the pattern is a 404 the binding never sees", async
   ]) {
     const response = await libraryCatalogResponse(new Request(origin + path), publicEnv(assets));
     assert.equal(response.status, 404, path);
+    assert.equal(response.headers.get("access-control-allow-origin"), "*", path);
   }
   assert.deepEqual(assets.requests, []);
 });
