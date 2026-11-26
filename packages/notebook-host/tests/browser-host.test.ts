@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vite-plus/test";
+import { expectLaunchBudgetForApply } from "./apply-timeout";
 import { createBrowserHost } from "../src/browser";
 
 class FakeWebSocket {
@@ -69,6 +70,17 @@ function textFrame(value: unknown): Uint8Array {
 }
 
 describe("createBrowserHost()", () => {
+  it("allows a cold environment Apply to use the kernel launch timeout", async () => {
+    FakeWebSocket.instances = [];
+    const host = await createBrowserHost({
+      fetchImpl: fetchConfig(),
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    });
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+    await expectLaunchBudgetForApply(host.transport, (frame) => ws.message(frame.buffer));
+  });
+
   it("connects to the dev relay with a token and emits ready", async () => {
     FakeWebSocket.instances = [];
     const host = await createBrowserHost({

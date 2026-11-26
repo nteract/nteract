@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { expectLaunchBudgetForApply } from "./apply-timeout";
 import { TauriTransport } from "../src/tauri/transport";
 
 const coreMock = vi.hoisted(() => {
@@ -45,6 +46,12 @@ afterEach(() => {
 });
 
 describe("TauriTransport", () => {
+  it("allows a cold environment Apply to use the kernel launch timeout", async () => {
+    const transport = new TauriTransport();
+    await transport.subscribeNotebookFrames(7);
+    await expectLaunchBudgetForApply(transport, (frame) => coreMock.channels[0].onmessage(frame));
+  });
+
   it("registers one channel per relay generation", async () => {
     const transport = new TauriTransport();
 

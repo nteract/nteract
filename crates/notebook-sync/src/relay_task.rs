@@ -408,8 +408,10 @@ fn pipe_frame(frame_tx: &mpsc::UnboundedSender<Vec<u8>>, frame: &connection::Typ
 /// used to enforce.
 pub fn request_timeout(request: &NotebookRequest) -> Duration {
     let secs = match request {
-        NotebookRequest::LaunchKernel { .. } => 300,
-        NotebookRequest::SyncEnvironment { .. } => 300,
+        // Apply can wait for a cold environment to be prepared and its kernel launched.
+        NotebookRequest::LaunchKernel { .. }
+        | NotebookRequest::SyncEnvironment { .. }
+        | NotebookRequest::ApplyEnvironmentSelection { .. } => 300,
         // Completions use 7s — the daemon's kernel-level timeout is 5s,
         // so the daemon always responds within ~5s under normal operation.
         NotebookRequest::Complete { .. } => 7,
@@ -423,6 +425,25 @@ mod tests {
     use super::*;
     use notebook_protocol::protocol::{BlobUploadErrorKind, PutBlobHeader, PutBlobResult};
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn only_applying_an_environment_selection_uses_the_launch_timeout() {
+        let apply = NotebookRequest::ApplyEnvironmentSelection {
+            expected_revision: 1,
+            observed_heads: vec![],
+        };
+        assert_eq!(request_timeout(&apply), Duration::from_secs(300));
+        for request in [
+            NotebookRequest::GetEnvironmentSelection {},
+            NotebookRequest::SetEnvironmentSelection {
+                target: notebook_protocol::protocol::LocalEnvironmentTarget::Automatic,
+                expected_revision: 1,
+            },
+            NotebookRequest::ListInstalledKernelspecs {},
+        ] {
+            assert_eq!(request_timeout(&request), Duration::from_secs(30));
+        }
+    }
 
     async fn spawn_relay_for_test() -> (
         crate::relay::RelayHandle,

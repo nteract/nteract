@@ -9,6 +9,7 @@ import {
   type NotebookResponse,
   type NotebookTransport,
 } from "runtimed";
+import { requestTimeoutMs } from "../request-timeout";
 import { ElectronHostClient } from "./client";
 
 const FRAME_TYPE_REQUEST = 0x01;
@@ -18,18 +19,6 @@ interface PendingEntry {
   resolve: (response: NotebookResponse) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
-}
-
-function requestTimeoutMs(request: NotebookRequest): number {
-  switch (request.type) {
-    case "launch_kernel":
-    case "sync_environment":
-      return 300_000;
-    case "complete":
-      return 7_000;
-    default:
-      return 30_000;
-  }
 }
 
 function normalizeFrame(frame: ArrayBuffer | Uint8Array | ArrayBufferView | number[]): number[] {

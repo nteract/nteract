@@ -25,24 +25,12 @@ import {
   type NotebookResponse,
   type NotebookTransport,
 } from "runtimed";
+import { requestTimeoutMs } from "../request-timeout";
 
 const FRAME_TYPE_REQUEST = 0x01;
 const FRAME_TYPE_RESPONSE = 0x02;
 
 type ChannelFramePayload = ArrayBuffer | Uint8Array | number[];
-
-/** Per-request-type timeouts. Mirror `relay_task::request_timeout` in Rust. */
-function requestTimeoutMs(request: NotebookRequest): number {
-  switch (request.type) {
-    case "launch_kernel":
-    case "sync_environment":
-      return 300_000;
-    case "complete":
-      return 7_000;
-    default:
-      return 30_000;
-  }
-}
 
 function normalizeFramePayload(payload: ChannelFramePayload): number[] {
   if (payload instanceof Uint8Array) return Array.from(payload);

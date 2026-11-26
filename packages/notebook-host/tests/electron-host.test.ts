@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { expectLaunchBudgetForApply } from "./apply-timeout";
 import { createElectronHost } from "../src/electron";
 import {
   ELECTRON_HOST_METHODS as ELECTRON_MAIN_HOST_METHODS,
@@ -136,6 +137,29 @@ afterEach(() => {
 });
 
 describe("Electron notebook host", () => {
+  it("allows a cold environment Apply to use the kernel launch timeout", async () => {
+    const ports = linkedPorts();
+    const nativeRelay = fakeRelay();
+    const server = serveElectronNotebookHost({
+      port: ports.main,
+      relay: nativeRelay.relay,
+      handler: { invoke: vi.fn() },
+    });
+    const host = createElectronHost({
+      port: ports.renderer,
+      bootstrap: {
+        protocolVersion: ELECTRON_HOST_PROTOCOL_VERSION,
+        outputDocumentUrl: "app://nteract/output-frame.html",
+      },
+    });
+    try {
+      await host.relay.notifySyncReady();
+      await expectLaunchBudgetForApply(host.transport, (frame) => nativeRelay.emitFrame(frame));
+    } finally {
+      await server.close();
+    }
+  });
+
   it("exposes an immutable presentation snapshot without adding absent defaults", () => {
     const presentation = { rail: { visible: false, side: "right" as const } };
     const host = createElectronHost({
