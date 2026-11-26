@@ -26,10 +26,17 @@
 //! the endpoint reports. A daemon counts as absent only when its endpoint is
 //! missing or refused, no PID from the socket is alive, and the service
 //! manager reports no running process for the service. An answering daemon
-//! with no running kernels restarts. Running kernels ask on an interactive
-//! terminal and refuse otherwise. Anything else refuses. The gate covers this
-//! restart only; the `--no-start` staging path and doctor's older plist
-//! repairs stop the service without it.
+//! must report its PID and a version the target moves forward from; with no
+//! running kernels it restarts. Running kernels ask on an interactive
+//! terminal and refuse otherwise. Anything else refuses.
+//!
+//! The repair child re-checks what doctor saw, right before its shutdown
+//! request: the same daemon PID (or still no daemon), and no running kernels
+//! unless someone agreed to stop them. A kernel that starts in the
+//! milliseconds between that re-check and the shutdown is still stopped.
+//!
+//! The gate covers this restart only; the `--no-start` staging path and
+//! doctor's older plist repairs stop the service without it.
 //!
 //! `--no-start` never restarts. Dev mode never restarts either: the socket
 //! belongs to the worktree daemon, while the service definition belongs to
@@ -182,9 +189,11 @@ pub(crate) fn decide_version_repair(
 /// The result of pinging the daemon endpoint before a restart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PingOutcome {
-    /// The daemon answered. `running_kernels` is `Err` when the room list
-    /// could not be read.
+    /// The daemon answered with its metadata. `running_kernels` is `Err`
+    /// when the room list could not be read.
     Answered {
+        pid: u32,
+        version: String,
         running_kernels: Result<usize, String>,
     },
     /// The endpoint is missing or refused the connection.
@@ -199,9 +208,11 @@ pub(crate) enum DaemonPresence {
     /// The endpoint is missing or refused, no daemon PID is alive, and the
     /// service manager reports no running process.
     Absent,
-    /// The daemon answered. `running_kernels` is `Err` when the room list
-    /// could not be read.
+    /// The daemon answered with its PID and version. `running_kernels` is
+    /// `Err` when the room list could not be read.
     Answering {
+        pid: u32,
+        version: String,
         running_kernels: Result<usize, String>,
     },
     /// Neither an answer nor proof of absence.
@@ -220,7 +231,15 @@ pub(crate) fn classify_presence(
     service_pid: Result<Option<u32>, String>,
 ) -> DaemonPresence {
     match ping {
-        PingOutcome::Answered { running_kernels } => DaemonPresence::Answering { running_kernels },
+        PingOutcome::Answered {
+            pid,
+            version,
+            running_kernels,
+        } => DaemonPresence::Answering {
+            pid,
+            version,
+            running_kernels,
+        },
         PingOutcome::Failed { reason } => DaemonPresence::Inconclusive { reason },
         PingOutcome::EndpointAbsent => match (socket_pid, service_pid) {
             (Some(pid), _) => DaemonPresence::Inconclusive {
@@ -239,53 +258,129 @@ pub(crate) fn classify_presence(
     }
 }
 
+/// The daemon the repair child must still find, so consent given for one
+/// daemon never stops another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExpectedDaemon {
+    Absent,
+    Pid(u32),
+}
+
+/// What `<source> install` re-checks against the live endpoint before it
+/// stops anything. Mirrors `runtimed::service_repair::RepairGuard`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RepairGuard {
+    pub(crate) expected: ExpectedDaemon,
+    /// Refuse if a kernel is running. Cleared once someone agrees to stop
+    /// the kernels.
+    pub(crate) require_idle: bool,
+}
+
+impl RepairGuard {
+    /// The `runtimed install` flags for this guard.
+    pub(crate) fn install_args(self) -> Vec<String> {
+        let mut args = match self.expected {
+            ExpectedDaemon::Absent => vec!["--expect-absent".to_string()],
+            ExpectedDaemon::Pid(pid) => vec!["--expect-pid".to_string(), pid.to_string()],
+        };
+        if self.require_idle {
+            args.push("--require-idle".to_string());
+        }
+        args
+    }
+}
+
 /// Whether a restart may proceed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RestartGate {
-    Proceed,
-    /// Ask the person at the terminal before ending this many kernels.
+    Proceed {
+        guard: RepairGuard,
+    },
+    /// Ask the person at the terminal before ending this many kernels. A yes
+    /// runs the repair with `guard`.
     Ask {
         running_kernels: usize,
+        guard: RepairGuard,
     },
     Refuse {
         reason: String,
     },
 }
 
+/// Gate a restart into `target` on what the probe found.
 pub(crate) fn restart_gate(
     presence: DaemonPresence,
     interactive: bool,
     command_name: &str,
+    target: &str,
 ) -> RestartGate {
-    match presence {
-        DaemonPresence::Absent => RestartGate::Proceed,
+    let (pid, version, running_kernels) = match presence {
+        DaemonPresence::Absent => {
+            return RestartGate::Proceed {
+                guard: RepairGuard {
+                    expected: ExpectedDaemon::Absent,
+                    require_idle: true,
+                },
+            }
+        }
+        DaemonPresence::Inconclusive { reason } => {
+            return RestartGate::Refuse {
+                reason: format!(
+                    "could not confirm whether the daemon is running ({reason}). \
+                     Restart the app, or rerun '{command_name} daemon doctor --fix'."
+                ),
+            }
+        }
         DaemonPresence::Answering {
-            running_kernels: Ok(0),
-        } => RestartGate::Proceed,
-        DaemonPresence::Answering {
-            running_kernels: Ok(count),
-        } if interactive => RestartGate::Ask {
-            running_kernels: count,
+            pid,
+            version,
+            running_kernels,
+        } => (pid, version, running_kernels),
+    };
+    // The decision may have been made without the running version, when the
+    // first metadata query failed. The daemon answering now decides.
+    match step(&version, target) {
+        Step::Same | Step::Forward => {}
+        Step::Backward => {
+            return RestartGate::Refuse {
+                reason: format!(
+                    "daemon pid {pid} runs {version}, newer than {target}; doctor does not downgrade it. \
+                     Use the newest installed app's CLI."
+                ),
+            }
+        }
+        Step::Unordered => {
+            return RestartGate::Refuse {
+                reason: format!(
+                    "daemon pid {pid} runs {version}, which cannot be ordered against {target}. \
+                     Restart the app to choose the daemon."
+                ),
+            }
+        }
+    }
+    match running_kernels {
+        Ok(0) => RestartGate::Proceed {
+            guard: RepairGuard {
+                expected: ExpectedDaemon::Pid(pid),
+                require_idle: true,
+            },
         },
-        DaemonPresence::Answering {
-            running_kernels: Ok(count),
-        } => RestartGate::Refuse {
+        Ok(count) if interactive => RestartGate::Ask {
+            running_kernels: count,
+            guard: RepairGuard {
+                expected: ExpectedDaemon::Pid(pid),
+                require_idle: false,
+            },
+        },
+        Ok(count) => RestartGate::Refuse {
             reason: format!(
                 "{count} kernel(s) are running. Restarting the daemon would stop them. \
                  Close those notebooks or restart the app, then rerun '{command_name} daemon doctor --fix'."
             ),
         },
-        DaemonPresence::Answering {
-            running_kernels: Err(error),
-        } => RestartGate::Refuse {
+        Err(error) => RestartGate::Refuse {
             reason: format!(
                 "could not list open notebooks ({error}). \
-                 Restart the app, or rerun '{command_name} daemon doctor --fix'."
-            ),
-        },
-        DaemonPresence::Inconclusive { reason } => RestartGate::Refuse {
-            reason: format!(
-                "could not confirm whether the daemon is running ({reason}). \
                  Restart the app, or rerun '{command_name} daemon doctor --fix'."
             ),
         },
@@ -310,6 +405,14 @@ pub(crate) enum RepairFailure {
     },
 }
 
+impl RepairFailure {
+    /// The repair may still be replacing the service, so nothing else may
+    /// stop or start it.
+    pub(crate) fn in_progress(&self) -> bool {
+        matches!(self, Self::StillRunning { .. })
+    }
+}
+
 impl std::fmt::Display for RepairFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -329,8 +432,8 @@ impl std::fmt::Display for RepairFailure {
     }
 }
 
-/// Run `<source> install`, the daemon's transactional service repair, and
-/// wait up to `deadline` for it.
+/// Run `<source> install` with `guard`'s preconditions, the daemon's
+/// transactional service repair, and wait up to `deadline` for it.
 ///
 /// The child inherits no endpoint override or dev namespace, so it resolves
 /// the service's own endpoint. Its stdout and stderr go to a log file in
@@ -338,6 +441,7 @@ impl std::fmt::Display for RepairFailure {
 /// into a closed pipe. The file is removed on success and kept otherwise.
 pub(crate) async fn run_service_repair(
     source: &Path,
+    guard: RepairGuard,
     deadline: Duration,
     log_dir: &Path,
 ) -> Result<(), RepairFailure> {
@@ -358,6 +462,7 @@ pub(crate) async fn run_service_repair(
     let stderr = stdout.try_clone().map_err(spawn_error)?;
     let mut child = tokio::process::Command::new(source)
         .arg("install")
+        .args(guard.install_args())
         .env_remove("RUNTIMED_SOCKET_PATH")
         .env_remove("RUNTIMED_DEV")
         .env_remove("RUNTIMED_WORKSPACE_PATH")
@@ -469,6 +574,44 @@ pub(crate) fn binary_version(path: &Path, deadline: Duration) -> Option<String> 
         .ok()?;
     let version = line.trim().trim_start_matches("runtimed ").to_string();
     (!version.is_empty()).then_some(version)
+}
+
+/// Whether doctor's last step may start the service. A repair still running
+/// past doctor's deadline owns the service until it exits.
+pub(crate) fn should_start_service(
+    installed: bool,
+    running_before: bool,
+    no_start: bool,
+    repair_in_progress: bool,
+) -> bool {
+    installed && !running_before && !no_start && !repair_in_progress
+}
+
+/// Whether the macOS legacy-standalone migration may point the service at
+/// the bundled binary. The migration only moves forward: a bundled binary
+/// older than the standalone binary or the running daemon, or one whose
+/// version is unknown, is left alone.
+pub(crate) fn legacy_migration_allowed(
+    installed: Option<&str>,
+    running: Option<&str>,
+    bundled: Option<&str>,
+) -> Result<(), String> {
+    let Some(bundled) = bundled else {
+        return Err("the bundled runtime did not report its version".to_string());
+    };
+    for (label, version) in [
+        ("standalone binary", installed),
+        ("running daemon", running),
+    ] {
+        if let Some(version) = version {
+            if step(version, bundled) == Step::Backward {
+                return Err(format!(
+                    "the {label} runs {version}, newer than the bundled {bundled}"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Confirm the daemon answering after a repair is a new process running the
@@ -786,6 +929,8 @@ mod tests {
         assert_eq!(
             classify_presence(
                 PingOutcome::Answered {
+                    pid: 41,
+                    version: OLD.into(),
                     running_kernels: Ok(3)
                 },
                 None,
@@ -806,47 +951,146 @@ mod tests {
             Ok(None),
         );
         assert!(matches!(
-            restart_gate(presence, true, "runt"),
+            restart_gate(presence, true, "runt", NEW),
             RestartGate::Refuse { .. }
         ));
     }
 
     fn answering(kernels: Result<usize, String>) -> DaemonPresence {
+        answering_with(OLD, kernels)
+    }
+
+    fn answering_with(version: &str, kernels: Result<usize, String>) -> DaemonPresence {
         DaemonPresence::Answering {
+            pid: 41,
+            version: version.to_string(),
             running_kernels: kernels,
+        }
+    }
+
+    fn guard(expected: ExpectedDaemon, require_idle: bool) -> RepairGuard {
+        RepairGuard {
+            expected,
+            require_idle,
         }
     }
 
     #[test]
     fn restart_gate_proceeds_only_with_proof_of_no_kernels() {
         assert_eq!(
-            restart_gate(DaemonPresence::Absent, false, "runt"),
-            RestartGate::Proceed
+            restart_gate(DaemonPresence::Absent, false, "runt", NEW),
+            RestartGate::Proceed {
+                guard: guard(ExpectedDaemon::Absent, true)
+            }
         );
-        assert_eq!(
-            restart_gate(answering(Ok(0)), false, "runt"),
-            RestartGate::Proceed
-        );
-        assert_eq!(
-            restart_gate(answering(Ok(0)), true, "runt"),
-            RestartGate::Proceed
-        );
+        for interactive in [false, true] {
+            assert_eq!(
+                restart_gate(answering(Ok(0)), interactive, "runt", NEW),
+                RestartGate::Proceed {
+                    guard: guard(ExpectedDaemon::Pid(41), true)
+                }
+            );
+        }
     }
 
     #[test]
     fn restart_gate_protects_running_kernels() {
+        // A yes covers the kernels counted, so the child skips the idle check
+        // but still requires the same daemon.
         assert_eq!(
-            restart_gate(answering(Ok(2)), true, "runt"),
-            RestartGate::Ask { running_kernels: 2 }
+            restart_gate(answering(Ok(2)), true, "runt", NEW),
+            RestartGate::Ask {
+                running_kernels: 2,
+                guard: guard(ExpectedDaemon::Pid(41), false)
+            }
         );
         assert!(matches!(
-            restart_gate(answering(Ok(2)), false, "runt"),
+            restart_gate(answering(Ok(2)), false, "runt", NEW),
             RestartGate::Refuse { reason } if reason.starts_with("2 kernel(s) are running")
         ));
         assert!(matches!(
-            restart_gate(answering(Err("timed out".into())), true, "runt"),
+            restart_gate(answering(Err("timed out".into())), true, "runt", NEW),
             RestartGate::Refuse { reason } if reason.contains("timed out")
         ));
+    }
+
+    #[test]
+    fn restart_gate_orders_the_answering_daemon_against_the_target() {
+        // The first metadata query failed, so the decision saw no running
+        // version. The daemon that answers the probe runs 2.11.0.
+        assert_eq!(
+            decide(inputs(Some(OLD), None, Some(NEW))),
+            VersionRepair::Restart {
+                source: RepairSource::Bundled
+            }
+        );
+        assert!(matches!(
+            restart_gate(answering_with(NEWER, Ok(0)), true, "runt", NEW),
+            RestartGate::Refuse { reason } if reason.contains("does not downgrade")
+        ));
+        assert!(matches!(
+            restart_gate(answering_with("2.10.1+other", Ok(0)), true, "runt", NEW),
+            RestartGate::Refuse { reason } if reason.contains("cannot be ordered")
+        ));
+        // Same version as the target: only the service definition is stale.
+        assert!(matches!(
+            restart_gate(answering_with(NEW, Ok(0)), false, "runt", NEW),
+            RestartGate::Proceed { .. }
+        ));
+    }
+
+    #[test]
+    fn guard_becomes_install_flags() {
+        assert_eq!(
+            guard(ExpectedDaemon::Pid(41), true).install_args(),
+            ["--expect-pid", "41", "--require-idle"]
+        );
+        assert_eq!(
+            guard(ExpectedDaemon::Pid(41), false).install_args(),
+            ["--expect-pid", "41"]
+        );
+        assert_eq!(
+            guard(ExpectedDaemon::Absent, true).install_args(),
+            ["--expect-absent", "--require-idle"]
+        );
+    }
+
+    #[test]
+    fn a_repair_past_the_deadline_blocks_the_final_start() {
+        assert!(should_start_service(true, false, false, false));
+        assert!(!should_start_service(true, false, false, true));
+        assert!(!should_start_service(true, true, false, false));
+        assert!(!should_start_service(true, false, true, false));
+        assert!(!should_start_service(false, false, false, false));
+
+        let still_running = RepairFailure::StillRunning {
+            pid: Some(7),
+            tail: String::new(),
+            log: PathBuf::from("x.log"),
+        };
+        assert!(still_running.in_progress());
+        let exited = RepairFailure::Exited {
+            status: "exit status: 1".into(),
+            tail: String::new(),
+            log: PathBuf::from("x.log"),
+        };
+        assert!(!exited.in_progress());
+        assert!(!RepairFailure::Spawn("no such file".into()).in_progress());
+    }
+
+    #[test]
+    fn legacy_migration_only_moves_forward() {
+        assert_eq!(
+            legacy_migration_allowed(Some(OLD), Some(OLD), Some(NEW)),
+            Ok(())
+        );
+        assert_eq!(legacy_migration_allowed(Some(NEW), None, Some(NEW)), Ok(()));
+        assert_eq!(legacy_migration_allowed(None, None, Some(NEW)), Ok(()));
+        assert!(legacy_migration_allowed(Some(NEWER), Some(OLD), Some(NEW))
+            .is_err_and(|error| error.contains("standalone binary runs 2.11.0")));
+        assert!(legacy_migration_allowed(Some(OLD), Some(NEWER), Some(NEW))
+            .is_err_and(|error| error.contains("running daemon runs 2.11.0")));
+        assert!(legacy_migration_allowed(Some(OLD), None, None).is_err());
     }
 
     #[test]
@@ -861,6 +1105,7 @@ mod tests {
                     },
                     interactive,
                     "runt",
+                    NEW,
                 ),
                 RestartGate::Refuse { reason } if reason.contains("ping timed out")
             ));
@@ -916,10 +1161,18 @@ mod tests {
                 marker.display()
             ),
         );
-        run_service_repair(&source, Duration::from_secs(10), logs.path())
-            .await
-            .unwrap();
-        assert_eq!(std::fs::read_to_string(marker).unwrap().trim(), "install");
+        run_service_repair(
+            &source,
+            guard(ExpectedDaemon::Pid(41), true),
+            Duration::from_secs(10),
+            logs.path(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(marker).unwrap().trim(),
+            "install --expect-pid 41 --require-idle"
+        );
         assert!(logs_in(logs.path()).is_empty());
     }
 
@@ -929,9 +1182,14 @@ mod tests {
         let bin = tempfile::tempdir().unwrap();
         let logs = tempfile::tempdir().unwrap();
         let source = script(&bin, "echo starting; echo 'Error: socket busy' >&2; exit 3");
-        let failure = run_service_repair(&source, Duration::from_secs(10), logs.path())
-            .await
-            .unwrap_err();
+        let failure = run_service_repair(
+            &source,
+            guard(ExpectedDaemon::Pid(41), true),
+            Duration::from_secs(10),
+            logs.path(),
+        )
+        .await
+        .unwrap_err();
         match &failure {
             RepairFailure::Exited { tail, log, .. } => {
                 assert_eq!(tail, "starting | Error: socket busy");
@@ -955,23 +1213,32 @@ mod tests {
             ),
         );
         let started = std::time::Instant::now();
-        let failure = run_service_repair(&source, Duration::from_secs(1), logs.path())
-            .await
-            .unwrap_err();
+        let failure = run_service_repair(
+            &source,
+            guard(ExpectedDaemon::Absent, true),
+            Duration::from_secs(1),
+            logs.path(),
+        )
+        .await
+        .unwrap_err();
         assert!(started.elapsed() < Duration::from_secs(3));
-        match &failure {
-            RepairFailure::StillRunning { pid, tail, .. } => {
+        // The tail is a snapshot at the deadline; on a loaded machine the
+        // child may not have written yet, so only the log path is checked.
+        let log = match &failure {
+            RepairFailure::StillRunning { pid, log, .. } => {
                 assert!(pid.is_some());
-                assert_eq!(tail, "stopping old daemon");
+                log.clone()
             }
             other => panic!("unexpected {other:?}"),
-        }
-        // Doctor did not stop the repair; it finishes on its own.
+        };
+        // Doctor did not stop the repair; it finishes on its own and keeps
+        // writing to the kept log.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while !finished.exists() && std::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         assert!(finished.exists(), "repair was stopped at the deadline");
+        assert_eq!(read_log_tail(&log), "stopping old daemon");
     }
 
     #[test]

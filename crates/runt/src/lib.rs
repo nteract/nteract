@@ -3013,10 +3013,61 @@ async fn doctor_command(
             }
         }
 
+        // Look up the bundled binary once for every repair that installs it.
+        // Bundle discovery falls back across channels (a nightly CLI can find
+        // the stable app), so the binary must report this CLI's channel.
+        let bundled = match bundled_runtime(entrypoint) {
+            Some(path) => match (runtimed::startup::RuntimeLaunch {
+                binary: path.clone(),
+                channel: runt_workspace::build_channel(),
+                worktree: None,
+            })
+            .verify_binary_identity()
+            .await
+            {
+                Ok(()) => Some(path),
+                Err(error) => {
+                    eprintln!("Ignoring bundled runtime at {}: {error}", path.display());
+                    None
+                }
+            },
+            None => None,
+        };
+        let installed_ver = if binary_exists {
+            get_binary_version(&binary_path)
+        } else {
+            None
+        };
+        let bundled_ver = bundled.as_ref().and_then(|p| get_binary_version(p));
+        let running_ver = if daemon_state_status == "ok" {
+            daemon_info.map(|info| info.version.as_str())
+        } else {
+            None
+        };
+        // Set when a restart is still replacing the service past doctor's
+        // deadline. Nothing else may stop or start the service after that.
+        let mut repair_in_progress = false;
+
         // Fix legacy standalone binary — migrate plist to in-bundle binary (macOS only)
         #[cfg(target_os = "macos")]
         if runt_workspace::is_legacy_standalone_install() {
-            if let Some(bundled_path) = bundled_runtime(entrypoint) {
+            let migration = bundled.as_ref().map(|path| {
+                (
+                    path,
+                    doctor_version_repair::legacy_migration_allowed(
+                        installed_ver.as_deref(),
+                        running_ver,
+                        bundled_ver.as_deref(),
+                    ),
+                )
+            });
+            if let Some((bundled_path, Err(reason))) = &migration {
+                eprintln!(
+                    "Legacy standalone binary left in place: {reason}. Migrating to {} would not move forward.",
+                    bundled_path.display()
+                );
+            } else if let Some((bundled_path, Ok(()))) = migration {
+                let bundled_path = bundled_path.clone();
                 // Create a ServiceManager with the in-bundle binary path
                 let migrated_config = runtimed_service::ServiceConfig {
                     binary_path: bundled_path.clone(),
@@ -3125,24 +3176,10 @@ async fn doctor_command(
             }
         }
 
-        // Look up bundled binary once for version mismatch and repair scenarios
-        let bundled = bundled_runtime(entrypoint);
-        let installed_ver = if binary_exists {
-            get_binary_version(&binary_path)
-        } else {
-            None
-        };
-        let bundled_ver = bundled.as_ref().and_then(|p| get_binary_version(p));
-
         // Fix version mismatch: the installed binary differs from the bundled
         // one, or the running daemon differs from the binary it should run.
         // Restarts go through `<binary> install`, the transactional service
         // repair; see `doctor_version_repair` for the rules.
-        let running_ver = if daemon_state_status == "ok" {
-            daemon_info.map(|info| info.version.as_str())
-        } else {
-            None
-        };
         let version_repair = if binary_exists && config_exists {
             doctor_version_repair::decide_version_repair(
                 doctor_version_repair::VersionInputs {
@@ -3242,7 +3279,10 @@ async fn doctor_command(
                                 source_path.display()
                             ));
                         }
-                        Err(reason) => eprintln!("Daemon restart skipped: {reason}"),
+                        Err(skipped) => {
+                            repair_in_progress = skipped.repair_in_progress;
+                            eprintln!("Daemon restart skipped: {}", skipped.reason);
+                        }
                     }
                 }
             }
@@ -3303,7 +3343,12 @@ async fn doctor_command(
         // to avoid spawning a long-running child inside the installer's Windows
         // Job Object, while Linux packaging smokes use it to stage daemon files
         // without requiring a live user systemd session.
-        if manager.is_installed() && !daemon_running_before && !no_start {
+        if doctor_version_repair::should_start_service(
+            manager.is_installed(),
+            daemon_running_before,
+            no_start,
+            repair_in_progress,
+        ) {
             let result = manager.start();
             launches.record(doctor_readiness::ServiceRepair::Start, result.is_ok());
             match result {
@@ -3574,13 +3619,32 @@ fn is_process_running(pid: u32) -> bool {
     }
 }
 
+/// Why doctor did not restart the daemon.
+struct RestartSkipped {
+    reason: String,
+    /// The repair child outlived doctor's deadline and may still be
+    /// replacing the service.
+    repair_in_progress: bool,
+}
+
+impl From<String> for RestartSkipped {
+    fn from(reason: String) -> Self {
+        Self {
+            reason,
+            repair_in_progress: false,
+        }
+    }
+}
+
 /// Restart the daemon into `source`'s version through its transactional
 /// service repair. Returns the verified version of the new daemon.
 ///
 /// Refuses before touching anything unless `source` reports this CLI's
-/// compiled channel, the checked endpoint is the managed service's, and the
-/// endpoint proves there are no running kernels (or the person at the
-/// terminal agrees to stop them).
+/// compiled channel, the checked endpoint is the managed service's, the
+/// answering daemon reports a version `target_ver` moves forward from, and
+/// the endpoint proves there are no running kernels (or the person at the
+/// terminal agrees to stop them). The repair child re-checks the daemon and
+/// its kernels before it stops anything.
 async fn restart_stale_daemon(
     client: &runtimed::client::PoolClient,
     source: &Path,
@@ -3589,7 +3653,7 @@ async fn restart_stale_daemon(
     json: bool,
     command_name: &str,
     launches: &mut doctor_readiness::LaunchTracker,
-) -> std::result::Result<String, String> {
+) -> std::result::Result<String, RestartSkipped> {
     use doctor_version_repair::RestartGate;
 
     // The repair child resolves the service's own endpoint. An override
@@ -3597,7 +3661,8 @@ async fn restart_stale_daemon(
     if std::env::var_os("RUNTIMED_SOCKET_PATH").is_some() {
         return Err(
             "RUNTIMED_SOCKET_PATH is set, so the checked endpoint may not be the managed service's"
-                .to_string(),
+                .to_string()
+                .into(),
         );
     }
     runtimed::startup::RuntimeLaunch {
@@ -3613,15 +3678,24 @@ async fn restart_stale_daemon(
     let interactive = !json
         && std::io::IsTerminal::is_terminal(&std::io::stdin())
         && std::io::IsTerminal::is_terminal(&std::io::stderr());
-    match doctor_version_repair::restart_gate(presence, interactive, command_name) {
-        RestartGate::Proceed => {}
-        RestartGate::Ask { running_kernels } => {
+    let guard = match doctor_version_repair::restart_gate(
+        presence,
+        interactive,
+        command_name,
+        target_ver,
+    ) {
+        RestartGate::Proceed { guard } => guard,
+        RestartGate::Ask {
+            running_kernels,
+            guard,
+        } => {
             if !confirm_kernel_restart(running_kernels) {
-                return Err("declined at the prompt".to_string());
+                return Err("declined at the prompt".to_string().into());
             }
+            guard
         }
-        RestartGate::Refuse { reason } => return Err(reason),
-    }
+        RestartGate::Refuse { reason } => return Err(reason.into()),
+    };
 
     if !json {
         eprintln!(
@@ -3631,6 +3705,7 @@ async fn restart_stale_daemon(
     }
     let repaired = doctor_version_repair::run_service_repair(
         source,
+        guard,
         doctor_version_repair::SERVICE_REPAIR_TIMEOUT,
         &std::env::temp_dir(),
     )
@@ -3650,7 +3725,10 @@ async fn restart_stale_daemon(
             ),
             _ => "no daemon is answering at the service socket".to_string(),
         };
-        return Err(format!("{} {failure}. Now: {now}.", source.display()));
+        return Err(RestartSkipped {
+            reason: format!("{} {failure}. Now: {now}.", source.display()),
+            repair_in_progress: failure.in_progress(),
+        });
     }
 
     // With no endpoint override and no dev namespace, the checked socket is
@@ -3662,18 +3740,22 @@ async fn restart_stale_daemon(
         live_pid,
         target_ver,
     )
+    .map_err(RestartSkipped::from)
 }
 
-/// Probe the daemon before a restart. Absence needs every witness: a missing
-/// or refused endpoint, no live PID from the socket metadata, and no running
-/// process reported by the service manager.
+/// Probe the daemon before a restart. An answer must carry the daemon's PID
+/// and version. Absence needs every witness: a missing or refused endpoint,
+/// no live PID from the socket metadata, and no running process reported by
+/// the service manager.
 async fn probe_daemon_presence(
     client: &runtimed::client::PoolClient,
     live_pid: Option<u32>,
 ) -> doctor_version_repair::DaemonPresence {
     use doctor_version_repair::PingOutcome;
-    let ping = match tokio::time::timeout(Duration::from_secs(2), client.ping()).await {
-        Ok(Ok(())) => PingOutcome::Answered {
+    let ping = match tokio::time::timeout(Duration::from_secs(2), client.daemon_info()).await {
+        Ok(Ok(info)) => PingOutcome::Answered {
+            pid: info.pid,
+            version: info.daemon_version,
             running_kernels: count_running_kernels(client).await,
         },
         Ok(Err(error)) if runtimed::startup::endpoint_absent(&error) => PingOutcome::EndpointAbsent,
@@ -3681,7 +3763,7 @@ async fn probe_daemon_presence(
             reason: error.to_string(),
         },
         Err(_) => PingOutcome::Failed {
-            reason: "ping timed out".to_string(),
+            reason: "daemon metadata query timed out".to_string(),
         },
     };
     let socket_pid = live_pid.filter(|pid| is_process_running(*pid));
