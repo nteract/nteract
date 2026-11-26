@@ -102,6 +102,16 @@ enum Commands {
         /// Path to the daemon binary to install (default: current binary)
         #[arg(long)]
         binary: Option<PathBuf>,
+        /// Refuse unless this daemon PID owns the endpoint when the repair
+        /// starts.
+        #[arg(long, hide = true, conflicts_with = "expect_absent")]
+        expect_pid: Option<u32>,
+        /// Refuse if any daemon answers on the endpoint when the repair starts.
+        #[arg(long, hide = true)]
+        expect_absent: bool,
+        /// Refuse if the live daemon reports a running kernel.
+        #[arg(long, hide = true)]
+        require_idle: bool,
     },
 
     // =========================================================================
@@ -617,7 +627,26 @@ async fn daemon_main() -> anyhow::Result<()> {
 
             run_daemon(config).await
         }
-        Some(Commands::Install { binary }) => install_service(binary).await,
+        Some(Commands::Install {
+            binary,
+            expect_pid,
+            expect_absent,
+            require_idle,
+        }) => {
+            let expected = match (expect_pid, expect_absent) {
+                (Some(pid), _) => runtimed::service_repair::ExpectedDaemon::Pid(pid),
+                (None, true) => runtimed::service_repair::ExpectedDaemon::Absent,
+                (None, false) => runtimed::service_repair::ExpectedDaemon::Any,
+            };
+            install_service(
+                binary,
+                runtimed::service_repair::RepairGuard {
+                    expected,
+                    require_idle,
+                },
+            )
+            .await
+        }
         // Deprecated commands - still work but print warnings
         Some(Commands::Uninstall) => {
             eprintln!(
@@ -991,7 +1020,10 @@ async fn run_daemon(config: DaemonConfig) -> anyhow::Result<()> {
     result
 }
 
-async fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {
+async fn install_service(
+    binary: Option<PathBuf>,
+    guard: runtimed::service_repair::RepairGuard,
+) -> anyhow::Result<()> {
     let source_binary = match binary {
         Some(path) => path,
         None => std::env::current_exe()?,
@@ -1006,7 +1038,7 @@ async fn install_service(binary: Option<PathBuf>) -> anyhow::Result<()> {
     );
 
     let verified =
-        runtimed::service_repair::repair_service(&source_binary, runtimed::daemon_version())
+        runtimed::service_repair::repair_service(&source_binary, runtimed::daemon_version(), guard)
             .await?;
 
     println!();

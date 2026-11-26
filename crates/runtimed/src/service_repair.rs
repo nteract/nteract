@@ -136,6 +136,81 @@ async fn wait_for_rooms_to_quiesce(
     Err(last_error.unwrap_or_else(|| "room quiescence could not be established".to_string()))
 }
 
+/// The daemon a caller checked before asking for a repair. The repair
+/// refuses when the endpoint no longer holds that daemon, so consent given
+/// for one daemon never stops another.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExpectedDaemon {
+    /// No precondition: the app's own startup and upgrade repairs.
+    #[default]
+    Any,
+    /// The caller saw no daemon on the endpoint.
+    Absent,
+    /// The caller saw this daemon PID answering on the endpoint.
+    Pid(u32),
+}
+
+/// Preconditions a caller attaches to a repair. They are checked against
+/// the live endpoint right before the shutdown request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RepairGuard {
+    pub expected: ExpectedDaemon,
+    /// Refuse when the live daemon reports a running kernel, or cannot
+    /// report its rooms. Set when nobody agreed to stop kernels.
+    pub require_idle: bool,
+}
+
+/// What the endpoint holds when the repair starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveDaemon {
+    Absent,
+    Identified(u32),
+    /// Answers pings but does not report PID metadata.
+    Unidentified,
+}
+
+/// Why `guard` refuses `live`, if it does. `running_kernels` is consulted
+/// only when the guard asks for an idle daemon and one is live.
+fn guard_refusal(
+    guard: RepairGuard,
+    live: LiveDaemon,
+    running_kernels: impl FnOnce() -> std::result::Result<usize, String>,
+) -> Option<String> {
+    let identity = match (guard.expected, live) {
+        (ExpectedDaemon::Any, _)
+        | (ExpectedDaemon::Absent, LiveDaemon::Absent) => None,
+        (ExpectedDaemon::Pid(expected), LiveDaemon::Identified(pid)) if expected == pid => None,
+        (ExpectedDaemon::Absent, LiveDaemon::Identified(pid)) => Some(format!(
+            "daemon pid {pid} appeared on the endpoint after the caller found none"
+        )),
+        (ExpectedDaemon::Absent, LiveDaemon::Unidentified) => Some(
+            "a daemon appeared on the endpoint after the caller found none".to_string(),
+        ),
+        (ExpectedDaemon::Pid(expected), LiveDaemon::Identified(pid)) => Some(format!(
+            "the caller checked daemon pid {expected}, but pid {pid} owns the endpoint now"
+        )),
+        (ExpectedDaemon::Pid(expected), LiveDaemon::Unidentified) => Some(format!(
+            "the caller checked daemon pid {expected}, but the endpoint's daemon does not report its pid"
+        )),
+        (ExpectedDaemon::Pid(expected), LiveDaemon::Absent) => Some(format!(
+            "the caller checked daemon pid {expected}, but no daemon answers now"
+        )),
+    };
+    if identity.is_some() {
+        return identity;
+    }
+    if !guard.require_idle || live == LiveDaemon::Absent {
+        return None;
+    }
+    match running_kernels() {
+        Ok(0) => None,
+        Ok(count) => Some(format!(
+            "{count} kernel(s) started after the caller checked; nobody agreed to stop them"
+        )),
+        Err(error) => Some(format!("could not confirm that no kernels run: {error}")),
+    }
+}
+
 fn same_incarnation(left: &DaemonInfo, right: &DaemonInfo) -> bool {
     left.pid == right.pid && left.started_at == right.started_at
 }
@@ -179,6 +254,7 @@ impl ServiceRuntime for SystemServiceRuntime {
 trait DaemonRuntime {
     async fn inspect(&self) -> Option<DaemonInfo>;
     async fn is_responding(&self) -> bool;
+    async fn running_kernels(&self) -> std::result::Result<usize, String>;
     async fn request_shutdown(&self) -> std::result::Result<(), String>;
     async fn wait_for_pid_exit(&self, pid: u32, timeout: Duration) -> bool;
     async fn stop_process(&self, pid: u32) -> std::result::Result<(), String>;
@@ -240,6 +316,19 @@ impl DaemonRuntime for SystemDaemonRuntime {
         )
         .await
         .is_ok_and(|result| result.is_ok())
+    }
+
+    async fn running_kernels(&self) -> std::result::Result<usize, String> {
+        match tokio::time::timeout(
+            DAEMON_PROBE_TIMEOUT,
+            PoolClient::new(self.socket_path.clone()).list_rooms(),
+        )
+        .await
+        {
+            Ok(Ok(rooms)) => Ok(rooms.iter().filter(|room| room.has_kernel).count()),
+            Ok(Err(error)) => Err(error.to_string()),
+            Err(_) => Err("room list timed out".to_string()),
+        }
     }
 
     async fn request_shutdown(&self) -> std::result::Result<(), String> {
@@ -346,8 +435,13 @@ impl DaemonRuntime for SystemDaemonRuntime {
 }
 
 /// Repair the stable service using `source_binary` and prove the intended
-/// daemon took ownership before returning success.
-pub async fn repair_service(source_binary: &Path, expected_version: &str) -> Result<DaemonInfo> {
+/// daemon took ownership before returning success. `guard` is checked
+/// against the live endpoint before anything is stopped.
+pub async fn repair_service(
+    source_binary: &Path,
+    expected_version: &str,
+    guard: RepairGuard,
+) -> Result<DaemonInfo> {
     if !source_binary.exists() {
         return Err(anyhow!(
             "daemon binary not found at {}",
@@ -357,7 +451,14 @@ pub async fn repair_service(source_binary: &Path, expected_version: &str) -> Res
 
     let mut service = SystemServiceRuntime::default();
     let daemon = SystemDaemonRuntime::default();
-    repair_service_with(&mut service, &daemon, source_binary, expected_version).await
+    repair_service_with(
+        &mut service,
+        &daemon,
+        source_binary,
+        expected_version,
+        guard,
+    )
+    .await
 }
 
 async fn repair_service_with<S, D>(
@@ -365,12 +466,31 @@ async fn repair_service_with<S, D>(
     daemon: &D,
     source_binary: &Path,
     expected_version: &str,
+    guard: RepairGuard,
 ) -> Result<DaemonInfo>
 where
     S: ServiceRuntime,
     D: DaemonRuntime,
 {
     let previous = daemon.inspect().await;
+    if guard != RepairGuard::default() {
+        let live = match previous.as_ref() {
+            Some(info) => LiveDaemon::Identified(info.pid),
+            None if daemon.is_responding().await => LiveDaemon::Unidentified,
+            None => LiveDaemon::Absent,
+        };
+        // The kernel count is read here, immediately before the shutdown
+        // request. A kernel that starts between this read and the daemon
+        // accepting the shutdown is still stopped.
+        let running_kernels = if guard.require_idle && live != LiveDaemon::Absent {
+            Some(daemon.running_kernels().await)
+        } else {
+            None
+        };
+        if let Some(reason) = guard_refusal(guard, live, || running_kernels.unwrap_or(Ok(0))) {
+            return Err(anyhow!("repair refused: {reason}"));
+        }
+    }
     if let Some(info) = previous.as_ref() {
         stop_live_daemon(service, daemon, info).await?;
     } else if daemon.is_responding().await {
@@ -793,6 +913,7 @@ mod tests {
         migration_error: Option<&'static str>,
         fallback_valid: bool,
         responds_without_info: Arc<AtomicBool>,
+        running_kernels: usize,
     }
 
     impl DaemonRuntime for FakeDaemon {
@@ -803,6 +924,11 @@ mod tests {
 
         async fn is_responding(&self) -> bool {
             self.info.lock().unwrap().is_some() || self.responds_without_info.load(Ordering::SeqCst)
+        }
+
+        async fn running_kernels(&self) -> std::result::Result<usize, String> {
+            self.events.lock().unwrap().push("running_kernels");
+            Ok(self.running_kernels)
         }
 
         async fn request_shutdown(&self) -> std::result::Result<(), String> {
@@ -1038,6 +1164,7 @@ mod tests {
             migration_error: None,
             fallback_valid: false,
             responds_without_info: Arc::new(AtomicBool::new(false)),
+            running_kernels: 0,
         };
         let replacement = daemon_info(84, "2.7.1+new", DAEMON_API_VERSION);
         let mut service = FakeService {
@@ -1053,6 +1180,7 @@ mod tests {
             &daemon,
             Path::new("/Applications/nteract.app/Contents/MacOS/runtimed"),
             &replacement.version,
+            RepairGuard::default(),
         )
         .await
         .unwrap();
@@ -1098,6 +1226,7 @@ mod tests {
             migration_error: None,
             fallback_valid: false,
             responds_without_info: Arc::new(AtomicBool::new(false)),
+            running_kernels: 0,
         };
         let replacement = daemon_info(84, "2.7.2+new", DAEMON_API_VERSION);
         let mut service = FakeService {
@@ -1113,6 +1242,7 @@ mod tests {
             &daemon,
             Path::new("/Applications/nteract.app/Contents/MacOS/runtimed"),
             &replacement.version,
+            RepairGuard::default(),
         )
         .await
         .unwrap();
@@ -1167,6 +1297,7 @@ mod tests {
             migration_error: None,
             fallback_valid: false,
             responds_without_info: Arc::new(AtomicBool::new(true)),
+            running_kernels: 0,
         };
         let replacement = daemon_info(91, "2.7.1+new", DAEMON_API_VERSION);
         let mut service = FakeService {
@@ -1182,6 +1313,7 @@ mod tests {
             &daemon,
             Path::new("/Applications/nteract.app/Contents/MacOS/runtimed"),
             &replacement.version,
+            RepairGuard::default(),
         )
         .await
         .unwrap();
@@ -1218,6 +1350,7 @@ mod tests {
             migration_error: None,
             fallback_valid: false,
             responds_without_info: Arc::new(AtomicBool::new(false)),
+            running_kernels: 0,
         };
         let replacement = daemon_info(84, "2.7.1+new", DAEMON_API_VERSION);
         let mut service = FakeService {
@@ -1233,6 +1366,7 @@ mod tests {
             &daemon,
             Path::new("/Applications/nteract.app/Contents/MacOS/runtimed"),
             "2.7.1+new",
+            RepairGuard::default(),
         )
         .await
         .unwrap_err();
@@ -1261,6 +1395,7 @@ mod tests {
             migration_error: None,
             fallback_valid: false,
             responds_without_info: Arc::new(AtomicBool::new(false)),
+            running_kernels: 0,
         };
         let replacement = daemon_info(84, "2.7.4+new", DAEMON_API_VERSION);
         let mut service = FakeService {
@@ -1276,6 +1411,7 @@ mod tests {
             &daemon,
             Path::new("/Applications/nteract.app/Contents/MacOS/runtimed"),
             &replacement.version,
+            RepairGuard::default(),
         )
         .await
         .unwrap();
@@ -1322,6 +1458,7 @@ mod tests {
             migration_error: Some("active journal changed after archive"),
             fallback_valid: true,
             responds_without_info: Arc::new(AtomicBool::new(false)),
+            running_kernels: 0,
         };
         let replacement = daemon_info(84, "2.7.4+new", DAEMON_API_VERSION);
         let mut service = FakeService {
@@ -1337,6 +1474,7 @@ mod tests {
             &daemon,
             Path::new("/Applications/nteract.app/Contents/MacOS/runtimed"),
             &replacement.version,
+            RepairGuard::default(),
         )
         .await
         .unwrap();
@@ -1373,6 +1511,7 @@ mod tests {
             migration_error: None,
             fallback_valid: false,
             responds_without_info: Arc::new(AtomicBool::new(false)),
+            running_kernels: 0,
         };
         let replacement = daemon_info(84, "2.7.4+new", DAEMON_API_VERSION);
         let mut service = FakeService {
@@ -1388,6 +1527,7 @@ mod tests {
             &daemon,
             Path::new("/Applications/nteract.app/Contents/MacOS/runtimed"),
             "2.7.4+new",
+            RepairGuard::default(),
         )
         .await
         .unwrap_err();
@@ -1420,6 +1560,7 @@ mod tests {
             migration_error: Some("active journal changed after archive"),
             fallback_valid: false,
             responds_without_info: Arc::new(AtomicBool::new(false)),
+            running_kernels: 0,
         };
         let replacement = daemon_info(84, "2.7.4+new", DAEMON_API_VERSION);
         let mut service = FakeService {
@@ -1435,6 +1576,7 @@ mod tests {
             &daemon,
             Path::new("/Applications/nteract.app/Contents/MacOS/runtimed"),
             "2.7.4+new",
+            RepairGuard::default(),
         )
         .await
         .unwrap_err();
@@ -1447,5 +1589,172 @@ mod tests {
         assert!(events.contains(&"migrate_takeover"));
         assert!(events.contains(&"verify_fallback"));
         assert!(!events.contains(&"upgrade_start"));
+    }
+
+    #[test]
+    fn guard_refuses_a_daemon_the_caller_did_not_check() {
+        let no_kernels = || Ok(0);
+        let pid = |expected| RepairGuard {
+            expected: ExpectedDaemon::Pid(expected),
+            require_idle: false,
+        };
+        let absent = RepairGuard {
+            expected: ExpectedDaemon::Absent,
+            require_idle: false,
+        };
+
+        assert_eq!(
+            guard_refusal(RepairGuard::default(), LiveDaemon::Unidentified, no_kernels),
+            None
+        );
+        assert_eq!(
+            guard_refusal(pid(41), LiveDaemon::Identified(41), no_kernels),
+            None
+        );
+        assert_eq!(guard_refusal(absent, LiveDaemon::Absent, no_kernels), None);
+
+        for (guard, live) in [
+            (pid(41), LiveDaemon::Identified(42)),
+            (pid(41), LiveDaemon::Unidentified),
+            (pid(41), LiveDaemon::Absent),
+            (absent, LiveDaemon::Identified(42)),
+            (absent, LiveDaemon::Unidentified),
+        ] {
+            assert!(
+                guard_refusal(guard, live, no_kernels).is_some(),
+                "{guard:?} must refuse {live:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn idle_guard_rechecks_kernels_on_the_live_daemon() {
+        let idle = RepairGuard {
+            expected: ExpectedDaemon::Pid(41),
+            require_idle: true,
+        };
+        assert_eq!(
+            guard_refusal(idle, LiveDaemon::Identified(41), || Ok(0)),
+            None
+        );
+        assert!(guard_refusal(idle, LiveDaemon::Identified(41), || Ok(1))
+            .unwrap()
+            .contains("1 kernel(s) started"));
+        assert!(
+            guard_refusal(idle, LiveDaemon::Identified(41), || Err("timed out".into()))
+                .unwrap()
+                .contains("could not confirm")
+        );
+
+        let consented = RepairGuard {
+            require_idle: false,
+            ..idle
+        };
+        assert_eq!(
+            guard_refusal(
+                consented,
+                LiveDaemon::Identified(41),
+                || -> std::result::Result<usize, String> {
+                    panic!("consent skips the kernel check")
+                }
+            ),
+            None
+        );
+
+        let absent_idle = RepairGuard {
+            expected: ExpectedDaemon::Absent,
+            require_idle: true,
+        };
+        assert_eq!(
+            guard_refusal(
+                absent_idle,
+                LiveDaemon::Absent,
+                || -> std::result::Result<usize, String> {
+                    panic!("no live daemon has no kernels to count")
+                }
+            ),
+            None
+        );
+    }
+
+    fn guarded_fake(
+        live_pid: u32,
+        running_kernels: usize,
+    ) -> (FakeDaemon, FakeService, Arc<Mutex<Vec<&'static str>>>) {
+        let info = Arc::new(Mutex::new(Some(daemon_info(
+            live_pid,
+            "2.7.1+old",
+            DAEMON_API_VERSION,
+        ))));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let daemon = FakeDaemon {
+            info: info.clone(),
+            events: events.clone(),
+            shutdown_exits: true,
+            shutdown_error: None,
+            legacy_takeover: false,
+            migration_error: None,
+            fallback_valid: false,
+            responds_without_info: Arc::new(AtomicBool::new(false)),
+            running_kernels,
+        };
+        let service = FakeService {
+            installed: true,
+            stop_succeeds: true,
+            info,
+            events: events.clone(),
+            replacement: daemon_info(84, "2.7.2+new", DAEMON_API_VERSION),
+        };
+        (daemon, service, events)
+    }
+
+    #[tokio::test]
+    async fn guarded_repair_refuses_before_shutdown_when_a_kernel_started() {
+        let (daemon, mut service, events) = guarded_fake(41, 1);
+        let error = repair_service_with(
+            &mut service,
+            &daemon,
+            Path::new("/Applications/nteract.app/Contents/MacOS/runtimed"),
+            "2.7.2+new",
+            RepairGuard {
+                expected: ExpectedDaemon::Pid(41),
+                require_idle: true,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("repair refused"));
+        let events = events.lock().unwrap();
+        assert!(events.contains(&"running_kernels"));
+        assert!(!events.contains(&"shutdown"));
+        assert!(!events.contains(&"service_stop"));
+        assert!(!events.contains(&"upgrade_start"));
+    }
+
+    #[tokio::test]
+    async fn guarded_repair_refuses_a_replaced_daemon_and_proceeds_on_the_checked_one() {
+        let (daemon, mut service, events) = guarded_fake(42, 0);
+        let guard = RepairGuard {
+            expected: ExpectedDaemon::Pid(41),
+            require_idle: true,
+        };
+        let source = Path::new("/Applications/nteract.app/Contents/MacOS/runtimed");
+        assert!(
+            repair_service_with(&mut service, &daemon, source, "2.7.2+new", guard)
+                .await
+                .is_err()
+        );
+        assert!(!events.lock().unwrap().contains(&"shutdown"));
+
+        let (daemon, mut service, events) = guarded_fake(41, 0);
+        let verified = repair_service_with(&mut service, &daemon, source, "2.7.2+new", guard)
+            .await
+            .unwrap();
+        assert_eq!(verified.pid, 84);
+        let events = events.lock().unwrap();
+        let checked = events.iter().position(|e| *e == "running_kernels").unwrap();
+        let shutdown = events.iter().position(|e| *e == "shutdown").unwrap();
+        assert!(checked < shutdown);
     }
 }
