@@ -123,8 +123,8 @@ lists, images, views and dataframes in order. Blocks are a storage detail
    markers. An insert without a node anchor still makes a block, so a Page
    an agent builds in pieces is stacked editors. A selection can't cross
    them, Backspace can't join them, and a person can't remove an empty one.
-    On a 15-Page sample, a block is in practice one
-    agent write, not a unit anyone chose.
+   On a 15-Page sample, a block is in practice one agent write, not a unit
+   anyone chose.
    - **Inserts go in place.** Done for an anchor node:
      `insert_markdown`, `insert_image` and `insert_node` write after a
      top-level node inside its block
@@ -278,7 +278,7 @@ lists, images, views and dataframes in order. Blocks are a storage detail
    `scripts/project-transfer.mjs` writes a body with
    `replace_block_markdown` and `delete_block`, then inserts with no anchor,
    which a host that writes in place keeps in one block. It moves off the
-    block operations with step 6.4.
+   block operations with step 6.4.
 
 ### Delete
 

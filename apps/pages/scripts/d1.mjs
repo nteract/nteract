@@ -24,12 +24,12 @@ import {
 } from "./quota-rules.mjs";
 
 export const USAGE = `Usage:
-  node scripts/d1.mjs --target pages "SELECT name FROM sqlite_master WHERE type = 'table'"
-  node scripts/d1.mjs --target page10 --file query.sql
-  echo "SELECT 1" | node scripts/d1.mjs --target pages -
+  node scripts/d1.mjs --target page10 "SELECT name FROM sqlite_master WHERE type = 'table'"
+  node scripts/d1.mjs --target pages2 --file query.sql
+  echo "SELECT 1" | node scripts/d1.mjs --target page10 -
 
 Options:
-  --target NAME     Required: pages, page10 or pages2.
+  --target NAME     Required: page10, pages2, page11 or page12.
   --file PATH       Read the SQL from a file. "-" as the SQL reads stdin.
   --ssh-host HOST   SSH destination; the profile's host (lab1, or lab2 for pages2) by default.
 
