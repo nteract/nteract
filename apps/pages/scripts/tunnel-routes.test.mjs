@@ -219,7 +219,7 @@ function routeStrings() {
 }
 
 test("the supported targets include the isolated Page11 experiment", () => {
-  assert.deepEqual(QUALIFIED_TARGETS, ["page10", "pages", "pages2", "page11", "page12"]);
+  assert.deepEqual(QUALIFIED_TARGETS, ["page10", "pages2", "page11", "page12"]);
 });
 
 test("the refused paths are /internal/, the test issuer, celld's own path and dot segments", () => {

@@ -95,8 +95,6 @@ export function unitMemory(profile) {
   return { maxRssMb, memoryMax };
 }
 const targets = Object.freeze({
-  // Pages held here before pages.runtimed.run; it stays deployable until its
-  // Projects are copied there.
   page10: Object.freeze({
     deployment: Object.freeze({
       host: shared.host,
@@ -162,74 +160,6 @@ const targets = Object.freeze({
     tunnelSlots: Object.freeze({
       a: Object.freeze({ service: "cloudflared-page10-a.service", metrics: "127.0.0.1:29480" }),
       b: Object.freeze({ service: "cloudflared-page10-b.service", metrics: "127.0.0.1:29490" }),
-    }),
-  }),
-  // pages.runtimed.run: the lasting home for Pages. It starts empty, with
-  // Page10's flags and runtime; scripts/project-transfer.mjs copies Projects in.
-  // Its service and prefix carry `-live` because the host still holds a
-  // disabled nteract-pages.service and /etc/nteract-pages from an earlier
-  // prototype, and the installer must never treat those as this target's.
-  pages: Object.freeze({
-    deployment: Object.freeze({
-      host: shared.host,
-      hostname: "pages.runtimed.run",
-      service: "nteract-pages-live",
-      bucket: shared.bucket,
-      prefix: "standalone/pages-live",
-      region: shared.region,
-      listen: "127.0.0.1:9481",
-      internalListen: "127.0.0.1:19481",
-      runtime: shared.runtime,
-      requiredVersion: shared.requiredVersion,
-    }),
-    sharing: true,
-    oauth: true,
-    theme: true,
-    // The viewer loads its editor from content-hashed /chunks/*.js files.
-    viewerChunks: true,
-    // The shell's own files (app.js, app.css, theme.js, mermaid.js and both
-    // WASM runtimes) ship under content-hashed names too.
-    viewerAssets: true,
-    // A Project opens at /project/<id>; older /s/<id> links open it too.
-    projectLinks: true,
-    // The viewer's index routes: /projects and /pages.
-    indexRoutes: true,
-    // Sift's hashed WASM, for Parquet dataframe nodes.
-    siftTables: true,
-    whoami: true,
-    // /api/auth/logout-all and /api/auth/grants[/<handle>/revoke]: sign out
-    // everywhere and connected agents (worker/account-auth.mjs).
-    accountRoutes: true,
-    // /p/<id>/meta.json and /card.json, and the same under /project/<id>:
-    // what a link shows its reader (worker/link-previews.mjs).
-    linkPreviews: true,
-    // /api/pages/<id>/card-image[/<hash>-<theme>.<ext>]: grid card images
-    // (worker/card-images.mjs).
-    cardImages: true,
-    // /api/projects/<id>/assets[/<sha256>]: a Project's assets, which belong
-    // to its content document.
-    projectAssets: true,
-    firewallTable: "nteract_pages_live",
-    firewallMark: "0x00100000",
-    firewallComment: "nteract/preview-infra standalone-pages-live",
-    companyViewDomains: "anaconda.com",
-    catalogIndex: "1",
-    // Each account's Page limit when no quota rule matches it
-    // (worker/page-quota.mjs). It also bounds that account's Trash.
-    pageQuota: "250",
-    // The D1 database holding pages_quota_rules, for scripts/quota-rules.mjs.
-    d1: AUTH_D1,
-    // The Cloudflare edge forwards an unsampled traceparent, and celld's
-    // default parent-based sampler then drops every request-scoped log line.
-    otelTracesSampler: "always_on",
-    // Same limits as Page10; see its memory comment.
-    memory: SERVING_MEMORY,
-    // The single connector unit earlier releases installed, then the two
-    // slots publication alternates between (see Page10).
-    tunnelService: "cloudflared-pages-live.service",
-    tunnelSlots: Object.freeze({
-      a: Object.freeze({ service: "cloudflared-pages-live-a.service", metrics: "127.0.0.1:29481" }),
-      b: Object.freeze({ service: "cloudflared-pages-live-b.service", metrics: "127.0.0.1:29491" }),
     }),
   }),
   // page2.runtimed.run (target pages2): a fresh, empty target on its own host, lab2 (m7i.large,
@@ -401,13 +331,12 @@ export function deploymentProfile(target) {
 }
 
 // Every profile is a live target. Installation and publication run only for
-// these five; app qualification is separate and must precede installation.
-// Page10 stays deployable until its Projects are copied to Pages.
-export const QUALIFIED_TARGETS = Object.freeze(["page10", "pages", "pages2", "page11", "page12"]);
+// these four; app qualification is separate and must precede installation.
+export const QUALIFIED_TARGETS = Object.freeze(["page10", "pages2", "page11", "page12"]);
 export function assertQualifiedDeploymentTarget(target) {
   deploymentProfile(target);
   if (!QUALIFIED_TARGETS.includes(target))
-    throw new Error("This build deploys only page10, pages, pages2, page11 and page12");
+    throw new Error("This build deploys only page10, pages2, page11 and page12");
 }
 
 // The record storage each target may hold Pages in, beyond the native modes
@@ -417,7 +346,6 @@ export function assertQualifiedDeploymentTarget(target) {
 // including a rollback to a build from before plain sync.
 export const RECORD_STORAGE_HISTORY = Object.freeze({
   page10: Object.freeze(["automerge"]),
-  pages: Object.freeze(["automerge"]),
   pages2: Object.freeze(["automerge"]),
   page11: Object.freeze(["automerge"]),
   page12: Object.freeze(["automerge"]),
@@ -431,7 +359,6 @@ const FORMAT_1_DOCUMENTS = Object.freeze({ "pages.page": 1, "pages.comments": 1 
 const FORMAT_3_DOCUMENTS = Object.freeze({ "pages.page": 3, "pages.comments": 2 });
 export const TARGET_DOCUMENT_FORMATS = Object.freeze({
   page10: FORMAT_3_DOCUMENTS,
-  pages: FORMAT_1_DOCUMENTS,
   pages2: FORMAT_1_DOCUMENTS,
   page11: FORMAT_1_DOCUMENTS,
   page12: FORMAT_3_DOCUMENTS,

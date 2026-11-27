@@ -123,8 +123,8 @@ lists, images, views and dataframes in order. Blocks are a storage detail
    markers. An insert without a node anchor still makes a block, so a Page
    an agent builds in pieces is stacked editors. A selection can't cross
    them, Backspace can't join them, and a person can't remove an empty one.
-   On a 15-Page sample from `pages.runtimed.run`, a block is in practice one
-   agent write, not a unit anyone chose.
+    On a 15-Page sample, a block is in practice one
+    agent write, not a unit anyone chose.
    - **Inserts go in place.** Done for an anchor node:
      `insert_markdown`, `insert_image` and `insert_node` write after a
      top-level node inside its block
@@ -232,12 +232,8 @@ lists, images, views and dataframes in order. Blocks are a storage detail
    it reads, and a release to a target is refused when the target's
    documents are in a format the build does not read. Both landed on
    format 1.
-2. **The last format 1 commit is tagged `pages-format-1`.**
-   `pages.runtimed.run` runs that commit, and `main` is never promoted to
-   that service. A fix for it goes on a maintenance branch cut from the tag,
-   built from that branch and promoted by hand.
-3. **Delete what a new service does not need** (list below).
-4. **Formats 2 and 3**, deployed to a new, empty service. Done: `main`
+2. **Delete what a new service does not need** (list below).
+3. **Formats 2 and 3**, deployed to a new, empty service. Done: `main`
    writes `pages.page` 3 and `pages.comments` 2, and `page10` is the lab
    target that takes them. A target is emptied for format 3, because its
    markers move node ids, the golden node addresses and the editor's caret
@@ -250,17 +246,17 @@ lists, images, views and dataframes in order. Blocks are a storage detail
      build does not write, or a record without the stamp, while its owner
      can still delete the Page. `TARGET_DOCUMENT_FORMATS` stays the release
      gate. A missed reset is refused Page by Page.
-5. **Agent tools on the current format.** Done on `main`: agent tools run on
+4. **Agent tools on the current format.** Done on `main`: agent tools run on
    format 3 with `node_id` addressing, unified `edit_page`, revision handles,
    and nonces (item 5 above).
-6. **A second document type**, once Pages runs on the type boundary. The
+5. **A second document type**, once Pages runs on the type boundary. The
    host runs on it: plain sync asks each document's type module for its
    write access, feature gates, admission and revision handles
    ([worker/document-modules.mjs](worker/document-modules.mjs)), with the
    Page and comments documents as its first two modules. Started: a Page's
    named sources are a third module, `pages.sources`, a document only the
    host writes ([model/sources-doc.mjs](model/sources-doc.mjs)).
-7. **One flow per Page** (item 6 above). Done: in-place insert after a
+6. **One flow per Page** (item 6 above). Done: in-place insert after a
    node and at either end of the Page, "Continue writing" adds a paragraph,
    and `move_nodes` moves a section with its comments
    ([model/move-nodes.mjs](model/move-nodes.mjs)).
@@ -282,14 +278,14 @@ lists, images, views and dataframes in order. Blocks are a storage detail
    `scripts/project-transfer.mjs` writes a body with
    `replace_block_markdown` and `delete_block`, then inserts with no anchor,
    which a host that writes in place keeps in one block. It moves off the
-   block operations with step 7.4.
+    block operations with step 6.4.
 
 ### Delete
 
 | When | What | Why it can go |
 | --- | --- | --- |
 | Any time | A snapshot file with no regenerate command, or a test that compares against a fixed commit | It pins code that no longer exists and cannot follow an intended change |
-| After the format 1 tag | The `PageRecords` declaration and binding, `recordStorage` stamps and guards, `stored-form.mjs` | They protect documents and open tabs on `pages.runtimed.run`. A new service has neither. The `PageRecords` Durable Object class already has an empty body and nothing calls it; it stays declared while a deployed target still binds it, because removing it takes a `deleted_classes` migration |
+| After the format 1 tag | The `PageRecords` declaration and binding, `recordStorage` stamps and guards, `stored-form.mjs` | They protect documents and open tabs on the deployed targets that still hold format 1. A new service has neither. The `PageRecords` Durable Object class already has an empty body and nothing calls it; it stays declared while a deployed target still binds it, because removing it takes a `deleted_classes` migration |
 
 Keep tests that state behavior: concurrent edits, comment anchors, access
 decisions, receipts, persistence and recovery, and the property tests.
@@ -318,7 +314,7 @@ records the node addresses agents use.
   editable), and its owner upgrades it with one action that writes the new
   document from the old one under the same Page, with no outright refusal or
   forced deletion.
-  - *In place:* host records stamp `documentFormats` (order of work, step 4),
+  - *In place:* host records stamp `documentFormats` (order of work, step 3),
     and the viewer keeps cached copies readable and copyable when the host
     refuses a Page's format ([viewer/format-gate.mjs](viewer/format-gate.mjs)).
   - *Remaining:* host read-only serving for older formats (currently refused)
@@ -330,15 +326,10 @@ records the node addresses agents use.
   tree. It does not copy comments, sharing, Trash or history. Copying more,
   such as comments, is a change to that script. Copying is optional and is
   not a gate.
-- **`pages.runtimed.run` holds documents people use.** Do not reset it, and do
-  not build a migration from it. It runs the commit tagged `pages-format-1`.
-  Nothing from `main` deploys to it: a fix is a commit on a maintenance
-  branch cut from that tag.
-- **The other targets in this list are demos.** Keep this list current.
+- **The targets in this list are demos.** Keep this list current.
 
   | Target | Host | State |
   | --- | --- | --- |
-  | `pages` | lab1 | In use. Runs `pages-format-1`. Takes fixes from its maintenance branch only |
   | `page10` | lab1 | Preview. Deployed from `main` automatically. Reset freely |
   | `pages2` (`page2.runtimed.run`) | lab2 | Demo. Reset freely |
   | `page11` | lab2 | Profile in source only; nothing is deployed |

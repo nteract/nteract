@@ -80,7 +80,7 @@ test("dedicated page10 plan cannot use shared or unowned tunnel credentials", ()
   assert.doesNotMatch(plan.unit, /\/etc\/cloudflared\/|cloudflared\.service/);
   assert.ok(!JSON.stringify(plan).includes(input.credentials.TunnelSecret));
   for (const changed of [
-    { manifest: { ...input.manifest, deployment: deploymentProfile("pages").deployment } },
+    { manifest: { ...input.manifest, deployment: deploymentProfile("pages2").deployment } },
     { tunnelReceipt: { ...input.tunnelReceipt, name: "existing-tunnel" } },
     { credentials: { ...input.credentials, AccountTag: "f".repeat(32) } },
     { sharedConfig: "tunnel: " + tunnelId + "\n" },
@@ -399,7 +399,7 @@ test("page10 installs fresh and refuses older route sets as predecessors", (t) =
 test("Page10 refuses Pages manifests, connector credentials and installation receipts", (t) => {
   const value = inputFor("page10");
   assert.throws(
-    () => isolatedPublicationPlan({ ...value, target: "pages" }),
+    () => isolatedPublicationPlan({ ...value, target: "pages2" }),
     /Unexpected deployment target/,
   );
   assert.throws(
@@ -408,7 +408,7 @@ test("Page10 refuses Pages manifests, connector credentials and installation rec
     /different tunnel/,
   );
   const f = fixture(t, { target: "page10" });
-  const foreign = isolatedPublicationPlan(inputFor("pages"));
+  const foreign = isolatedPublicationPlan(inputFor("pages2"));
   f.write(
     "/etc/nteract-page10/tunnel-installation.json",
     JSON.stringify({
@@ -422,39 +422,25 @@ test("Page10 refuses Pages manifests, connector credentials and installation rec
   assert.equal(f.writes.length, 0);
 });
 
-test("Pages serves Page10's route set on pages.runtimed.run and its own listener", () => {
-  const current = routesFor("pages");
-  const page10 = deploymentProfile("page10").deployment;
-  const pages = deploymentProfile("pages").deployment;
-  // Pages copies Page10's route flags. Only the hostname and listener differ.
-  assert.equal(
-    current.replaceAll(pages.hostname, page10.hostname).replaceAll(pages.listen, page10.listen),
-    routesFor("page10"),
-  );
-  assert.match(current, /^  - hostname: pages[.]runtimed[.]run\n/);
-  assert.match(current, /service: http:\/\/127[.]0[.]0[.]1:9481\n/);
-  assert.doesNotMatch(current, /page10[.]runtimed[.]run|127[.]0[.]0[.]1:9480/);
-});
-
-test("pages installs fresh and refuses Page10's receipts", (t) => {
-  const f = fixture(t, { target: "pages" });
-  const plan = isolatedPublicationPlan(inputFor("pages"));
-  const installation = "/etc/nteract-pages-live/tunnel-installation.json";
-  assert.equal(plan.service, "cloudflared-pages-live.service");
-  assert.equal(plan.configPath, "/etc/nteract-pages-live/tunnel.yml");
+test("pages2 installs fresh and refuses Page10's receipts", (t) => {
+  const f = fixture(t, { target: "pages2", sharedTunnel: false });
+  const plan = isolatedPublicationPlan(inputFor("pages2"));
+  const installation = "/etc/nteract-pages2/tunnel-installation.json";
+  assert.equal(plan.service, "cloudflared-pages2.service");
+  assert.equal(plan.configPath, "/etc/nteract-pages2/tunnel.yml");
   const result = f.execute();
   assert.equal(result.routesUpdated, false);
-  assert.equal(result.service, "cloudflared-pages-live-a.service");
+  assert.equal(result.service, "cloudflared-pages2-a.service");
   assert.equal(result.frozenTargetsUnchanged, undefined);
   assert.equal(fs.readFileSync(f.local(plan.configPath), "utf8"), plan.config);
   assert.deepEqual(lifecycle(f), [
-    "start cloudflared-pages-live-a.service",
-    "enable cloudflared-pages-live-a.service",
+    "start cloudflared-pages2-a.service",
+    "enable cloudflared-pages2-a.service",
   ]);
-  // Page10's connector bytes are not Pages' to adopt, under either layout.
+  // Page10's connector bytes are not pages2's to adopt, under either layout.
   const page10 = isolatedPublicationPlan(inputFor("page10"));
   for (const unit of [digest(page10.unit), page10.unitSha256]) {
-    const g = fixture(t, { target: "pages" });
+    const g = fixture(t, { target: "pages2", sharedTunnel: false });
     g.write(
       installation,
       JSON.stringify({
@@ -468,12 +454,12 @@ test("pages installs fresh and refuses Page10's receipts", (t) => {
     assert.equal(g.writes.length, 0);
   }
   assert.throws(
-    () => isolatedPublicationPlan({ ...inputFor("pages"), target: "page10" }),
+    () => isolatedPublicationPlan({ ...inputFor("pages2"), target: "page10" }),
     /Unexpected deployment target/,
   );
 });
 
-for (const target of ["page10", "pages"])
+for (const target of ["page10"])
   test(`${target} publication retries leave the shared connector untouched`, (t) => {
     const { deployment, tunnelService } = deploymentProfile(target);
     // A slotted target never installs its legacy unit; it owns only its slots.
@@ -529,7 +515,7 @@ const DOT_PROBES = [
   "/./internal/create",
   "/x/../dev/oidc/token",
 ];
-for (const target of ["page10", "pages"])
+for (const target of ["page10"])
   test(`${target} publisher verifies refused and admitted paths before starting its connector`, (t) => {
     const f = fixture(t, { target });
     f.execute();
@@ -547,7 +533,7 @@ for (const target of ["page10", "pages"])
     for (const path of DOT_PROBES) assert.ok(probes.includes(host + path), path);
   });
 
-for (const target of ["page10", "pages"])
+for (const target of ["page10"])
   test(`${target} publisher refuses to start a connector that drops a tag's encoded slash`, (t) => {
     const f = fixture(t, { target, misroutePath: tagPath + "/repo%3Aorg%2Fname" });
     assert.throws(() => f.execute(), /Dedicated tunnel route validation failed/);
@@ -559,7 +545,7 @@ for (const target of ["page10", "pages"])
   });
 
 for (const misroutePath of new Set(PROBES.map((path) => new URL(path, "https://x").pathname)))
-  for (const target of ["page10", "pages"])
+  for (const target of ["page10"])
     test(`${target} does not activate a connector with misrouted path ${misroutePath}`, (t) => {
       const f = fixture(t, { target, misroutePath });
       assert.throws(f.execute, /Dedicated tunnel route validation failed/);
@@ -632,7 +618,7 @@ function legacyInstall(f, { config = "previous", pending = null, newConfig = fal
 const installedReceipt = (f) =>
   fs.readFileSync(f.local(configDir(f.target) + "/tunnel-installation.json"), "utf8");
 
-for (const target of ["page10", "pages"]) {
+for (const target of ["page10"]) {
   for (const phase of ["starting", "stopping", "reverting", "serving"])
     test(`${target} resumes unchanged-Sift legacy handoff at ${phase}, rolls back and retries`, (t) => {
       const f = fixture(t, { target, neverReady: true });
@@ -1231,7 +1217,7 @@ test("unitActive is true only for exit 0 and `active`; exits 3 and 4 mean not ac
 
 // #4797's first real publish: Page10's legacy connector runs and neither slot
 // unit exists yet, so `systemctl is-active` exits 4 for both slots.
-for (const target of ["page10", "pages"])
+for (const target of ["page10"])
   test(`${target} first publish after slots migrates a running legacy connector whose slots systemd doesn't know`, (t) => {
     const f = fixture(t, { target });
     const x = legacyInstall(f, { config: "current" });
@@ -1365,28 +1351,28 @@ test("pages2 still checks a shared connector that appears on lab2", (t) => {
 
 test("lab1 targets still require the shared connector config", (t) => {
   assert.throws(
-    () => isolatedPublicationPlan({ ...inputFor("pages"), sharedConfig: null }),
+    () => isolatedPublicationPlan({ ...inputFor("page10"), sharedConfig: null }),
     /shared tunnel configuration is required on lab1/,
   );
   assert.doesNotThrow(() => isolatedPublicationPlan({ ...inputFor("pages2"), sharedConfig: null }));
-  const f = fixture(t, { target: "pages", sharedTunnel: false });
+  const f = fixture(t, { target: "page10", sharedTunnel: false });
   assert.throws(f.execute);
   assert.deepEqual(lifecycle(f), []);
-  assert.equal(fs.existsSync(f.local("/etc/nteract-pages-live/tunnel-installation.json")), false);
+  assert.equal(fs.existsSync(f.local("/etc/nteract-page10/tunnel-installation.json")), false);
 });
 
-test("pages2 serves the Pages route set under its own hostname and listener", () => {
-  const pages = deploymentProfile("pages").deployment;
+test("pages2 serves Page10's route set under its own hostname and listener", () => {
+  const page10 = deploymentProfile("page10").deployment;
   const pages2 = deploymentProfile("pages2").deployment;
   assert.equal(
     routesFor("pages2"),
-    routesFor("pages")
-      .replaceAll("hostname: " + pages.hostname, "hostname: " + pages2.hostname)
-      .replace("http://" + pages.listen, "http://" + pages2.listen),
+    routesFor("page10")
+      .replaceAll("hostname: " + page10.hostname, "hostname: " + pages2.hostname)
+      .replace("http://" + page10.listen, "http://" + pages2.listen),
   );
 });
 
-const ACCOUNT_TARGETS = ["page10", "pages", "pages2"];
+const ACCOUNT_TARGETS = ["page10", "pages2"];
 
 // An installation on slot units at the route set `from(config)`, where
 // `config` is plan.config in the earlier allowlist form:
@@ -1540,7 +1526,7 @@ const PREVIEW_TARGETS = ACCOUNT_TARGETS;
 
 // A set with Page slugs and without the REST routes was never published, but
 // it is one this tool generates, so it migrates like any other.
-for (const target of ["page10", "pages", "pages2", "page11"])
+for (const target of ["page10", "pages2", "page11"])
   test(`${target} migrates an installation with Page slugs and without the REST routes`, (t) => {
     const f = fixture(t, { target, sharedTunnel: !["pages2", "page11"].includes(target) });
     const x = slotInstall(f, (config) => config.replace(restPaths, ""));
@@ -1549,7 +1535,7 @@ for (const target of ["page10", "pages", "pages2", "page11"])
     assert.equal(installedReceipt(f), slotReceipt(x.plan.config, x.plan.unitSha256));
   });
 
-for (const target of ["page10", "pages", "pages2", "page11"])
+for (const target of ["page10", "pages2", "page11"])
   for (const state of ["sealed", "pending-old", "pending-new"])
     test(`${target} adds Page slugs to the REST release's installation (${state})`, (t) => {
       const f = fixture(t, { target, sharedTunnel: !["pages2", "page11"].includes(target) });
@@ -1695,7 +1681,7 @@ for (const target of PREVIEW_TARGETS) {
 const restInstall = (f, options) =>
   slotInstall(f, (config) => beforeSlugs(config).replace(restPaths, ""), options);
 
-for (const target of ["page10", "pages", "pages2", "page11"])
+for (const target of ["page10", "pages2", "page11"])
   for (const state of ["sealed", "pending-old", "pending-new"])
     test(`${target} adds the REST routes and Page slugs to the package release's installation (${state})`, (t) => {
       const f = fixture(t, { target, sharedTunnel: !["pages2", "page11"].includes(target) });
@@ -1752,7 +1738,6 @@ test("media-guide migration refuses unrelated config edits even with a matching 
 // on purpose.
 const ROUTES_SHA256 = {
   page10: "955633300859bfb60a44075a0a8a48c9846e3452d5dcd49e9a9afbcc003abe5e",
-  pages: "4950e2c903e43ff3b8d1a3a7a0c3551136abd98f54f03b01c810d8dd38882b87",
   pages2: "1a5cb184dc12e433372f71568f651082610856f56302ac9859cfb6f56fcee34c",
   page12: "1abfaacd807e466c58f9984d105b7b945e1005004f2f48c86b2296650a5ccb9e",
   page11: "50a793dc36c54314ad717a555c23e021f32bbeb84a1f08bd01b796612f6f1e00",
@@ -1761,7 +1746,6 @@ const ROUTES_SHA256 = {
 // A new strippable group leaves it unchanged.
 const EARLIER_BASE_SHA256 = {
   page10: "a2b973dfa57ee7ea2a2ab8d6f0cfca4b7238e6ef12240dfc0a365e03daba9904",
-  pages: "4aa6f96562532f3c5739fe7ffc44728cd210432abf45a80f74fef383081e6ce5",
   pages2: "74b3b8e3722dbd4b4a2ac1139716770cbc13a3bcf487c6f1f54fd3d239d92ea3",
   page12: "ce0d5dd4aaee8beff2a56c9694c26892ae93d5c60a726d9bdedbfa30da1f92d8",
   page11: "b93c2799039fc53156d085cce4000be367bb7d42e2609cd19a7dcb691598fe69",
@@ -1774,11 +1758,6 @@ const INSTALLED_ROUTES_SHA256 = {
     "d66bcef8809207ba4f54db72c0ae31e73ba163efa850fe381e3c1c00ca878359",
     "5715c9ff17e54fac23ab78937c60c1ed0680b3d3618986e92f4878a378173aff",
     "7efebc83df79d4094479514e7698cf5a30e12284d0421b7e2a3f0e8aa8e79376",
-  ],
-  pages: [
-    "6f24e1b42da8a405ed6682ff23076930f897f8aa079227f2971eab322e53b5a7",
-    "d2434d3f4742fe056ac54b6ef4729e1038dff4f40e23bfe757178fa3a64dec82",
-    "7309aa86cc0eeef8e238e35a794118a87b1569f7006a0699ed1979bfaa3049f1",
   ],
   pages2: [
     "08ce2af861a2563a4d091f4b04b937096da6a113b065ea0a3544d5a9f67e3ef0",
@@ -1854,7 +1833,7 @@ const STRIPPABLE_GROUPS = [
   "projectAssetPaths",
   "restPaths",
 ];
-const SLOTTED_TARGETS = ["page10", "pages", "pages2", "page11"];
+const SLOTTED_TARGETS = ["page10", "pages2", "page11"];
 const hostOptions = (target) => ({
   target,
   sharedTunnel: !["pages2", "page11"].includes(target),

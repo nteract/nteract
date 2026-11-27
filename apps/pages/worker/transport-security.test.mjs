@@ -6,7 +6,7 @@ import { HSTS, edgeScheme } from "./transport-security.mjs";
 
 // The tunnel's last hop is plain HTTP, so every request URL is http: even
 // when the visitor used HTTPS. Only CF-Visitor tells them apart.
-const publicUrl = "http://pages.runtimed.run";
+const publicUrl = "http://page10.runtimed.run";
 const viaEdge = (scheme) => ({ "CF-Visitor": JSON.stringify({ scheme }) });
 
 test("a plain-HTTP edge request is redirected to HTTPS with its path and query", async () => {
@@ -19,25 +19,25 @@ test("a plain-HTTP edge request is redirected to HTTPS with its path and query",
   assert.equal(response.status, 308);
   assert.equal(
     response.headers.get("location"),
-    "https://pages.runtimed.run/p/0b6c3f5e-1d2a-4c3b-8d4e-5f6a7b8c9d0e?comment=t1&x=%20y",
+    "https://page10.runtimed.run/p/0b6c3f5e-1d2a-4c3b-8d4e-5f6a7b8c9d0e?comment=t1&x=%20y",
   );
   assert.equal(response.headers.has("strict-transport-security"), false);
 });
 
 test("the redirect targets the configured public origin, not a private tunnel origin", async () => {
   const response = await worker.fetch(
-    new Request("http://127.0.0.1:9481/p/x?y=1", { headers: viaEdge("http") }),
-    { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.runtimed.run" },
+    new Request("http://127.0.0.1:9480/p/x?y=1", { headers: viaEdge("http") }),
+    { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://page10.runtimed.run" },
   );
   assert.equal(response.status, 308);
-  assert.equal(response.headers.get("location"), "https://pages.runtimed.run/p/x?y=1");
+  assert.equal(response.headers.get("location"), "https://page10.runtimed.run/p/x?y=1");
 
   // A path that looks protocol-relative still lands on the public host.
   const sneaky = await worker.fetch(
-    new Request("http://127.0.0.1:9481//evil.example/x", { headers: viaEdge("http") }),
-    { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://pages.runtimed.run" },
+    new Request("http://127.0.0.1:9480//evil.example/x", { headers: viaEdge("http") }),
+    { NOTEBOOK_CLOUD_PUBLIC_ORIGIN: "https://page10.runtimed.run" },
   );
-  assert.equal(new URL(sneaky.headers.get("location")).host, "pages.runtimed.run");
+  assert.equal(new URL(sneaky.headers.get("location")).host, "page10.runtimed.run");
 });
 
 test("every method and path is redirected before routing, /health and /api included", async () => {
@@ -58,7 +58,7 @@ test("every method and path is redirected before routing, /health and /api inclu
       {},
     );
     assert.equal(response.status, 308, `${method} ${path}`);
-    assert.equal(response.headers.get("location"), `https://pages.runtimed.run${path}`);
+    assert.equal(response.headers.get("location"), `https://page10.runtimed.run${path}`);
   }
 });
 
@@ -73,7 +73,7 @@ test("a WebSocket upgrade over plain HTTP gets the redirect, not a socket", asyn
   assert.equal(response.webSocket ?? null, null);
   assert.equal(
     response.headers.get("location"),
-    "https://pages.runtimed.run/api/sync?page=0b6c3f5e-1d2a-4c3b-8d4e-5f6a7b8c9d0e",
+    "https://page10.runtimed.run/api/sync?page=0b6c3f5e-1d2a-4c3b-8d4e-5f6a7b8c9d0e",
   );
 });
 
@@ -91,13 +91,13 @@ test("an HTTPS edge request on an http: URL is served, not looped, and carries H
 });
 
 test("HSTS reaches immutable asset responses on HTTPS edge requests", async () => {
-  const asset = Response.redirect("https://pages.runtimed.run/elsewhere", 302);
+  const asset = Response.redirect("https://page10.runtimed.run/elsewhere", 302);
   const response = await worker.fetch(
     new Request(`${publicUrl}/p/some-page`, { headers: viaEdge("https") }),
     { ASSETS: { fetch: async () => asset } },
   );
   assert.equal(response.status, 302);
-  assert.equal(response.headers.get("location"), "https://pages.runtimed.run/elsewhere");
+  assert.equal(response.headers.get("location"), "https://page10.runtimed.run/elsewhere");
   assert.equal(response.headers.get("strict-transport-security"), "max-age=31536000");
 });
 
@@ -139,7 +139,7 @@ test("HSTS is set in place on a mutable response", async () => {
 
 test("a request without Cloudflare headers is served as before", async () => {
   // The operator's on-host call: Host is the public name, no CF-Visitor.
-  const health = await worker.fetch(new Request("http://pages.runtimed.run/health"), {});
+  const health = await worker.fetch(new Request("http://page10.runtimed.run/health"), {});
   assert.equal(health.status, 200);
   assert.equal(health.headers.has("strict-transport-security"), false);
   assert.equal(health.headers.has("location"), false);

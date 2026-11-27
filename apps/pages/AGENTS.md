@@ -14,8 +14,7 @@ Keep the two distinct.
 
 The gate workflow is still `authenticated-automerge-spike.yml` ("Pages
 experiment"). The page10 controller and `scripts/promote-artifact.mjs` pin
-that name, so it changes with them. Pages is a product. [archive/](archive/)
-holds superseded notes; don't follow them.
+that name, so it changes with them. Pages is a product.
 
 ## Rules for rich-text work
 
@@ -110,10 +109,7 @@ issuer; `cargo xtask dev` doesn't start it.
    widths ([Verify changes](README.md#verify-changes)).
 5. From the repo root, before committing: `cargo xtask lint --fix`.
 
-`pages.runtimed.run` holds documents people use: don't reset it and don't build
-a migration from it. It runs the commit tagged `pages-format-1`. Nothing from
-`main` deploys there: a fix goes on a maintenance branch cut from that tag. The
-other targets the deployment helpers know are demos and can be reset. A
+The targets the deployment helpers know are demos and can be reset. A
 deployment someone made from the
 [release package](DEPLOYMENT.md#deployment-neutral-release-package) is not in
 that list. It takes builds of `main` and can hold documents people use: don't
