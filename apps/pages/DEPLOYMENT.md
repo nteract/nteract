@@ -1,14 +1,14 @@
 # Pages deployment
 
-The deployment helpers know five isolated celld targets: **Pages**
-(`pages.runtimed.run`), **Page10**, **Pages2** (`page2.runtimed.run`, on its
+The deployment helpers know four isolated celld targets: **Page10**
+(`page10.runtimed.run`), **Pages2** (`page2.runtimed.run`, on its
 own host, lab2), **Page11** (`page11.runtimed.run`, also on lab2), and
 **Page12** (`page12.runtimed.run`, also on lab2).
 [profiles.mjs](scripts/deployment/profiles.mjs) lists the profiles, and the
 deployment helpers reject any other target name.
 
 A build of `main` reads `pages.page` format 3 and `pages.comments` format 2,
-and only Page10 and Page12 take it ([Document formats](#document-formats)). Pages, Pages2 and Page11 hold format 1
+and only Page10 and Page12 take it ([Document formats](#document-formats)). Pages2 and Page11 hold format 1
 documents. They take a build of the maintenance branch cut from the
 `pages-format-1` tag.
 
@@ -17,21 +17,16 @@ carrying compatibility code. Deployment never copies data between targets.
 
 | Target | Rule ([DIRECTION.md](DIRECTION.md#rules-for-the-work)) |
 | --- | --- |
-| pages | Holds documents people use. No reset and no migration from it. A format 1 release is built from the maintenance branch and promoted by hand; a build of `main` never deploys here |
-| pages2, page10, page12 | Demos. Reset freely; confirm the target a command addresses first |
+| page10, pages2, page11, page12 | Demos. Reset freely; confirm the target a command addresses first |
 
 These are the targets the helpers deploy. A deployment an operator makes from
 the [release package](#deployment-neutral-release-package) is not one of them
 and is not a demo: it can hold documents people use, so nothing here is
 permission to reset it.
 
-The procedures below promote a format 1 release to `pages`. Run them from a
-checkout of the maintenance branch. They are not
-permission to reset it or to deploy later formats to it; that work uses a
-separate target. Confirm
-application state, auth/catalog storage, deployment pointers, and routes are
-isolated. Project transfer alone is not a complete archive of loose Pages,
-comments, sharing, or history.
+Before any install, confirm application state, auth/catalog storage,
+deployment pointers, and routes are isolated. Project transfer alone is not a
+complete archive of loose Pages, comments, sharing, or history.
 
 ## Where state lives
 
@@ -153,68 +148,13 @@ with the Worker; local tests alone do not exercise the public ingress.
 References: [Work Objects](https://docs.slack.dev/messaging/work-objects-implementation/)
 and [request verification](https://docs.slack.dev/authentication/verifying-requests-from-slack/).
 
-## Pages release
+## Promote a target from the CI artifact
 
-The `pages` profile owns `pages.runtimed.run`:
-
-| Field | Value |
-| --- | --- |
-| Hostname | `pages.runtimed.run` |
-| Service and user | `nteract-pages-live` |
-| Prefix | `standalone/pages-live` in the lab1 fleet bucket |
-| Listeners | `127.0.0.1:9481`, internal `127.0.0.1:19481` |
-| Firewall | table `nteract_pages_live`, mark `0x00100000` |
-| Tunnel connectors | `cloudflared-pages-live-a.service` (metrics `127.0.0.1:29481`) and `cloudflared-pages-live-b.service` (`127.0.0.1:29491`), tunnel `nteract-pages-live`; see [Connector handoff](#connector-handoff) |
-
-It carries every Page10 flag, the Page quota default and D1 binding, and the
-same celld 0.6.3 runtime and OIDC client. Like Page10, every Page syncs with
-plain Automerge sync ([Stored forms and rollback rules](#stored-forms-and-rollback-rules)).
-
-Both serving targets set `memory` in their profile: celld sheds cells above
-`CELLD_MAX_RSS_MB=2560`, and systemd caps the unit at `MemoryMax=4G`. At the
-earlier 768 MB threshold, production shed its D1 cell repeatedly and signed-in
-requests failed with 503 while it restored. Changing either value changes the
-unit, so the next install restarts the service.
-
-The service and prefix end in `-live` because lab1 still holds a disabled
-`nteract-pages.service` and `/etc/nteract-pages` from an earlier prototype. The
-installer refuses any path, user, or prefix it does not own, so the target must
-not share those names.
-
-Pages starts empty. Projects arrive from Page10 (or any older target) through
-[project-transfer.mjs](scripts/project-transfer.mjs); see
-[Copying a Project to a new target](#copying-a-project-to-a-new-target).
-
-Before anyone signs in, add `https://pages.runtimed.run/oidc` as a redirect URI
-on OIDC client `1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0`. The installer derives
-`NOTEBOOK_CLOUD_OIDC_REDIRECT_URI` from the hostname; the identity provider has
-to allow it.
-
-From `apps/pages`, after review, commit, and a fresh build:
-
-```sh
-node scripts/deploy.mjs --target pages plan
-node scripts/deploy.mjs --target pages prepare
-node scripts/deploy.mjs --target pages upload LOCAL_STAGE
-node scripts/deploy.mjs --target pages install REMOTE_STAGE --apply
-CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target pages provision            # inspect
-CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target pages provision --apply    # first publication only
-node scripts/deploy.mjs --target pages publish REMOTE_STAGE --apply
-```
-
-`provision --apply` refuses a `pages.runtimed.run` DNS record it does not own,
-including one an earlier prototype left behind. Remove such a record in
-Cloudflare by hand, after checking nothing serves from it, then rerun.
-
-### Promote production from the CI artifact
-
-**When this applies:** Not for current format-1 maintenance releases on
-`pages.runtimed.run`. The gate's `pages-release` artifact is built from `main`,
-which reads `pages.page` format 3, so `install` refuses it on `pages` (which
-holds format 1; see [Document formats](#document-formats)). Build format-1
-fixes locally from the maintenance branch with the commands above. Use this
-artifact path only for targets that accept `main`'s document format, or as a
-reference for how `deploy.mjs prepare --from-artifact` works.
+**When this applies:** The gate's `pages-release` artifact is built from `main`,
+which reads `pages.page` format 3, so `install` refuses it on a target that
+holds format 1 (see [Document formats](#document-formats)). Use this artifact
+path only for targets that accept `main`'s document format, or as a reference
+for how `deploy.mjs prepare --from-artifact` works.
 
 Every green push to `main` uploads a `pages-release` artifact. Page10 deploys
 from it, and its `build_id` matches a local build of the same commit. Pick the
@@ -223,11 +163,11 @@ from `apps/pages` with `gh` signed in:
 
 ```sh
 git fetch origin main
-node scripts/deploy.mjs --target pages plan
-node scripts/deploy.mjs --target pages prepare --from-artifact GATE_RUN_ID --worktree
-node scripts/deploy.mjs --target pages upload LOCAL_STAGE
-node scripts/deploy.mjs --target pages install REMOTE_STAGE --apply
-node scripts/deploy.mjs --target pages publish REMOTE_STAGE --apply
+node scripts/deploy.mjs --target page10 plan
+node scripts/deploy.mjs --target page10 prepare --from-artifact GATE_RUN_ID --worktree
+node scripts/deploy.mjs --target page10 upload LOCAL_STAGE
+node scripts/deploy.mjs --target page10 install REMOTE_STAGE --apply
+node scripts/deploy.mjs --target page10 publish REMOTE_STAGE --apply
 ```
 
 Pass `--attempt N` to select a rerun attempt (defaults to the run's latest).
@@ -839,11 +779,11 @@ There is no repair tool. To repair a Page:
 ## Document formats
 
 A **document format** is the per-document-type schema number (`pages.page` 3 /
-`pages.comments` 2 on `page10` and `page12`, versus 1 / 1 on `pages`, `pages2`,
+`pages.comments` 2 on `page10` and `page12`, versus 1 / 1 on `pages2`
 and `page11`), whereas a **stored form** ([below](#stored-forms-and-rollback-rules))
 is the storage layout around those documents (`v1`: rich-text blocks, separate
-comments document, and plain Automerge sync, versus earlier stored forms (see
-[archive/DEPLOYMENT-stored-form-migrations.md](archive/DEPLOYMENT-stored-form-migrations.md))).
+comments document, and plain Automerge sync, versus the earlier stored forms
+the format 1 targets never used).
 
 `TARGET_DOCUMENT_FORMATS` in [profiles.mjs](scripts/deployment/profiles.mjs)
 names the format of each document type that a target holds. Install and
@@ -880,10 +820,10 @@ target.
 ## Stored forms and rollback rules
 
 Unlike the per-type document format numbers above, **stored form** describes
-the host storage layout: `pages` and `page10` hold only the `v1` stored form
+the host storage layout: every serving target holds only the `v1` stored form
 (rich-text blocks, comments in their own document, `comments_doc` on every live
 or trashed host record, and plain Automerge sync), replacing earlier stored
-forms (see [archive/DEPLOYMENT-stored-form-migrations.md](archive/DEPLOYMENT-stored-form-migrations.md)).
+forms.
 
 | Rule | Why |
 | --- | --- |
@@ -909,7 +849,7 @@ are absent.
 The `PageRecords` class and `PAGE_RECORDS` binding are declared with an empty
 class body (`worker/page-records.mjs`). No code calls the binding: purge
 does not call a Page's `PageRecords` object, and no path reads, writes or
-clears an object's storage. The operator sweep left both targets empty, and
+clears an object's storage. The operator sweep left every target empty, and
 no release-package build writes a `buffered` Page.
 
 Removing the class needs a `deleted_classes` migration. celld 0.6.3 knows
@@ -921,7 +861,7 @@ does the `v2 new_sqlite_classes: ["PageRecords"]` migration tag.
 
 Each account may hold a limited number of active Pages and, separately, the
 same number in Trash. The profile's `pageQuota` sets the target's default, which
-the installer writes as `PAGES_DEFAULT_PAGE_QUOTA`; Page10's and Pages' are 250. Without the
+the installer writes as `PAGES_DEFAULT_PAGE_QUOTA`; every profile sets 250. Without the
 variable the Worker uses 250. Changing the default needs a new install.
 
 Rules in D1 override the default for one account or one email domain:
@@ -973,18 +913,18 @@ shell history after a new target ships still writes where it said it would.
 A command without `--target` exits 2 before it sends anything.
 
 ```bash
-node scripts/quota-rules.mjs --target pages check      # tables, schema version, rule count
-node scripts/quota-rules.mjs --target pages list
-node scripts/quota-rules.mjs --target pages get    email rgbkrk@gmail.com
-node scripts/quota-rules.mjs --target pages set    email rgbkrk@gmail.com 1000 --note "design partner"
-node scripts/quota-rules.mjs --target pages set    domain anaconda.com 500
-node scripts/quota-rules.mjs --target pages set    email someone@example.com 0
-node scripts/quota-rules.mjs --target page10 delete domain anaconda.com
+node scripts/quota-rules.mjs --target page10 check      # tables, schema version, rule count
+node scripts/quota-rules.mjs --target page10 list
+node scripts/quota-rules.mjs --target page10 get    email rgbkrk@gmail.com
+node scripts/quota-rules.mjs --target page10 set    email rgbkrk@gmail.com 1000 --note "design partner"
+node scripts/quota-rules.mjs --target page10 set    domain anaconda.com 500
+node scripts/quota-rules.mjs --target page10 set    email someone@example.com 0
+node scripts/quota-rules.mjs --target pages2 delete domain anaconda.com
 ```
 
 | Option | Meaning |
 | --- | --- |
-| `--target NAME` | Required for every command: `pages` or `page10`. Only a profile with `pageQuota` and `d1` is accepted. |
+| `--target NAME` | Required for every command: one of the deployment profiles. Only a profile with `pageQuota` and `d1` is accepted. |
 | `--ssh-host HOST` | SSH destination, the profile's host (`lab1`) by default, for example `root@lab1`. |
 | `--dry-run` | Print the remote script and every SQL step, and write nothing. `delete` runs its read-only preflight to show the stored rows it would remove; every other command sends nothing. |
 | `--create-only` | `set` only: refuse when the rule already exists. |
@@ -992,7 +932,7 @@ node scripts/quota-rules.mjs --target page10 delete domain anaconda.com
 
 Run it with Node 22.18 or later, which loads `sharing.ts` without a build step.
 The SSH user must be root or able to `sudo -n -u` the target's service user
-(`nteract-pages-live`, `nteract-page10`): the service's
+(`nteract-page10`, `nteract-pages2`, and so on): the service's
 loopback firewall resets connections from any other uid.
 
 - **Values.** The script never accepts SQL. The kind is `email` or `domain`.
@@ -1023,8 +963,8 @@ loopback firewall resets connections from any other uid.
   deploying a quota build, call `list_pages` once before the first rule.
 - **Receipts name the target.** Every `set` and `delete` result, every
   failure and read-back message, and the dry-run header name the target and
-  its prefix, for example `on pages
-  (s3://nteract-celld-lab-621741996708/standalone/pages-live)`. Commands the
+  its prefix, for example `on page10
+  (s3://nteract-celld-lab-621741996708/standalone/page10)`. Commands the
   script suggests, such as the `get` to reconcile with, carry the same
   `--target` and `--ssh-host`.
 - **Five-minute cache.** Each Worker isolate reads the rule table at most once
@@ -1081,10 +1021,10 @@ for an id it hasn't seen), and runs `celld d1 execute` as the service user,
 through the database's live owner, in one transaction.
 
 ```bash
-node scripts/d1.mjs --target pages "SELECT name FROM sqlite_master WHERE type = 'table'"
-node scripts/d1.mjs --target pages "SELECT owner, state, COUNT(*) AS n FROM pages_catalog_pages GROUP BY owner, state"
+node scripts/d1.mjs --target page10 "SELECT name FROM sqlite_master WHERE type = 'table'"
+node scripts/d1.mjs --target page10 "SELECT owner, state, COUNT(*) AS n FROM pages_catalog_pages GROUP BY owner, state"
 node scripts/d1.mjs --target page10 --file query.sql
-echo "SELECT 1" | node scripts/d1.mjs --target pages -
+echo "SELECT 1" | node scripts/d1.mjs --target page10 -
 ```
 
 `--target` is required, as for quota rules. Rows print one JSON object per line
@@ -1119,8 +1059,8 @@ adopts, updates or deletes. Both steps are idempotent, so a rerun after a
 partial failure picks up where the last one stopped.
 
 ```sh
-CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target pages provision
-CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target pages provision --apply
+CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target page10 provision
+CLOUDFLARE_API_TOKEN=... node scripts/deploy.mjs --target page10 provision --apply
 ```
 
 Inspection prints the tunnel and DNS state. Before the tunnel exists there is no
@@ -1129,8 +1069,8 @@ tunnel UUID and CNAME, never the tunnel secret or the token. The two helpers it
 calls still run on their own:
 
 ```sh
-node scripts/deployment/tunnel.mjs --target pages [--apply]
-node scripts/deployment/dns.mjs --target pages TUNNEL_UUID [--apply]
+node scripts/deployment/tunnel.mjs --target page10 [--apply]
+node scripts/deployment/dns.mjs --target page10 TUNNEL_UUID [--apply]
 ```
 
 `provision` reads `CLOUDFLARE_API_TOKEN` from the environment only and never
@@ -1144,13 +1084,13 @@ SSH and sudo, because the tunnel step writes its files on the host.
 
 ```sh
 CLOUDFLARE_API_TOKEN="$(op read 'op://<vault>/<item>/<field>')" \
-  node scripts/deploy.mjs --target pages provision --apply
+  node scripts/deploy.mjs --target page10 provision --apply
 ```
 
 The tunnel step creates a locally managed tunnel named after the service
-(`nteract-pages-live`). Cloudflare returns a tunnel secret only when it is set, so the
-same run writes it over SSH to root-owned mode 0600 `/etc/nteract-pages-live/tunnel.json`
-and writes the nonsecret receipt `/etc/nteract-pages-live/tunnel-provisioning.json`.
+(`nteract-page10`). Cloudflare returns a tunnel secret only when it is set, so the
+same run writes it over SSH to root-owned mode 0600 `/etc/nteract-page10/tunnel.json`
+and writes the nonsecret receipt `/etc/nteract-page10/tunnel-provisioning.json`.
 Both writes require the directory that installation created and refuse to
 replace an existing file. The command prints the tunnel UUID, never the secret.
 A tunnel that exists without credentials on the host must be deleted in
@@ -1161,7 +1101,7 @@ Cloudflare before retrying. The receipt has this form:
   "schema": 1,
   "account_id": "1cfb529b94b3d6cde3aaf49d1d6ed5e6",
   "tunnel_id": "TUNNEL_UUID",
-  "name": "nteract-pages-live",
+  "name": "nteract-page10",
   "config_src": "local"
 }
 ```
@@ -1172,7 +1112,7 @@ service/connector configuration and PIDs. Do not use `cloudflared service
 install`, which targets the shared connector.
 
 The DNS step creates only an absent owned CNAME; conflicts are rejected.
-On the Pages hostname, public ingress admits every path except a short refused
+On a target's hostname, public ingress admits every path except a short refused
 list, `refusedPaths` in [routes.mjs](scripts/deployment/routes.mjs), then ends
 in a catch-all 404:
 
@@ -1204,10 +1144,9 @@ wrong.
 A target with an output hostname keeps an allowlist there: `/health`,
 `/frame/v2/`, `catalog.json` and the catalog's hashed files, then a 404.
 
-Page10 serves this route set on its own hostname and listener. Pages serves
-the same set on `pages.runtimed.run` and `127.0.0.1:9481`. Each publisher
-migrates only from an installation whose config it generates for its own
-target, and refuses another target's installation receipts.
+Each target serves this route set on its own hostname and listener. Each
+publisher migrates only from an installation whose config it generates for its
+own target, and refuses another target's installation receipts.
 
 The ingress is built from `ROUTE_REGISTRY` in
 [routes.mjs](scripts/deployment/routes.mjs): named route groups enabled by the
@@ -1226,7 +1165,7 @@ target's profile.
   recognized config on disk to the new config, and rolls back to those exact
   bytes if startup fails. When changing a group's path string, add the old
   string to the group's `earlier` list so previously sealed configs still match.
-- **`admitAll` transition.** The `admitAll` group switches the Pages hostname
+- **`admitAll` transition.** The `admitAll` group switches a target's hostname
   from the older allowlist groups (including strippable `libraryCatalogPaths`,
   `/catalog/<revision>/<file>`) to admitting every non-refused path.
   Publication recognizes older allowlist installations, hands off via connector
@@ -1301,8 +1240,8 @@ sent as `%3A` and `%2F`). The tunnel admits the path encoded or decoded, like
 any other path, and the Worker takes one raw segment and refuses a second.
 
 The OIDC client must allow `https://<hostname>/oidc` as a redirect URI before
-sign-in works on a new target. For Pages, add
-`https://pages.runtimed.run/oidc` to client
+sign-in works on a new target. For example, add
+`https://page10.runtimed.run/oidc` to client
 `1a90d36b-5b97-4ebb-a1bc-f3de7ddb70e0`. That change is made in the identity
 provider; no helper here does it.
 
@@ -1326,7 +1265,7 @@ After a publish, check through the edge that the Worker answers its routes. With
 ```sh
 id=08c583e5-d29e-4f1e-b06b-333965254e94
 for path in /p/$id/meta.json /api/pages/$id/card-image /api/projects/prj_$id/assets; do
-  curl -s -o /dev/null -w "$path %{http_code} %{content_type}\n" "https://pages.runtimed.run$path"
+  curl -s -o /dev/null -w "$path %{http_code} %{content_type}\n" "https://page10.runtimed.run$path"
 done   # 401 application/json each; an empty 404 is the edge refusing the path
 ```
 
@@ -1347,7 +1286,7 @@ each proxied request and cloudflared passes through to celld and the Worker
 No route is exempt. The deploy helpers poll `/health` and `/state` on the
 local listener, which carries no Cloudflare headers, and outside probes use
 `https://`. The same goes for operator calls on the host such as
-`curl -H 'Host: pages.runtimed.run' http://127.0.0.1:9481/...`, and for
+`curl -H 'Host: page10.runtimed.run' http://127.0.0.1:9480/...`, and for
 `npm run dev` on localhost. `X-Forwarded-Proto` is not read: the gateway treats
 it as untrusted client input.
 
@@ -1373,9 +1312,9 @@ setting an operator changes in the Cloudflare dashboard; no helper here sets it.
 
 ### Connector handoff
 
-Page10 and Pages run their tunnel on two connector units, slots `a` and `b`
+Page10 and Pages2 run their tunnel on two connector units, slots `a` and `b`
 (`cloudflared-page10-a.service`, `cloudflared-page10-b.service`, and the same
-with `pages-live` for Pages). One is live. Cloudflare balances a tunnel's
+with `pages2` for Pages2). One is live. Cloudflare balances a tunnel's
 traffic across every connector it holds, so two connectors can serve at once.
 
 cloudflared reads its ingress only at startup. Restarting a lone connector to
@@ -1419,7 +1358,7 @@ reach either one: for those few seconds a new route can still answer 404 from
 the old connector's catch-all.
 
 Releases before slots ran one unit per target, `cloudflared-page10.service` and
-`cloudflared-pages-live.service`. The first publication from this release takes
+`cloudflared-pages2.service`. The first publication from this release takes
 that unit as live and hands off to slot `a` the same way, with or without a
 route change. The old unit's file stays in `/etc/systemd/system`, stopped and
 disabled. A record that is missing while a slot runs, a record that doesn't
@@ -1434,14 +1373,14 @@ host while `publish` runs, and confirm every sample is 200:
 ```sh
 while :; do
   printf '%s %s\n' "$(date -u +%T)" \
-    "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 https://pages.runtimed.run/health)"
+    "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 https://page10.runtimed.run/health)"
   sleep 1
 done
 ```
 
 The publish result names the live unit (`service`, `connectorSlot`) and says
 whether a handoff ran (`connectorHandoff`). On the host,
-`journalctl -u cloudflared-pages-live-a.service -u cloudflared-pages-live-b.service`
+`journalctl -u cloudflared-page10-a.service -u cloudflared-page10-b.service`
 shows the new slot registering its connections before the old one logs
 `Initiating graceful shutdown`.
 
@@ -1896,7 +1835,6 @@ On unqualified native deployments (including disposable page10), new
 metadata-based sign-ins return 503 while existing grants still refresh and
 revoke, and fixed `pages-kilo` and `pages-chatgpt` clients do not fetch
 metadata. Local sign-in and fixed-client paths do not require metadata egress.
-`pages.runtimed.run` runs `pages-format-1` and does not use this egress gate.
 Native host firewalls and private HTTPS storage or identity-provider traffic
 are unaffected.
 
@@ -2510,13 +2448,12 @@ outside the Project.
 node scripts/project-transfer.mjs import --bundle guide.bundle.json --dry-run
 PAGES_TARGET_TOKEN_FILE=~/.config/pages/anaconda-api-key \
   node scripts/project-transfer.mjs import \
-  --target https://pages.runtimed.run \
+  --target https://page10.runtimed.run \
   --bundle guide.bundle.json
 ```
 
-Moving Page10's Projects to Pages is one export from
-`https://page10.runtimed.run` and one import into `https://pages.runtimed.run`
-per Project, run by each Project's owner.
+A move between targets is one export from the source and one import into the
+target per Project, run by each Project's owner.
 
 `--dry-run` checks the bundle and prints where each Page lands without a
 network call. Import compares normalized origins and refuses the bundle's own

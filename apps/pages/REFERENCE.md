@@ -657,7 +657,7 @@ blob binding. See [upstream integration contracts](UPSTREAM.md) and celld's
 ## Usage history
 
 `PAGES_USAGE` is a separate D1 database, created on first use by celld. Local
-builds and both deployment profiles (`page10`, `pages`) carry the binding and
+builds and every deployment profile carry the binding and
 the `00:05 UTC` daily cron. Each deployment's fleet prefix isolates its store;
 accounts and hosts are never merged. celld 0.6.3 supports
 [cron triggers](https://github.com/denoland/celld/blob/v0.6.3/docs/services/cron-triggers.md).
@@ -789,8 +789,7 @@ back and reads the winner's version. A failed or expired attempt is forgotten,
 and the next call retries. celld runs all Durable Objects in a single isolate
 context, so sharing an in-flight promise looked safe locally and hid this
 failure mode
-([Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0),
-§7).
+(Cloudflare portability audit, §7).
 
 D1 picks candidates; it never grants access. Every non-owner row returned by a
 listing is verified by its Page host with the caller's credentials, and owner rows
@@ -1113,8 +1112,7 @@ D1 rejects `LIKE` patterns over 50 bytes
   celld's SQLite), and `test/sqlite-d1.mjs` enforces D1's 50-byte limit.
   Keeping the pattern within 50 bytes prevents D1 query errors that would
   otherwise force every long search onto the full-scan Catalog fallback
-  ([Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0),
-  §4).
+  (Cloudflare portability audit, §4).
 
 Changing the epoch value forces an immediate pass everywhere; it is not required
 after a rollback, since the periodic pass and each Page host's first report after
@@ -3039,9 +3037,8 @@ The same flags reach code inside an object. A listing that meets a shared Page
 `503 shared_page_unavailable`, `retryable: true`, `retry_after_ms` and
 `Retry-After`; an overloaded Page asks for the jittered 2 to 5 s. MCP passes
 every one of these codes through, and the viewer treats any `503` as an outage and
-retries with backoff. The
-[Cloudflare portability audit](https://pages.runtimed.run/p/460c48f0-dc4b-4702-af82-59910e6bebd0)
-(sections 6 and 7) covers both cases.
+retries with backoff. The Cloudflare portability audit (sections 6 and 7)
+covers both cases.
 
 The host keeps request holds short so edits don't occupy cell request slots
 after responding ([#4654](https://github.com/nteract/nteract/issues/4654)):

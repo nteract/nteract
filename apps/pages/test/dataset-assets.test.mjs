@@ -16,7 +16,7 @@ const src = `/api/pages/${pageId}/assets/${assetId}`;
 test("only a same-origin Page asset path names a dataset", () => {
   assert.deepEqual(parseAssetPath(src), { pageId, assetId });
   for (const value of [
-    `https://pages.runtimed.run${src}`,
+    `https://page12.runtimed.run${src}`,
     `//evil.example${src}`,
     `${src}?x=1`,
     `${src}/`,

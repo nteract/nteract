@@ -10,7 +10,7 @@ function capture() {
 }
 
 test("a command without a target or SQL sends nothing", async () => {
-  for (const argv of [["SELECT 1"], ["--target", "pages"], ["--target", "pages", "a", "b"]]) {
+  for (const argv of [["SELECT 1"], ["--target", "page10"], ["--target", "page10", "a", "b"]]) {
     const { io } = capture();
     let sent = false;
     const code = await main(argv, { ...io, transport: async () => (sent = true) });
@@ -18,7 +18,7 @@ test("a command without a target or SQL sends nothing", async () => {
     assert.equal(sent, false);
   }
   assert.throws(
-    () => parseArgs(["--target", "pages", "--file", "q.sql", "SELECT 1"]),
+    () => parseArgs(["--target", "page10", "--file", "q.sql", "SELECT 1"]),
     /as an argument/,
   );
 });
@@ -26,7 +26,7 @@ test("a command without a target or SQL sends nothing", async () => {
 test("rows print one JSON object per line and the receipt names the target", async () => {
   const { io, out, err } = capture();
   let received;
-  const code = await main(["--target", "pages", "SELECT name FROM sqlite_master"], {
+  const code = await main(["--target", "page10", "SELECT name FROM sqlite_master"], {
     ...io,
     transport: async (sql) => {
       received = sql;
@@ -36,10 +36,7 @@ test("rows print one JSON object per line and the receipt names the target", asy
   assert.equal(code, 0);
   assert.equal(received, "SELECT name FROM sqlite_master");
   assert.deepEqual(out, ['{"name":"a"}', '{"name":"b"}']);
-  assert.match(
-    err.at(-1),
-    /pages-next-auth on pages \(s3:\/\/[^)]*standalone\/pages-live\): 2 rows/,
-  );
+  assert.match(err.at(-1), /pages-next-auth on page10 \(s3:\/\/[^)]*standalone\/page10\): 2 rows/);
 });
 
 test("stdin SQL is read when the argument is -", async () => {
@@ -58,7 +55,7 @@ test("stdin SQL is read when the argument is -", async () => {
 
 test("a missing database cell reports that nothing ran", async () => {
   const { io, err } = capture();
-  const code = await main(["--target", "pages", "SELECT 1"], {
+  const code = await main(["--target", "page10", "SELECT 1"], {
     ...io,
     transport: async () => ({ code: EXIT_CELL_MISSING, stdout: "", stderr: "" }),
   });
@@ -68,7 +65,7 @@ test("a missing database cell reports that nothing ran", async () => {
 
 test("a failed statement warns that a write may have committed", async () => {
   const { io, err } = capture();
-  const code = await main(["--target", "pages", "UPDATE t SET x = 1"], {
+  const code = await main(["--target", "page10", "UPDATE t SET x = 1"], {
     ...io,
     transport: async () => ({ code: 1, stdout: "", stderr: "Error: no such table: t\n" }),
   });

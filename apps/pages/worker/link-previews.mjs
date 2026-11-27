@@ -149,7 +149,7 @@ function answer(request, body) {
  * this origin says `same-origin`, and a person opening the URL says `none`;
  * scripts send nothing. `cross-site` is already refused by authenticate's
  * origin check. This also refuses `same-site`: another deployment on the same
- * site (page2.runtimed.run beside pages.runtimed.run) sends this origin's
+ * site (page10.runtimed.run beside page2.runtimed.run) sends this origin's
  * session cookie with its requests, and CORS alone would still let it time
  * the answers.
  */

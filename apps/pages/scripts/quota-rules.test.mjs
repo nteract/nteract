@@ -35,10 +35,9 @@ import {
 
 const NOW = 1_800_000_000_000;
 const config = targetConfig("page10");
-/** Commands below run against Pages; every command names its target. */
-const TARGET = ["--target", "pages"];
-const pagesConfig = targetConfig("pages");
-const ON = `on pages (s3://nteract-celld-lab-621741996708/standalone/pages-live)`;
+/** Commands below run against Page10; every command names its target. */
+const TARGET = ["--target", "page10"];
+const ON = `on page10 (s3://nteract-celld-lab-621741996708/standalone/page10)`;
 
 /** A migrated quota table in real SQLite. */
 async function quotaDb(t) {
@@ -290,7 +289,7 @@ test("arguments are validated before anything is built", () => {
     parseArgs([...TARGET, "set", "email", " A@Example.com ", "251", "--note", "hi"]),
     {
       command: "set",
-      target: "pages",
+      target: "page10",
       sshHost: undefined,
       dryRun: false,
       rule: { kind: "email", value: "a@example.com" },
@@ -358,13 +357,7 @@ test("targets and SSH hosts come from the profile or a validated override", asyn
   assert.equal(config.bucket, "s3://nteract-celld-lab-621741996708/standalone/page10");
   assert.equal(config.d1, AUTH_D1);
   assert.equal(deploymentProfile("page10").d1.database_id, "pages-next-auth");
-  assert.deepEqual(QUOTA_TARGETS, ["page10", "pages", "pages2", "page11", "page12"]);
-  const pages = pagesConfig;
-  assert.equal(pages.service, "nteract-pages-live");
-  assert.equal(pages.runtime, "/opt/nteract-pages-live/celld");
-  assert.equal(pages.bucket, "s3://nteract-celld-lab-621741996708/standalone/pages-live");
-  assert.equal(pages.d1, AUTH_D1);
-  assert.equal(pages.defaultLimit, 250);
+  assert.deepEqual(QUOTA_TARGETS, ["page10", "pages2", "page11", "page12"]);
   assert.equal(targetConfig("page10", "root@lab1").host, "root@lab1");
   for (const host of ["-oProxyCommand=sh", "lab1;id", "lab 1", ""])
     assert.throws(() => targetConfig("page10", host), UsageError, host);
@@ -395,7 +388,7 @@ test("every command needs an explicit --target, and nothing is sent without one"
     ["get", "domain", "anaconda.com"],
   ]) {
     const command = argv.find((arg) => ["check", "list", "get", "set", "delete"].includes(arg));
-    const message = `${command} needs --target page10 or pages or pages2 or page11 or page12. There is no default target, so a command can't write to a D1 it didn't name.`;
+    const message = `${command} needs --target page10 or pages2 or page11 or page12. There is no default target, so a command can't write to a D1 it didn't name.`;
     assert.throws(() => parseArgs(argv), { name: "UsageError", message }, JSON.stringify(argv));
     const { err, io } = capture();
     assert.equal(await main(argv, { transport: refuse, ...io }), 2, JSON.stringify(argv));
@@ -457,14 +450,14 @@ test("--dry-run prints the remote command and the SQL, and writes nothing", asyn
   assert.equal(await main(argv, { transport: refuse, ...io }), 0);
   const text = out.join("\n");
   const args = parseArgs(argv);
-  assert.equal(text, dryRun(args, pagesConfig, NOW));
-  assert.ok(text.startsWith(`Dry run: nothing was sent.\nTarget: ${targetLabel(pagesConfig)}\n`));
+  assert.equal(text, dryRun(args, config, NOW));
+  assert.ok(text.startsWith(`Dry run: nothing was sent.\nTarget: ${targetLabel(config)}\n`));
   assert.ok(
     text.includes(
       'Each step runs `ssh -T -o BatchMode=yes -o ConnectTimeout=20 -- lab1 "bash -c <script>"`',
     ),
   );
-  assert.ok(text.includes(`The remote script:\n\n${remoteScript(pagesConfig)}\n`));
+  assert.ok(text.includes(`The remote script:\n\n${remoteScript(config)}\n`));
   assert.ok(text.includes(`-- preflight\n${checkSql(args.rule).trimEnd()}`));
   assert.ok(text.includes(`-- write\n${setSql({ ...args, now: NOW }).trimEnd()}`));
   assert.ok(text.endsWith("The write runs only if the preflight passes."));
@@ -567,7 +560,7 @@ test("--create-only never replaces a rule", async (t) => {
   assert.equal(calls.length, before + 1, "only the preflight ran");
   assert.match(
     err.join("\n"),
-    /already exists on pages \(s3:\/\/[^)]+\/standalone\/pages-live\)\. --create-only left it unchanged:\nemail\t"a@example\.com"\t300\t/,
+    /already exists on page10 \(s3:\/\/[^)]+\/standalone\/page10\)\. --create-only left it unchanged:\nemail\t"a@example\.com"\t300\t/,
   );
 
   // A stored row the Worker reads as the same email counts as existing.
@@ -613,7 +606,7 @@ test("nothing is written when a table or the database cell is missing", async (t
   );
   assert.match(
     cell.err.join("\n"),
-    /is not in s3:\/\/nteract-celld-lab-621741996708\/standalone\/pages-live\. Nothing ran\./,
+    /is not in s3:\/\/nteract-celld-lab-621741996708\/standalone\/page10\. Nothing ran\./,
   );
 });
 
@@ -637,7 +630,7 @@ test("after a write error the rule is read back, and the write is never re-sent"
   assert.equal(committed.calls[2], getSql({ kind: "email", value: "a@example.com" }));
   assert.match(
     landed.err.join("\n"),
-    /The set on pages \(s3:\/\/nteract-celld-lab-621741996708\/standalone\/pages-live\) failed: [^]*request timed out[^]*does not prove nothing was written[^]*Requested state observed on pages \(s3:\/\/nteract-celld-lab-621741996708\/standalone\/pages-live\): the set landed\. Don't run it again\./,
+    /The set on page10 \(s3:\/\/nteract-celld-lab-621741996708\/standalone\/page10\) failed: [^]*request timed out[^]*does not prove nothing was written[^]*Requested state observed on page10 \(s3:\/\/nteract-celld-lab-621741996708\/standalone\/page10\): the set landed\. Don't run it again\./,
   );
 
   // The write did not commit. The script still doesn't promise a retry is safe.
@@ -654,11 +647,11 @@ test("after a write error the rule is read back, and the write is never re-sent"
   const lostText = notLanded.err.join("\n");
   assert.match(
     lostText,
-    /Requested state not observed on pages \(s3:\/\/nteract-celld-lab-621741996708\/standalone\/pages-live\)\. Current state:\n {2}no email rule for a@example\.com\n/,
+    /Requested state not observed on page10 \(s3:\/\/nteract-celld-lab-621741996708\/standalone\/page10\)\. Current state:\n {2}no email rule for a@example\.com\n/,
   );
   assert.match(lostText, /Reconcile before running anything again/);
   assert.ok(
-    lostText.includes("(`node scripts/quota-rules.mjs --target pages get email a@example.com`)"),
+    lostText.includes("(`node scripts/quota-rules.mjs --target page10 get email a@example.com`)"),
   );
   assert.doesNotMatch(lostText, /safe/);
 
@@ -685,7 +678,7 @@ test("after a write error the rule is read back, and the write is never re-sent"
   assert.equal(overwritten.calls.filter(isWrite).length, 1);
   assert.match(
     replaced.err.join("\n"),
-    /Requested state not observed on pages [^\n]*\. Current state:\n {2}email\t"a@example\.com"\t900\t[^]*committed and a newer change replaced it[^]*could overwrite their change/,
+    /Requested state not observed on page10 [^\n]*\. Current state:\n {2}email\t"a@example\.com"\t900\t[^]*committed and a newer change replaced it[^]*could overwrite their change/,
   );
 
   // A delete that committed, then the read-back itself fails.
@@ -706,7 +699,7 @@ test("after a write error the rule is read back, and the write is never re-sent"
   assert.equal(blind.calls.filter(isWrite).length, 1);
   assert.match(
     unknown.err.join("\n"),
-    /read-back failed too[^]*state on pages \(s3:\/\/nteract-celld-lab-621741996708\/standalone\/pages-live\) is unknown\. Run `node scripts\/quota-rules\.mjs --target pages get email a@example\.com` and reconcile/,
+    /read-back failed too[^]*state on page10 \(s3:\/\/nteract-celld-lab-621741996708\/standalone\/page10\) is unknown\. Run `node scripts\/quota-rules\.mjs --target page10 get email a@example\.com` and reconcile/,
   );
   assert.deepEqual(db.rows("SELECT * FROM pages_quota_rules"), []);
 });
@@ -819,7 +812,7 @@ test("a row changed after the preflight survives the delete and is reported", as
   assert.equal(await main([...TARGET, "delete", "domain", "x.io"], { transport, ...io }), 1);
   assert.match(
     err.join("\n"),
-    /Requested state not observed on pages [^\n]*\. Current state:\n {2}domain\t"x\.io"\t80\t[^]*changed after the preflight read it[^]*Reconcile before running anything again/,
+    /Requested state not observed on page10 [^\n]*\. Current state:\n {2}domain\t"x\.io"\t80\t[^]*changed after the preflight read it[^]*Reconcile before running anything again/,
   );
   assert.equal(db.rows("SELECT page_limit FROM pages_quota_rules")[0].page_limit, 80);
 });
@@ -837,7 +830,7 @@ test("set reports older rows that match the same rule", async (t) => {
   assert.match(out[2], /^domain\t"x\.io"\t40\t[^(]*$/);
   assert.ok(
     out[3].includes(
-      "no longer apply. `node scripts/quota-rules.mjs --target pages delete domain x.io` removes all of them.",
+      "no longer apply. `node scripts/quota-rules.mjs --target page10 delete domain x.io` removes all of them.",
     ),
   );
 });
