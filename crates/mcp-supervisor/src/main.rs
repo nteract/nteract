@@ -377,6 +377,70 @@ fn wait_for_daemon(project_root: &Path, workspace_path: &Path, timeout: Duration
     false
 }
 
+async fn daemon_status_async(project_root: &Path, workspace_path: &Path) -> Option<DaemonInfo> {
+    let pr = project_root.to_path_buf();
+    let wp = workspace_path.to_path_buf();
+    tokio::task::spawn_blocking(move || daemon_status(&pr, &wp))
+        .await
+        .ok()
+        .flatten()
+}
+
+async fn expected_daemon_version_async(project_root: &Path) -> Option<String> {
+    let pr = project_root.to_path_buf();
+    tokio::task::spawn_blocking(move || expected_daemon_version(&pr))
+        .await
+        .ok()
+        .flatten()
+}
+
+async fn stop_daemon_by_pid_async(project_root: &Path, workspace_path: &Path, pid: u32) {
+    let pr = project_root.to_path_buf();
+    let wp = workspace_path.to_path_buf();
+    let _ = tokio::task::spawn_blocking(move || stop_daemon_by_pid(&pr, &wp, pid)).await;
+}
+
+async fn wait_for_daemon_async(
+    project_root: &Path,
+    workspace_path: &Path,
+    timeout: Duration,
+) -> bool {
+    let pr = project_root.to_path_buf();
+    let wp = workspace_path.to_path_buf();
+    tokio::task::spawn_blocking(move || wait_for_daemon(&pr, &wp, timeout))
+        .await
+        .unwrap_or(false)
+}
+
+async fn run_cargo_build_daemon_async(project_root: &Path) -> bool {
+    let pr = project_root.to_path_buf();
+    tokio::task::spawn_blocking(move || run_cargo_build_daemon(&pr))
+        .await
+        .unwrap_or(false)
+}
+
+async fn build_runt_cli_async(project_root: &Path) -> bool {
+    let pr = project_root.to_path_buf();
+    tokio::task::spawn_blocking(move || build_runt_cli(&pr))
+        .await
+        .unwrap_or(false)
+}
+
+async fn run_maturin_develop_async(project_root: &Path) -> MaturinDevelopStatus {
+    let pr = project_root.to_path_buf();
+    tokio::task::spawn_blocking(move || run_maturin_develop(&pr))
+        .await
+        .unwrap_or(MaturinDevelopStatus::Failed)
+}
+
+async fn stop_child_async(mut child: std::process::Child) {
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = child.kill();
+        let _ = child.wait();
+    })
+    .await;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MaturinDevelopStatus {
     Built,
@@ -876,6 +940,9 @@ impl DevNotebookLaunch {
 #[derive(Clone)]
 struct Supervisor {
     state: Arc<RwLock<SupervisorState>>,
+    /// Single-permit semaphore that serializes daemon stop → start → ready
+    /// transitions across concurrent calls without holding a Tokio lock across `.await`.
+    daemon_lifecycle_gate: Arc<tokio::sync::Semaphore>,
     /// Signaled when the child client is first connected by the background
     /// init task. `list_tools` waits on this so the initial tool list
     /// includes the proxied nteract tools (not just supervisor tools).
@@ -933,8 +1000,50 @@ impl Supervisor {
                 tool_list_changed_tx: Some(tool_list_changed_tx),
                 managed: HashMap::new(),
             })),
+            daemon_lifecycle_gate: Arc::new(tokio::sync::Semaphore::new(1)),
             child_ready: Arc::new(Notify::new()),
         }
+    }
+
+    /// Serialize daemon stop → start → ready transitions across concurrent calls
+    /// and insulate the transition from caller cancellation.
+    async fn restart_daemon(
+        &self,
+        project_root: PathBuf,
+        daemon_workspace_path: PathBuf,
+        disable_env_pools: bool,
+    ) -> bool {
+        let state = self.state.clone();
+        let gate = self.daemon_lifecycle_gate.clone();
+        tokio::spawn(async move {
+            let Ok(_permit) = gate.acquire_owned().await else {
+                return false;
+            };
+            let old_child = { state.write().await.daemon_child.take() };
+            if let Some(child) = old_child {
+                info!("Stopping managed daemon (PID {:?})...", child.id());
+                stop_child_async(child).await;
+            }
+            // Also stop any unmanaged daemon on the socket (e.g. launchd)
+            if let Some(info) = daemon_status_async(&project_root, &daemon_workspace_path).await {
+                if info.running {
+                    if let Some(pid) = info.daemon_info.and_then(|di| di.pid) {
+                        info!("Stopping unmanaged daemon (PID {pid})...");
+                        stop_daemon_by_pid_async(&project_root, &daemon_workspace_path, pid).await;
+                    }
+                }
+            }
+            let new_child = start_daemon(&project_root, &daemon_workspace_path, disable_env_pools);
+            state.write().await.daemon_child = new_child;
+            wait_for_daemon_async(
+                &project_root,
+                &daemon_workspace_path,
+                Duration::from_secs(30),
+            )
+            .await
+        })
+        .await
+        .unwrap_or(false)
     }
 
     /// Get the proxy, returning an error if not yet initialized.
@@ -1022,6 +1131,25 @@ impl Supervisor {
         } else {
             (false, 0)
         };
+        let (project_root, daemon_workspace_path) = {
+            let state = self.state.read().await;
+            (
+                state.project_root.clone(),
+                state.daemon_workspace_path.clone(),
+            )
+        };
+
+        // Query daemon version outside the state lock so slow probes never block peers.
+        let daemon_version = daemon_status_async(&project_root, &daemon_workspace_path)
+            .await
+            .and_then(|info| info.daemon_info)
+            .and_then(|di| di.version);
+        let expected_version = expected_daemon_version_async(&project_root).await;
+        let version_mismatch = match (&daemon_version, &expected_version) {
+            (Some(running), Some(expected)) => running != expected,
+            _ => false,
+        };
+
         let mut state = self.state.write().await;
 
         // Failsafe: warn if the socket path doesn't look like a dev daemon socket.
@@ -1051,16 +1179,6 @@ impl Supervisor {
                 )
             })
             .collect();
-
-        // Query daemon version and detect mismatches
-        let daemon_version = daemon_status(&state.project_root, &state.daemon_workspace_path)
-            .and_then(|info| info.daemon_info)
-            .and_then(|di| di.version);
-        let expected_version = expected_daemon_version(&state.project_root);
-        let version_mismatch = match (&daemon_version, &expected_version) {
-            (Some(running), Some(expected)) => running != expected,
-            _ => false,
-        };
 
         // Check if the daemon_child we're tracking is still our process
         if let Some(ref mut child) = state.daemon_child {
@@ -1351,7 +1469,7 @@ impl Supervisor {
     /// Stop a managed process by name.
     async fn stop_managed(&self, name: &str) -> Result<(), String> {
         // Remove from map under the lock, then kill outside the lock
-        let mut proc = {
+        let proc = {
             let mut state = self.state.write().await;
             state
                 .managed
@@ -1365,8 +1483,7 @@ impl Supervisor {
             name,
             proc.child.id()
         );
-        let _ = proc.child.kill();
-        let _ = proc.child.wait();
+        stop_child_async(proc.child).await;
         Ok(())
     }
 
@@ -1384,7 +1501,7 @@ impl Supervisor {
         match kind {
             ChangeKind::AssetsChanged | ChangeKind::RustMcpChanged => {
                 info!("MCP source/assets changed, checking assets and building runt...");
-                if !build_runt_cli(&project_root) {
+                if !build_runt_cli_async(&project_root).await {
                     let message = "MCP asset preparation or runt build failed; keeping current child. See supervisor logs.";
                     error!("{message}");
                     self.state
@@ -1403,7 +1520,7 @@ impl Supervisor {
                         " + maturin develop"
                     }
                 );
-                if !build_runt_cli(&project_root) {
+                if !build_runt_cli_async(&project_root).await {
                     let message = "MCP asset preparation or runt build failed; compiled assets remain stale. See supervisor logs.";
                     error!("{message}");
                     self.state
@@ -1416,7 +1533,8 @@ impl Supervisor {
                     // Python is loaded at runtime: a failed compiled-asset
                     // build must not discard the Python edit in this batch.
                     build_failed = true;
-                } else if !skip_maturin && !run_maturin_develop(&project_root).success() {
+                } else if !skip_maturin && !run_maturin_develop_async(&project_root).await.success()
+                {
                     warn!("maturin develop failed (runt mcp will still restart)");
                 }
             }
@@ -1512,9 +1630,12 @@ impl Supervisor {
                     continue; // our own process — leave it alone
                 }
                 warn!("[supervisor] Zombie process on vite port {port}: pid {pid} — killing");
-                let _ = std::process::Command::new("kill")
-                    .args(["-TERM", &pid.to_string()])
-                    .status();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _ = std::process::Command::new("kill")
+                        .args(["-TERM", &pid.to_string()])
+                        .status();
+                })
+                .await;
                 killed.push(pid);
             }
             // Brief grace period so TIME_WAIT clears before our Vite tries to bind
@@ -1607,10 +1728,15 @@ impl Supervisor {
         let mut child_changed_by_rebuild = false;
         if params.rebuild {
             info!("[supervisor] up: rebuild requested");
-            if !run_cargo_build_daemon(&project_root) {
-                return Ok(CallToolResult::success(vec![ContentBlock::text(
-                    "up: cargo build -p runtimed failed. See the supervisor logs for details.",
-                )]));
+            // `run_cargo_build_daemon` also runs `run_xtask_wasm_ensure` and `ensure_mcp_assets`.
+            if !run_cargo_build_daemon_async(&project_root).await {
+                let message =
+                    "up: cargo build -p runtimed failed. See the supervisor logs for details.";
+                self.state
+                    .write()
+                    .await
+                    .build_failed(true, message.to_string());
+                return Ok(CallToolResult::success(vec![ContentBlock::text(message)]));
             }
             self.state.write().await.build_succeeded(true);
             let (daemon_after, child_after) = managed_binary_fingerprints(&project_root);
@@ -1626,7 +1752,7 @@ impl Supervisor {
             );
 
             if std::env::var("SKIP_MATURIN").unwrap_or_default() != "1" {
-                match run_maturin_develop(&project_root) {
+                match run_maturin_develop_async(&project_root).await {
                     MaturinDevelopStatus::Built => {
                         report.push("rebuild: python bindings rebuilt".into());
                     }
@@ -1644,18 +1770,6 @@ impl Supervisor {
                 report.push("rebuild: maturin skipped (SKIP_MATURIN=1)".into());
             }
 
-            // runtimed-wasm has to track the daemon's runtime-state schema
-            // exactly: both sides bootstrap their RuntimeStateDoc with the
-            // same well-known schema actor, and any divergence in the
-            // scaffolded ops produces a `(actor, seq)` collision that
-            // automerge rejects on receive. Stale wasm leaves the frontend
-            // stuck on "Initializing" with no surfaced error.
-            if !run_xtask_wasm_ensure(&project_root) {
-                return Ok(CallToolResult::success(vec![ContentBlock::text(
-                    "up: cargo xtask wasm-ensure-runtime failed. Daemon was rebuilt; \
-                     the frontend wasm bundle may be stale. See the supervisor logs.",
-                )]));
-            }
             report.push("rebuild: runtimed-wasm current".into());
         }
 
@@ -1679,68 +1793,51 @@ impl Supervisor {
         // Now we only restart when the binary actually changed — the
         // check below reuses the existing "is the running daemon at the
         // expected version?" path for the not-rebuilt case.
-        let needs_daemon_restart = match daemon_status(&project_root, &daemon_workspace_path) {
-            Some(info) if info.running => {
-                if daemon_changed_by_rebuild {
-                    report.push("daemon: binary changed — restarting".into());
-                    true
-                } else {
-                    // Check for version mismatch with expected. Covers
-                    // both `rebuild=false` and `rebuild=true` where the
-                    // cargo output was Fresh (binary_changed_by_rebuild
-                    // is false).
-                    let running = info.daemon_info.as_ref().and_then(|di| di.version.as_ref());
-                    let expected = expected_daemon_version(&project_root);
-                    match (running, expected) {
-                        (Some(r), Some(e)) if r != &e => {
-                            warn!(
+        let needs_daemon_restart =
+            match daemon_status_async(&project_root, &daemon_workspace_path).await {
+                Some(info) if info.running => {
+                    if daemon_changed_by_rebuild {
+                        report.push("daemon: binary changed — restarting".into());
+                        true
+                    } else {
+                        // Check for version mismatch with expected. Covers
+                        // both `rebuild=false` and `rebuild=true` where the
+                        // cargo output was Fresh (binary_changed_by_rebuild
+                        // is false).
+                        let running = info.daemon_info.as_ref().and_then(|di| di.version.as_ref());
+                        let expected = expected_daemon_version_async(&project_root).await;
+                        match (running, expected) {
+                            (Some(r), Some(e)) if r != &e => {
+                                warn!(
                                 "[supervisor] Daemon version mismatch: running={r}, expected={e}"
                             );
-                            report.push(format!(
+                                report.push(format!(
                                 "daemon: version mismatch (running={r}, expected={e}) — restarting"
                             ));
-                            true
-                        }
-                        _ => {
-                            report.push("daemon: already running".into());
-                            false
+                                true
+                            }
+                            _ => {
+                                report.push("daemon: already running".into());
+                                false
+                            }
                         }
                     }
                 }
-            }
-            _ => {
-                report.push("daemon: not running — starting".into());
-                true
-            }
-        };
+                _ => {
+                    report.push("daemon: not running — starting".into());
+                    true
+                }
+            };
 
         if needs_daemon_restart {
-            let mut state = self.state.write().await;
-            if let Some(ref mut child) = state.daemon_child {
-                let _ = child.kill();
-                let _ = child.wait();
-                state.daemon_child = None;
-            }
-            // Also stop any unmanaged daemon on the socket
-            if let Some(info) = daemon_status(&project_root, &daemon_workspace_path) {
-                if info.running {
-                    if let Some(pid) = info.daemon_info.and_then(|di| di.pid) {
-                        stop_daemon_by_pid(&project_root, &daemon_workspace_path, pid);
-                    }
-                }
-            }
-            state.daemon_child = start_daemon(
-                &project_root,
-                &daemon_workspace_path,
-                mode.uses_isolated_workspace(),
-            );
-            drop(state);
-
-            if !wait_for_daemon(
-                &project_root,
-                &daemon_workspace_path,
-                Duration::from_secs(30),
-            ) {
+            if !self
+                .restart_daemon(
+                    project_root.clone(),
+                    daemon_workspace_path.clone(),
+                    mode.uses_isolated_workspace(),
+                )
+                .await
+            {
                 return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                     "up: daemon did not become ready within 30s.\n\n{}",
                     report.join("\n")
@@ -1830,17 +1927,16 @@ impl Supervisor {
                     state.daemon_workspace_path.clone(),
                 )
             };
-            let mut state = self.state.write().await;
-            if let Some(ref mut child) = state.daemon_child {
-                let _ = child.kill();
-                let _ = child.wait();
-                state.daemon_child = None;
+            let _permit = self.daemon_lifecycle_gate.clone().acquire_owned().await;
+            let old_child = { self.state.write().await.daemon_child.take() };
+            if let Some(child) = old_child {
+                stop_child_async(child).await;
                 report.push("daemon: managed child stopped".into());
             }
-            if let Some(info) = daemon_status(&project_root, &daemon_workspace_path) {
+            if let Some(info) = daemon_status_async(&project_root, &daemon_workspace_path).await {
                 if info.running {
                     if let Some(pid) = info.daemon_info.and_then(|di| di.pid) {
-                        stop_daemon_by_pid(&project_root, &daemon_workspace_path, pid);
+                        stop_daemon_by_pid_async(&project_root, &daemon_workspace_path, pid).await;
                         report.push(format!("daemon: unmanaged process pid {pid} stopped"));
                     }
                 }
@@ -2361,43 +2457,19 @@ impl Supervisor {
                         // Restart daemon, then child.
                         // Stop whatever daemon is on the socket — whether we
                         // started it or launchd did.
-                        let mut state = self.state.write().await;
-                        let project_root = state.project_root.clone();
-                        let daemon_workspace_path = state.daemon_workspace_path.clone();
-                        let disable_env_pools = state.mode.uses_isolated_workspace();
+                        let (project_root, daemon_workspace_path, disable_env_pools) = {
+                            let state = self.state.read().await;
+                            (
+                                state.project_root.clone(),
+                                state.daemon_workspace_path.clone(),
+                                state.mode.uses_isolated_workspace(),
+                            )
+                        };
 
-                        if let Some(ref mut child) = state.daemon_child {
-                            info!("Stopping managed daemon (PID {:?})...", child.id());
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            state.daemon_child = None;
-                        }
-
-                        // Also stop any unmanaged daemon on the socket
-                        if let Some(info) = daemon_status(&project_root, &daemon_workspace_path) {
-                            if info.running {
-                                if let Some(di) = &info.daemon_info {
-                                    if let Some(pid) = di.pid {
-                                        info!("Stopping unmanaged daemon (PID {pid})...");
-                                        stop_daemon_by_pid(
-                                            &project_root,
-                                            &daemon_workspace_path,
-                                            pid,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-
-                        state.daemon_child =
-                            start_daemon(&project_root, &daemon_workspace_path, disable_env_pools);
-                        drop(state);
-
-                        if !wait_for_daemon(
-                            &project_root,
-                            &daemon_workspace_path,
-                            Duration::from_secs(30),
-                        ) {
+                        if !self
+                            .restart_daemon(project_root, daemon_workspace_path, disable_env_pools)
+                            .await
+                        {
                             return Ok(CallToolResult::success(vec![ContentBlock::text(
                                 "Daemon restart failed — daemon did not become ready within 30s",
                             )]));
@@ -2453,7 +2525,7 @@ impl Supervisor {
                         // Vite is available via the supervisor
                         let mut result = self.forward_tool_call(request).await?;
                         result.content.push(ContentBlock::text(
-                            "\n\nTip: Use supervisor_start_vite to start a Vite \
+                            "\n\nTip: Use `up` with `vite: true` to start a Vite \
                              dev server for hot-reload, then show_notebook will \
                              launch with live frontend changes."
                                 .to_string(),
@@ -2511,18 +2583,22 @@ impl Supervisor {
                     )
                 };
 
-                // 1. Rebuild daemon binary and CLI (cargo build -p runtimed -p runt)
-                if !run_cargo_build_daemon(&project_root) {
-                    return Ok(CallToolResult::success(vec![ContentBlock::text(
-                        "cargo build -p runtimed failed — check the supervisor logs for details",
-                    )]));
+                // 1. Rebuild daemon binary, CLI, WASM runtime, and MCP assets
+                if !run_cargo_build_daemon_async(&project_root).await {
+                    let message =
+                        "cargo build -p runtimed failed — check the supervisor logs for details";
+                    self.state
+                        .write()
+                        .await
+                        .build_failed(true, message.to_string());
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(message)]));
                 }
                 self.state.write().await.build_succeeded(true);
 
                 // 2. Rebuild Python bindings (maturin develop) — skip if
                 // SKIP_MATURIN=1 is set (speeds up Rust-only iteration).
                 if std::env::var("SKIP_MATURIN").unwrap_or_default() != "1" {
-                    if !run_maturin_develop(&project_root).success() {
+                    if !run_maturin_develop_async(&project_root).await.success() {
                         return Ok(CallToolResult::success(vec![ContentBlock::text(
                             "maturin develop failed — check the supervisor logs for details\n\
                              (daemon binary was rebuilt successfully)",
@@ -2532,51 +2608,15 @@ impl Supervisor {
                     info!("Skipping maturin develop (SKIP_MATURIN=1)");
                 }
 
-                // 3. Ensure runtimed-wasm stays in lockstep with the daemon's
-                // runtime-state schema. See `run_xtask_wasm_ensure` for why a
-                // stale wasm here ends in stuck "Initializing" via
-                // duplicate-seq-1.
-                if !run_xtask_wasm_ensure(&project_root) {
-                    return Ok(CallToolResult::success(vec![ContentBlock::text(
-                        "cargo xtask wasm-ensure-runtime failed — check the supervisor logs for details\n\
-                         (daemon binary was rebuilt successfully; the frontend wasm bundle may be stale)",
-                    )]));
-                }
-
-                // 4. Stop whatever daemon is running (managed or not) and start fresh
+                // 3. Stop whatever daemon is running (managed or not) and start fresh
+                if !self
+                    .restart_daemon(
+                        project_root.clone(),
+                        daemon_workspace_path.clone(),
+                        disable_env_pools,
+                    )
+                    .await
                 {
-                    let mut state = self.state.write().await;
-                    if let Some(ref mut child) = state.daemon_child {
-                        info!(
-                            "Stopping managed daemon (PID {:?}) for rebuild...",
-                            child.id()
-                        );
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        state.daemon_child = None;
-                    }
-
-                    // Also stop any unmanaged daemon on the socket (e.g. launchd)
-                    if let Some(info) = daemon_status(&project_root, &daemon_workspace_path) {
-                        if info.running {
-                            if let Some(di) = &info.daemon_info {
-                                if let Some(pid) = di.pid {
-                                    info!("Stopping unmanaged daemon (PID {pid}) for rebuild...");
-                                    stop_daemon_by_pid(&project_root, &daemon_workspace_path, pid);
-                                }
-                            }
-                        }
-                    }
-
-                    state.daemon_child =
-                        start_daemon(&project_root, &daemon_workspace_path, disable_env_pools);
-                }
-
-                if !wait_for_daemon(
-                    &project_root,
-                    &daemon_workspace_path,
-                    Duration::from_secs(30),
-                ) {
                     return Ok(CallToolResult::success(vec![ContentBlock::text(
                         "Rebuild succeeded but daemon did not become ready within 30s",
                     )]));
@@ -2584,10 +2624,11 @@ impl Supervisor {
 
                 // Verify the running daemon matches the just-built binary
                 let version_ok = match (
-                    daemon_status(&project_root, &daemon_workspace_path)
+                    daemon_status_async(&project_root, &daemon_workspace_path)
+                        .await
                         .and_then(|i| i.daemon_info)
                         .and_then(|di| di.version),
-                    expected_daemon_version(&project_root),
+                    expected_daemon_version_async(&project_root).await,
                 ) {
                     (Some(running), Some(expected)) if running != expected => {
                         warn!(
@@ -2633,7 +2674,7 @@ impl Supervisor {
                         Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
                     }
                     _ => Ok(CallToolResult::success(vec![ContentBlock::text(
-                        "No Vite log found. Start Vite first with supervisor_start_vite.",
+                        "No Vite log found. Start Vite first with `up` (`vite: true`).",
                     )])),
                 }
             }
@@ -2735,45 +2776,53 @@ impl Supervisor {
                 // Stop the current daemon. If we manage it, kill the child directly.
                 // If it was already running (unmanaged), stop it via `runt daemon stop`
                 // using the OLD mode's binary so the CLI matches the running daemon.
-                {
-                    let mut state = self.state.write().await;
-                    if let Some(ref mut child) = state.daemon_child {
-                        info!("Stopping managed daemon for mode switch...");
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        state.daemon_child = None;
-                    } else {
-                        // Unmanaged daemon — stop via runt CLI (old mode binary)
-                        RELEASE_MODE.store(old_release, Ordering::Relaxed);
-                        let old_runt = cargo_binary(&project_root, "runt");
-                        RELEASE_MODE.store(new_release, Ordering::Relaxed);
-                        if old_runt.exists() {
-                            info!("Stopping unmanaged daemon via runt CLI...");
-                            let mut stop_cmd = std::process::Command::new(&old_runt);
-                            stop_cmd
-                                .args(["daemon", "stop"])
-                                .env("RUNTIMED_DEV", "1")
-                                // Always target this worktree's daemon — never the system daemon.
-                                .env("RUNTIMED_WORKSPACE_PATH", &daemon_workspace_path);
-                            let _ = stop_cmd.status();
-                            // Give it a moment to release the socket
-                            std::thread::sleep(Duration::from_secs(2));
+                let daemon_ready = {
+                    let state = self.state.clone();
+                    let gate = self.daemon_lifecycle_gate.clone();
+                    let pr = project_root.clone();
+                    let wp = daemon_workspace_path.clone();
+                    tokio::spawn(async move {
+                        let Ok(_permit) = gate.acquire_owned().await else {
+                            return false;
+                        };
+                        let old_child = { state.write().await.daemon_child.take() };
+                        if let Some(child) = old_child {
+                            info!("Stopping managed daemon for mode switch...");
+                            stop_child_async(child).await;
+                        } else {
+                            // Unmanaged daemon — stop via runt CLI (old mode binary)
+                            RELEASE_MODE.store(old_release, Ordering::Relaxed);
+                            let old_runt = cargo_binary(&pr, "runt");
+                            RELEASE_MODE.store(new_release, Ordering::Relaxed);
+                            if old_runt.exists() {
+                                info!("Stopping unmanaged daemon via runt CLI...");
+                                let wp_stop = wp.clone();
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    let mut stop_cmd = std::process::Command::new(&old_runt);
+                                    stop_cmd
+                                        .args(["daemon", "stop"])
+                                        .env("RUNTIMED_DEV", "1")
+                                        // Always target this worktree's daemon — never the system daemon.
+                                        .env("RUNTIMED_WORKSPACE_PATH", &wp_stop);
+                                    let _ = stop_cmd.status();
+                                })
+                                .await;
+                                // Give it a moment to release the socket
+                                tokio::time::sleep(Duration::from_secs(2)).await;
+                            }
                         }
-                    }
-                }
 
-                // Start the new daemon (now using the new mode's binary)
-                {
-                    let mut state = self.state.write().await;
-                    state.daemon_child =
-                        start_daemon(&project_root, &daemon_workspace_path, disable_env_pools);
-                }
+                        // Start the new daemon (now using the new mode's binary)
+                        let new_child = start_daemon(&pr, &wp, disable_env_pools);
+                        state.write().await.daemon_child = new_child;
 
-                if !wait_for_daemon(
-                    &project_root,
-                    &daemon_workspace_path,
-                    Duration::from_secs(30),
-                ) {
+                        wait_for_daemon_async(&pr, &wp, Duration::from_secs(30)).await
+                    })
+                    .await
+                    .unwrap_or(false)
+                };
+
+                if !daemon_ready {
                     // Roll back on failure
                     RELEASE_MODE.store(old_release, Ordering::Relaxed);
                     return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
@@ -3347,6 +3396,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state_for_init = server.service().state.clone();
     let state_for_watcher = state_for_init.clone();
     let state_for_cleanup = state_for_init.clone();
+    let daemon_lifecycle_gate_for_watcher = server.service().daemon_lifecycle_gate.clone();
     let child_ready = server.service().child_ready.clone();
 
     // Step 2: Spawn background task to do the heavy setup (daemon, build,
@@ -3396,10 +3446,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        let socket_path = match daemon_status(&project_root, &daemon_workspace_path) {
+        let socket_path = match daemon_status_async(&project_root, &daemon_workspace_path).await {
             Some(info) if info.running => {
                 info!("Dev daemon already running at {}", info.socket_path);
-                if let Some(expected) = expected_daemon_version(&project_root) {
+                if let Some(expected) = expected_daemon_version_async(&project_root).await {
                     let running = info
                         .daemon_info
                         .as_ref()
@@ -3441,7 +3491,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(_info) => {
                 info!("Daemon not running, starting it...");
                 if !cargo_binary(&project_root, "runtimed").exists() {
-                    if !run_cargo_build_daemon(&project_root) {
+                    if !run_cargo_build_daemon_async(&project_root).await {
                         error!("Failed to build runtimed daemon");
                         child_ready.notify_waiters();
                         return;
@@ -3453,16 +3503,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &daemon_workspace_path,
                     mode.uses_isolated_workspace(),
                 );
-                if !wait_for_daemon(
+                if !wait_for_daemon_async(
                     &project_root,
                     &daemon_workspace_path,
                     Duration::from_secs(30),
-                ) {
+                )
+                .await
+                {
                     error!("Daemon failed to start within 30s");
                     child_ready.notify_waiters();
                     return;
                 }
-                match daemon_status(&project_root, &daemon_workspace_path) {
+                match daemon_status_async(&project_root, &daemon_workspace_path).await {
                     Some(info) if info.running => info.socket_path,
                     _ => {
                         error!("Daemon started but status query failed");
@@ -3472,14 +3524,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             None => {
-                if !run_cargo_build_daemon(&project_root) {
+                if !run_cargo_build_daemon_async(&project_root).await {
                     error!("Failed to build daemon binaries");
                     child_ready.notify_waiters();
                     return;
                 }
                 state_for_init.write().await.build_succeeded(true);
 
-                match daemon_status(&project_root, &daemon_workspace_path) {
+                match daemon_status_async(&project_root, &daemon_workspace_path).await {
                     Some(info) => {
                         if !info.running {
                             daemon_child = start_daemon(
@@ -3487,16 +3539,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 &daemon_workspace_path,
                                 mode.uses_isolated_workspace(),
                             );
-                            if !wait_for_daemon(
+                            if !wait_for_daemon_async(
                                 &project_root,
                                 &daemon_workspace_path,
                                 Duration::from_secs(30),
-                            ) {
+                            )
+                            .await
+                            {
                                 error!("Daemon failed to start within 30s");
                                 child_ready.notify_waiters();
                                 return;
                             }
-                            match daemon_status(&project_root, &daemon_workspace_path) {
+                            match daemon_status_async(&project_root, &daemon_workspace_path).await {
                                 Some(fresh) if fresh.running => fresh.socket_path,
                                 _ => {
                                     error!("Daemon started but status query failed");
@@ -3609,6 +3663,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let watcher_supervisor = Supervisor {
                 state: state_for_watcher,
+                daemon_lifecycle_gate: daemon_lifecycle_gate_for_watcher,
                 child_ready: Arc::new(Notify::new()),
             };
             while let Some(change_kind) = file_change_rx.recv().await {

@@ -3461,7 +3461,28 @@ async fn doctor_command(
     Ok(())
 }
 
-/// Check if a process with the given PID is running
+/// True if parsed `tasklist /FO CSV /NH` output has `pid` in the PID column.
+#[cfg(any(windows, test))]
+fn tasklist_csv_contains_pid(stdout: &str, pid: u32) -> bool {
+    let target = pid.to_string();
+    stdout.lines().any(|line| {
+        let trimmed = line.trim();
+        // `tasklist /FO CSV /NH` emits `"image.exe","1234","Console","1","12,345 K"`.
+        // Parse quoted fields so commas inside image names don't shift columns.
+        let Some(rest) = trimmed.strip_prefix('"') else {
+            return false;
+        };
+        let Some(after_image) = rest.split_once("\",\"") else {
+            return false;
+        };
+        after_image
+            .1
+            .split_once('"')
+            .is_some_and(|(pid_field, _)| pid_field == target)
+    })
+}
+
+/// Check if a process with the given PID is running.
 fn is_process_running(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -3479,13 +3500,14 @@ fn is_process_running(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        // On Windows, use tasklist to check if process exists
+        // On Windows, use CSV tasklist output and compare the exact PID column
+        // so shorter PIDs cannot substring-match longer PIDs.
         std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+            .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
             .output()
             .map(|output| {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                stdout.contains(&pid.to_string())
+                tasklist_csv_contains_pid(&stdout, pid)
             })
             .unwrap_or(false)
     }
@@ -5923,6 +5945,22 @@ mod tests {
                 detail: "launchd loaded service without a pid".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn tasklist_csv_matches_exact_pid_column() {
+        let out = "\"runtimed.exe\",\"1234\",\"Console\",\"1\",\"42,000 K\"\r\n";
+        assert!(super::tasklist_csv_contains_pid(out, 1234));
+        assert!(!super::tasklist_csv_contains_pid(out, 123));
+        assert!(!super::tasklist_csv_contains_pid(out, 234));
+        assert!(!super::tasklist_csv_contains_pid(out, 42));
+
+        let with_comma = "\"my,app.exe\",\"99\",\"Console\",\"1\",\"1,000 K\"\r\n";
+        assert!(super::tasklist_csv_contains_pid(with_comma, 99));
+        assert!(!super::tasklist_csv_contains_pid(with_comma, 9));
+
+        let no_tasks = "INFO: No tasks are running which match the specified criteria.\r\n";
+        assert!(!super::tasklist_csv_contains_pid(no_tasks, 1234));
     }
 
     #[test]
