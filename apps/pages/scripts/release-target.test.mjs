@@ -53,7 +53,7 @@ test("operator entrypoints reject an unnamed or unknown target before external c
     [["--target", "pages-next"], unknown],
     [["--target", "elsewhere"], unknown],
   ]) {
-    const stage = "/tmp/nteract-pages-live-stage-ZZguard1";
+    const stage = "/tmp/nteract-page10-stage-ZZguard1";
     reject("deploy.mjs", [...prefix, "prepare"], message);
     reject("deploy.mjs", [...prefix, "upload", path.join(directory, "absent-stage")], message);
     reject("deploy.mjs", [...prefix, "install", stage, "--apply"], message);

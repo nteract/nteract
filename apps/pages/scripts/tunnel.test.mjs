@@ -513,7 +513,7 @@ test("provision refuses a DNS record another target owns", async () => {
     fetchImpl: cloudflare().fetchImpl,
     run: host(root).run,
   });
-  const foreign = { ...page10Record, comment: "nteract/pages:experiment:pages" };
+  const foreign = { ...page10Record, comment: "nteract/pages:experiment:pages2" };
   const cf = edge([{ id: tunnelId, name: "nteract-page10" }], [foreign]);
   await assert.rejects(
     provisionTarget({

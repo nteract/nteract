@@ -356,6 +356,7 @@ test("targets and SSH hosts come from the profile or a validated override", asyn
   assert.equal(config.runtime, "/opt/nteract-page10/celld");
   assert.equal(config.bucket, "s3://nteract-celld-lab-621741996708/standalone/page10");
   assert.equal(config.d1, AUTH_D1);
+  assert.equal(config.defaultLimit, 250);
   assert.equal(deploymentProfile("page10").d1.database_id, "pages-next-auth");
   assert.deepEqual(QUOTA_TARGETS, ["page10", "pages2", "page11", "page12"]);
   assert.equal(targetConfig("page10", "root@lab1").host, "root@lab1");

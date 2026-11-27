@@ -464,7 +464,7 @@ test("--worktree hands off to the worktree's own deploy.mjs at the gate SHA", ()
         worktree: true,
         repo: root,
         appRelative: "app",
-        target: "pages",
+        target: "page10",
         nodePath: "/operator/node_modules",
         prepare: () => assert.fail("the invoking checkout must not prepare"),
         handoff: (options) => {
@@ -481,7 +481,7 @@ test("--worktree hands off to the worktree's own deploy.mjs at the gate SHA", ()
       {
         root: worktree,
         appRelative: "app",
-        target: "pages",
+        target: "page10",
         runId: RUN,
         attempt: "2",
         nodePath: "/operator/node_modules",
@@ -499,7 +499,7 @@ test("--worktree hands off to the worktree's own deploy.mjs at the gate SHA", ()
           worktree: true,
           repo: root,
           appRelative: "app",
-          target: "pages",
+          target: "page10",
           handoff: () => assert.fail("must not hand off"),
           ...fakeGitHub(sha, zip),
         }),
@@ -517,7 +517,7 @@ test("a failed handoff removes the worktree it created", () =>
           worktree: true,
           repo: root,
           appRelative: "app",
-          target: "pages",
+          target: "page10",
           handoff: () => {
             assert.equal(fs.existsSync(worktree), true);
             throw new Error("child prepare failed");

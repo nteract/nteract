@@ -33,7 +33,7 @@ const check = (condition, message) => {
   if (!condition) throw new Error(message);
 };
 export const fromArtifactUsage =
-  "Usage: deploy.mjs --target pages prepare --from-artifact GATE_RUN_ID [--attempt N] [--worktree]";
+  "Usage: deploy.mjs --target page10 prepare --from-artifact GATE_RUN_ID [--attempt N] [--worktree]";
 
 /** Arguments after `prepare`. */
 export function parseFromArtifactArgs(args) {
