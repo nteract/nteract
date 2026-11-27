@@ -937,12 +937,79 @@ impl DevNotebookLaunch {
     }
 }
 
+/// Serializes daemon stop → start → ready transitions and coordinates
+/// shutdown draining on supervisor disconnect without holding a Tokio lock
+/// across `.await`.
+#[derive(Clone)]
+struct DaemonLifecycleGate {
+    semaphore: Arc<tokio::sync::Semaphore>,
+    shutting_down: Arc<AtomicBool>,
+}
+
+impl DaemonLifecycleGate {
+    fn new() -> Self {
+        Self {
+            semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+            shutting_down: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Acquire)
+    }
+
+    /// Acquire the lifecycle permit in the caller's task before detaching work.
+    ///
+    /// Returns `None` once shutdown has begun; if the caller is canceled while
+    /// awaiting the permit, no transition task is spawned.
+    async fn acquire(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        if self.is_shutting_down() {
+            return None;
+        }
+        let permit = self.semaphore.clone().acquire_owned().await.ok()?;
+        if self.is_shutting_down() {
+            return None;
+        }
+        Some(permit)
+    }
+
+    /// Run a daemon lifecycle transition under the gate:
+    /// 1. Acquire the permit before spawning so a caller canceled while queued
+    ///    never executes the transition.
+    /// 2. Detach execution in `tokio::spawn` holding the permit so caller
+    ///    cancellation mid-transition lets the active transition publish its
+    ///    result cleanly before releasing the gate.
+    async fn run_transition<F, Fut, T>(&self, transition: F) -> Option<T>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let permit = self.acquire().await?;
+        tokio::spawn(async move {
+            let _permit = permit;
+            transition().await
+        })
+        .await
+        .ok()
+    }
+
+    /// Stop admitting new lifecycle transitions and wait for any active
+    /// transition to finish before cleanup takes the final child and tears
+    /// down the workspace.
+    async fn drain_for_shutdown(&self) {
+        self.shutting_down.store(true, Ordering::Release);
+        let permit = self.semaphore.clone().acquire_owned().await.ok();
+        self.semaphore.close();
+        drop(permit);
+    }
+}
+
 #[derive(Clone)]
 struct Supervisor {
     state: Arc<RwLock<SupervisorState>>,
-    /// Single-permit semaphore that serializes daemon stop → start → ready
-    /// transitions across concurrent calls without holding a Tokio lock across `.await`.
-    daemon_lifecycle_gate: Arc<tokio::sync::Semaphore>,
+    /// Serializes daemon lifecycle transitions and drains active transitions on disconnect.
+    daemon_lifecycle_gate: DaemonLifecycleGate,
     /// Signaled when the child client is first connected by the background
     /// init task. `list_tools` waits on this so the initial tool list
     /// includes the proxied nteract tools (not just supervisor tools).
@@ -1000,13 +1067,16 @@ impl Supervisor {
                 tool_list_changed_tx: Some(tool_list_changed_tx),
                 managed: HashMap::new(),
             })),
-            daemon_lifecycle_gate: Arc::new(tokio::sync::Semaphore::new(1)),
+            daemon_lifecycle_gate: DaemonLifecycleGate::new(),
             child_ready: Arc::new(Notify::new()),
         }
     }
 
-    /// Serialize daemon stop → start → ready transitions across concurrent calls
-    /// and insulate the transition from caller cancellation.
+    /// Serialize daemon stop → start → ready transitions across concurrent calls.
+    ///
+    /// Acquires the lifecycle permit before detaching so a caller canceled while
+    /// queued does not restart a healthy daemon, while a transition already in
+    /// progress finishes cleanly and is drained by disconnect cleanup.
     async fn restart_daemon(
         &self,
         project_root: PathBuf,
@@ -1015,35 +1085,42 @@ impl Supervisor {
     ) -> bool {
         let state = self.state.clone();
         let gate = self.daemon_lifecycle_gate.clone();
-        tokio::spawn(async move {
-            let Ok(_permit) = gate.acquire_owned().await else {
-                return false;
-            };
-            let old_child = { state.write().await.daemon_child.take() };
-            if let Some(child) = old_child {
-                info!("Stopping managed daemon (PID {:?})...", child.id());
-                stop_child_async(child).await;
-            }
-            // Also stop any unmanaged daemon on the socket (e.g. launchd)
-            if let Some(info) = daemon_status_async(&project_root, &daemon_workspace_path).await {
-                if info.running {
-                    if let Some(pid) = info.daemon_info.and_then(|di| di.pid) {
-                        info!("Stopping unmanaged daemon (PID {pid})...");
-                        stop_daemon_by_pid_async(&project_root, &daemon_workspace_path, pid).await;
+        self.daemon_lifecycle_gate
+            .run_transition(move || async move {
+                let old_child = { state.write().await.daemon_child.take() };
+                if let Some(child) = old_child {
+                    info!("Stopping managed daemon (PID {:?})...", child.id());
+                    stop_child_async(child).await;
+                }
+                // Also stop any unmanaged daemon on the socket (e.g. launchd)
+                if let Some(info) = daemon_status_async(&project_root, &daemon_workspace_path).await
+                {
+                    if info.running {
+                        if let Some(pid) = info.daemon_info.and_then(|di| di.pid) {
+                            info!("Stopping unmanaged daemon (PID {pid})...");
+                            stop_daemon_by_pid_async(&project_root, &daemon_workspace_path, pid)
+                                .await;
+                        }
                     }
                 }
-            }
-            let new_child = start_daemon(&project_root, &daemon_workspace_path, disable_env_pools);
-            state.write().await.daemon_child = new_child;
-            wait_for_daemon_async(
-                &project_root,
-                &daemon_workspace_path,
-                Duration::from_secs(30),
-            )
+                if gate.is_shutting_down() {
+                    return false;
+                }
+                let new_child =
+                    start_daemon(&project_root, &daemon_workspace_path, disable_env_pools);
+                state.write().await.daemon_child = new_child;
+                if gate.is_shutting_down() {
+                    return false;
+                }
+                wait_for_daemon_async(
+                    &project_root,
+                    &daemon_workspace_path,
+                    Duration::from_secs(30),
+                )
+                .await
+            })
             .await
-        })
-        .await
-        .unwrap_or(false)
+            .unwrap_or(false)
     }
 
     /// Get the proxy, returning an error if not yet initialized.
@@ -1927,19 +2004,39 @@ impl Supervisor {
                     state.daemon_workspace_path.clone(),
                 )
             };
-            let _permit = self.daemon_lifecycle_gate.clone().acquire_owned().await;
-            let old_child = { self.state.write().await.daemon_child.take() };
-            if let Some(child) = old_child {
-                stop_child_async(child).await;
-                report.push("daemon: managed child stopped".into());
-            }
-            if let Some(info) = daemon_status_async(&project_root, &daemon_workspace_path).await {
-                if info.running {
-                    if let Some(pid) = info.daemon_info.and_then(|di| di.pid) {
-                        stop_daemon_by_pid_async(&project_root, &daemon_workspace_path, pid).await;
-                        report.push(format!("daemon: unmanaged process pid {pid} stopped"));
+            let state = self.state.clone();
+            if let Some(stopped) = self
+                .daemon_lifecycle_gate
+                .run_transition(move || async move {
+                    let mut messages = Vec::new();
+                    let old_child = { state.write().await.daemon_child.take() };
+                    if let Some(child) = old_child {
+                        stop_child_async(child).await;
+                        messages.push("daemon: managed child stopped".into());
                     }
-                }
+                    if let Some(info) =
+                        daemon_status_async(&project_root, &daemon_workspace_path).await
+                    {
+                        if info.running {
+                            if let Some(pid) = info.daemon_info.and_then(|di| di.pid) {
+                                stop_daemon_by_pid_async(
+                                    &project_root,
+                                    &daemon_workspace_path,
+                                    pid,
+                                )
+                                .await;
+                                messages
+                                    .push(format!("daemon: unmanaged process pid {pid} stopped"));
+                            }
+                        }
+                    }
+                    messages
+                })
+                .await
+            {
+                report.extend(stopped);
+            } else {
+                report.push("daemon: supervisor shutting down".into());
             }
         } else {
             report.push("daemon: left running (pass daemon=true to stop)".into());
@@ -2781,45 +2878,51 @@ impl Supervisor {
                     let gate = self.daemon_lifecycle_gate.clone();
                     let pr = project_root.clone();
                     let wp = daemon_workspace_path.clone();
-                    tokio::spawn(async move {
-                        let Ok(_permit) = gate.acquire_owned().await else {
-                            return false;
-                        };
-                        let old_child = { state.write().await.daemon_child.take() };
-                        if let Some(child) = old_child {
-                            info!("Stopping managed daemon for mode switch...");
-                            stop_child_async(child).await;
-                        } else {
-                            // Unmanaged daemon — stop via runt CLI (old mode binary)
-                            RELEASE_MODE.store(old_release, Ordering::Relaxed);
-                            let old_runt = cargo_binary(&pr, "runt");
-                            RELEASE_MODE.store(new_release, Ordering::Relaxed);
-                            if old_runt.exists() {
-                                info!("Stopping unmanaged daemon via runt CLI...");
-                                let wp_stop = wp.clone();
-                                let _ = tokio::task::spawn_blocking(move || {
-                                    let mut stop_cmd = std::process::Command::new(&old_runt);
-                                    stop_cmd
-                                        .args(["daemon", "stop"])
-                                        .env("RUNTIMED_DEV", "1")
-                                        // Always target this worktree's daemon — never the system daemon.
-                                        .env("RUNTIMED_WORKSPACE_PATH", &wp_stop);
-                                    let _ = stop_cmd.status();
-                                })
-                                .await;
-                                // Give it a moment to release the socket
-                                tokio::time::sleep(Duration::from_secs(2)).await;
+                    self.daemon_lifecycle_gate
+                        .run_transition(move || async move {
+                            let old_child = { state.write().await.daemon_child.take() };
+                            if let Some(child) = old_child {
+                                info!("Stopping managed daemon for mode switch...");
+                                stop_child_async(child).await;
+                            } else {
+                                // Unmanaged daemon — stop via runt CLI (old mode binary)
+                                RELEASE_MODE.store(old_release, Ordering::Relaxed);
+                                let old_runt = cargo_binary(&pr, "runt");
+                                RELEASE_MODE.store(new_release, Ordering::Relaxed);
+                                if old_runt.exists() {
+                                    info!("Stopping unmanaged daemon via runt CLI...");
+                                    let wp_stop = wp.clone();
+                                    let _ = tokio::task::spawn_blocking(move || {
+                                        let mut stop_cmd = std::process::Command::new(&old_runt);
+                                        stop_cmd
+                                            .args(["daemon", "stop"])
+                                            .env("RUNTIMED_DEV", "1")
+                                            // Always target this worktree's daemon — never the system daemon.
+                                            .env("RUNTIMED_WORKSPACE_PATH", &wp_stop);
+                                        let _ = stop_cmd.status();
+                                    })
+                                    .await;
+                                    // Give it a moment to release the socket
+                                    tokio::time::sleep(Duration::from_secs(2)).await;
+                                }
                             }
-                        }
 
-                        // Start the new daemon (now using the new mode's binary)
-                        let new_child = start_daemon(&pr, &wp, disable_env_pools);
-                        state.write().await.daemon_child = new_child;
+                            if gate.is_shutting_down() {
+                                return false;
+                            }
 
-                        wait_for_daemon_async(&pr, &wp, Duration::from_secs(30)).await
-                    })
-                    .await
-                    .unwrap_or(false)
+                            // Start the new daemon (now using the new mode's binary)
+                            let new_child = start_daemon(&pr, &wp, disable_env_pools);
+                            state.write().await.daemon_child = new_child;
+
+                            if gate.is_shutting_down() {
+                                return false;
+                            }
+
+                            wait_for_daemon_async(&pr, &wp, Duration::from_secs(30)).await
+                        })
+                        .await
+                        .unwrap_or(false)
                 };
 
                 if !daemon_ready {
@@ -3397,6 +3500,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state_for_watcher = state_for_init.clone();
     let state_for_cleanup = state_for_init.clone();
     let daemon_lifecycle_gate_for_watcher = server.service().daemon_lifecycle_gate.clone();
+    let daemon_lifecycle_gate_for_cleanup = server.service().daemon_lifecycle_gate.clone();
     let child_ready = server.service().child_ready.clone();
 
     // Step 2: Spawn background task to do the heavy setup (daemon, build,
@@ -3685,17 +3789,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let reason = server.waiting().await?;
     info!("Supervisor shutting down: {reason:?}");
 
-    // Cleanup: stop daemon if we started it
-    {
+    // Cleanup: stop admitting new daemon transitions and drain any in-flight
+    // transition before taking the last managed child and tearing down.
+    daemon_lifecycle_gate_for_cleanup.drain_for_shutdown().await;
+    let (daemon_child, isolated_context) = {
         let mut state = state_for_cleanup.write().await;
-        if let Some(ref mut child) = state.daemon_child {
-            info!("Stopping managed daemon (PID {:?})...", child.id());
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        if let Some(context) = state.isolated_context.clone() {
-            cleanup_isolated_context(&context);
-        }
+        (state.daemon_child.take(), state.isolated_context.clone())
+    };
+    if let Some(child) = daemon_child {
+        info!("Stopping managed daemon (PID {:?})...", child.id());
+        stop_child_async(child).await;
+    }
+    if let Some(context) = isolated_context {
+        cleanup_isolated_context(&context);
     }
 
     Ok(())
@@ -4935,5 +5041,187 @@ mod tests {
         let (d_after, c_after) = managed_binary_fingerprints(dir.path());
         assert_eq!(d_before, d_after, "runtimed untouched");
         assert_ne!(c_before, c_after, "runt changed");
+    }
+
+    #[tokio::test]
+    async fn daemon_lifecycle_gate_drains_active_restart_before_disconnect_cleanup() {
+        let gate = DaemonLifecycleGate::new();
+        let active_child = Arc::new(RwLock::new(Some(1u32)));
+        let events = Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+
+        let taken_old_child = Arc::new(tokio::sync::Barrier::new(2));
+        let release_publish = Arc::new(tokio::sync::Barrier::new(2));
+
+        // 1. Start an active restart that takes child 1 and pauses before publishing child 2.
+        let restart_gate = gate.clone();
+        let restart_child = active_child.clone();
+        let restart_events = events.clone();
+        let taken_barrier = taken_old_child.clone();
+        let publish_barrier = release_publish.clone();
+        let restart_task = tokio::spawn(async move {
+            restart_gate
+                .run_transition(move || async move {
+                    let old = restart_child.write().await.take();
+                    assert_eq!(old, Some(1));
+                    restart_events.lock().unwrap().push("took_old");
+                    taken_barrier.wait().await;
+                    publish_barrier.wait().await;
+                    *restart_child.write().await = Some(2);
+                    restart_events.lock().unwrap().push("published_new");
+                })
+                .await
+        });
+
+        // Wait until the active restart has taken child 1 and is mid-transition.
+        taken_old_child.wait().await;
+
+        // 2. Queue a second restart behind the active one; shutdown must reject it.
+        let queued_ran = Arc::new(AtomicBool::new(false));
+        let queued_gate = gate.clone();
+        let queued_ran_flag = queued_ran.clone();
+        let queued_task = tokio::spawn(async move {
+            queued_gate
+                .run_transition(move || async move {
+                    queued_ran_flag.store(true, Ordering::SeqCst);
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+
+        // 3. Begin disconnect cleanup while the active restart is paused.
+        let cleanup_gate = gate.clone();
+        let cleanup_child = active_child.clone();
+        let cleanup_events = events.clone();
+        let cleanup_done = Arc::new(AtomicBool::new(false));
+        let cleanup_done_flag = cleanup_done.clone();
+        let cleanup_task = tokio::spawn(async move {
+            cleanup_gate.drain_for_shutdown().await;
+            let final_child = cleanup_child.write().await.take();
+            assert_eq!(
+                final_child,
+                Some(2),
+                "cleanup must observe replacement child"
+            );
+            cleanup_events.lock().unwrap().push("cleanup_stopped_new");
+            cleanup_done_flag.store(true, Ordering::SeqCst);
+        });
+
+        // Yield several times: cleanup must NOT proceed before the active restart finishes.
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !cleanup_done.load(Ordering::SeqCst),
+            "disconnect cleanup proceeded before active restart drained"
+        );
+
+        // 4. Release the active restart to publish child 2 and exit.
+        release_publish.wait().await;
+        assert!(restart_task.await.unwrap().is_some());
+        assert!(
+            queued_task.await.unwrap().is_none(),
+            "queued transition must be rejected once shutdown starts"
+        );
+        cleanup_task.await.unwrap();
+
+        assert!(!queued_ran.load(Ordering::SeqCst));
+        assert!(cleanup_done.load(Ordering::SeqCst));
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["took_old", "published_new", "cleanup_stopped_new"]
+        );
+        // Post-shutdown transitions must also be refused immediately.
+        let post_shutdown = gate.run_transition(|| async { 42 }).await;
+        assert_eq!(post_shutdown, None);
+    }
+
+    #[tokio::test]
+    async fn daemon_lifecycle_gate_drops_queued_caller_on_cancellation_without_running() {
+        let gate = DaemonLifecycleGate::new();
+        let entered_first = Arc::new(tokio::sync::Barrier::new(2));
+        let release_first = Arc::new(tokio::sync::Barrier::new(2));
+
+        // 1. Hold the gate with an active transition.
+        let first_gate = gate.clone();
+        let entered = entered_first.clone();
+        let release = release_first.clone();
+        let first_task = tokio::spawn(async move {
+            first_gate
+                .run_transition(move || async move {
+                    entered.wait().await;
+                    release.wait().await;
+                    1u32
+                })
+                .await
+        });
+        entered_first.wait().await;
+
+        // 2. Start a second caller that blocks waiting for the permit, then cancel it.
+        let second_ran = Arc::new(AtomicBool::new(false));
+        let second_gate = gate.clone();
+        let second_ran_flag = second_ran.clone();
+        let second_task = tokio::spawn(async move {
+            second_gate
+                .run_transition(move || async move {
+                    second_ran_flag.store(true, Ordering::SeqCst);
+                })
+                .await
+        });
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        second_task.abort();
+        let _ = second_task.await;
+
+        // 3. Release the first transition and verify the canceled caller never ran.
+        release_first.wait().await;
+        assert_eq!(first_task.await.unwrap(), Some(1));
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !second_ran.load(Ordering::SeqCst),
+            "caller canceled while queued must never execute its transition"
+        );
+
+        // 4. Subsequent callers can still acquire the gate cleanly.
+        assert_eq!(gate.run_transition(|| async { 3u32 }).await, Some(3));
+    }
+
+    #[tokio::test]
+    async fn daemon_lifecycle_gate_finishes_started_transition_when_caller_cancels() {
+        let gate = DaemonLifecycleGate::new();
+        let published = Arc::new(AtomicBool::new(false));
+        let entered = Arc::new(tokio::sync::Barrier::new(2));
+        let release = Arc::new(tokio::sync::Barrier::new(2));
+
+        let t_gate = gate.clone();
+        let t_published = published.clone();
+        let t_entered = entered.clone();
+        let t_release = release.clone();
+        let caller = tokio::spawn(async move {
+            t_gate
+                .run_transition(move || async move {
+                    t_entered.wait().await;
+                    t_release.wait().await;
+                    t_published.store(true, Ordering::SeqCst);
+                })
+                .await
+        });
+
+        // Wait until the transition has acquired the permit and detached.
+        entered.wait().await;
+        // Cancel the caller while the transition is in flight.
+        caller.abort();
+        let _ = caller.await;
+        assert!(!published.load(Ordering::SeqCst));
+
+        // Unblock the detached transition and ensure shutdown drains it completely.
+        release.wait().await;
+        gate.drain_for_shutdown().await;
+        assert!(
+            published.load(Ordering::SeqCst),
+            "started transition must finish publishing even if its caller cancels"
+        );
     }
 }
