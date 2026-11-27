@@ -110,7 +110,6 @@ function parseSelection(args: string[]): RendererPluginSelection {
 
 async function buildCoreIIFE(): Promise<{ code: string; css: string; inputs: Record<string, string> }> {
   const srcDir = path.join(repoRoot, "src");
-  const nodeModules = path.join(repoRoot, "node_modules");
 
   const inputs = artifactInputs(repoRoot, [
     "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml",
@@ -122,25 +121,7 @@ async function buildCoreIIFE(): Promise<{ code: string; css: string; inputs: Rec
   const result = await build({
     configFile: false,
     mode: "production",
-    plugins: [
-      tailwindcss(),
-      inputs.plugin,
-      {
-        name: "vega-raw-resolve",
-        resolveId(source: string) {
-          const mapping: Record<string, string> = {
-            "vega-raw": path.join(nodeModules, "vega/build/vega.min.js"),
-            "vega-lite-raw": path.join(nodeModules, "vega-lite/build/vega-lite.min.js"),
-            "vega-embed-raw": path.join(nodeModules, "vega-embed/build/vega-embed.min.js"),
-            "leaflet-js-raw": path.join(nodeModules, "leaflet/dist/leaflet.js"),
-            "leaflet-css-raw": path.join(nodeModules, "leaflet/dist/leaflet.css"),
-          };
-          const filePath = mapping[source];
-          if (filePath) return `${filePath}?raw`;
-          return null;
-        },
-      },
-    ],
+    plugins: [tailwindcss(), inputs.plugin],
     esbuild: { jsx: "automatic", jsxImportSource: "react", jsxDev: false },
     resolve: { alias: { "@/": `${srcDir}/` } },
     build: {

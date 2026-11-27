@@ -1,7 +1,6 @@
 import { defineConfig, type Plugin } from "vite-plus";
 import { configDefaults } from "vitest/config";
 import path from "path";
-import { rawLibPlugin } from "./apps/notebook/vite-plugin-raw-lib";
 
 const ignoredDiagnosticWorkspaces = [".context/**", "**/.context/**"];
 
@@ -39,11 +38,7 @@ function isolatedRendererStub(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [
-    rawLibPlugin(path.resolve(__dirname, "./node_modules")),
-    rendererPluginStub(),
-    isolatedRendererStub(),
-  ],
+  plugins: [rendererPluginStub(), isolatedRendererStub()],
   test: {
     environment: "jsdom",
     include: [

@@ -60,9 +60,7 @@
     "@radix-ui/react-toggle-group": "^1.1.11",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@tauri-apps/api": "^2.10.0",
-    "@uiw/react-json-view": "^2.0.0-alpha.41",
     "anser": "^2.3.5",
-    "ansi-to-react": "^6.2.6",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
@@ -74,7 +72,6 @@
     "lucide-react": "^0.513.0",
     "pele": "1.8.0",
     "plotly.js-dist-min": "^3.4.0",
-    "radix-ui": "^1.4.3",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-markdown": "^10.1.0",
@@ -90,7 +87,6 @@
     "vega-lite": "^6.4.2"
   },
   "devDependencies": {
-    "@bokeh/bokehjs": "3.9.1",
     "@mcpjam/inspector": "^2.1.0",
     "@tailwindcss/vite": "^4.1.8",
     "@testing-library/jest-dom": "^6.9.1",
@@ -109,7 +105,6 @@
     "jsdom": "^26.0.0",
     "rollup-plugin-visualizer": "^5.14.0",
     "tailwindcss": "^4.1.8",
-    "ts-node": "^10.9.2",
     "typescript": "~5.8.3",
     "vite": "catalog:",
     "vite-plus": "catalog:",
