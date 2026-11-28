@@ -9,7 +9,7 @@ import { OUTPUT_STATES, answerTransition, dataTransition } from "@nteract/output
 import { exposeFile, receiveFile } from "@nteract/output-frame/byte-source";
 import { READ_CONCURRENCY } from "@nteract/output-frame/read-budget";
 import { createFrameData, dataDecision, receiveDataChange } from "@nteract/output-frame/data";
-import { preparePayload } from "../../../packages/output-frame/src/payload.mjs";
+import { preparePayload } from "@nteract/output-frame/payload";
 // The installed package's session, as test/anywidget.test.mjs loads it.
 const { createWidgetSession } = await import(
   new URL("./anywidget.mjs", import.meta.resolve("@nteract/output-frame/runtime"))

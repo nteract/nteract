@@ -216,7 +216,7 @@ test("a library map must name the library origin the embedder passes", async (t)
 });
 
 test("binary transport does not expose bytes outside an authorized subarray", async () => {
-  const { preparePayload } = await import("../../../packages/output-frame/src/payload.mjs");
+  const { preparePayload } = await import("@nteract/output-frame/payload");
   const backing = new Uint8Array([99, 1, 2, 99]);
   const payload = preparePayload({
     spec: { _esm: "code" },
