@@ -57,7 +57,6 @@ rattler_cache = { workspace = true }
 rattler_conda_types = { workspace = true }
 rattler_solve = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
-reqwest-middleware = { workspace = true }
 tokio-tungstenite = { workspace = true, features = ["native-tls"] }
 
 # Content-addressed blob store

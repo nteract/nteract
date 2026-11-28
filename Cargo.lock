@@ -8160,7 +8160,6 @@ dependencies = [
  "aho-corasick",
  "alacritty_terminal",
  "anyhow",
- "astral-reqwest-middleware",
  "async-rust-lsp",
  "automerge 0.12.0",
  "automerge-recovery",

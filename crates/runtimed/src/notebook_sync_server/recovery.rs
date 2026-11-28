@@ -1168,7 +1168,6 @@ struct JournalScan {
     latest: Option<RecoveryRecord>,
     ignored_tail: Option<JournalTailIssue>,
     last_valid_end: u64,
-    file_len: u64,
     valid_record_count: usize,
 }
 
@@ -1303,7 +1302,6 @@ fn scan_file(file: &mut File) -> Result<JournalScan, RecoveryJournalError> {
         latest,
         ignored_tail,
         last_valid_end,
-        file_len,
         valid_record_count,
     })
 }

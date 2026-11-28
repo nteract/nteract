@@ -51,12 +51,7 @@ mod attachments;
 mod blob_upload;
 mod catalog;
 mod comments_store;
-// The coordinator is wired into room mutation paths after the standalone
-// journal and checkpoint primitives.
-#[allow(dead_code)]
 pub(crate) mod durability;
-// The checkpoint primitive intentionally lands before persistence integration.
-#[allow(dead_code)]
 pub(crate) mod file_checkpoint;
 mod hosted_bridge;
 mod identity;
@@ -66,6 +61,8 @@ mod metadata;
 mod nbformat_convert;
 // The versioned projection-state codec lands before repository-backed room
 // activation. It has no production callers until migration selects the store.
+#[cfg(test)]
+mod keyed_doc_tests;
 #[allow(dead_code)]
 pub(crate) mod notebook_application_state;
 mod path_index;
@@ -85,10 +82,6 @@ mod peer_writer;
 mod persist;
 mod project_context;
 mod projection;
-// The journal primitive intentionally lands before room integration.
-#[cfg(test)]
-mod keyed_doc_tests;
-#[allow(dead_code)]
 pub(crate) mod recovery;
 mod registry;
 mod room;

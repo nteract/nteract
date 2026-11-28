@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use super::recovery::{
     PendingFileCheckpoint, RecoveredJournalRecord, RecoveryJournal, RecoveryJournalError,
-    RecoveryManifest, RecoverySourcePhase, RecoveryUnavailableReason, SourceFingerprint,
+    RecoveryManifest, RecoverySourcePhase, SourceFingerprint,
 };
 use super::AdmittedNotebookChanges;
 
@@ -159,16 +159,6 @@ pub(crate) enum RoomDurabilityError {
     },
     #[error("room does not have an active recovery journal")]
     JournalUnavailable,
-    #[error("active recovery journal could not be archived: {0:?}")]
-    ArchiveUnavailable(RecoveryUnavailableReason),
-    #[error(
-        "recovery journal was archived at {archive:?}, but the reconciled source record failed: {source}"
-    )]
-    ReconciledSourceAfterArchive {
-        archive: PathBuf,
-        #[source]
-        source: Box<RecoveryJournalError>,
-    },
 }
 
 /// Run one synchronous document serialization/journal boundary without
