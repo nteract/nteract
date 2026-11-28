@@ -9,17 +9,14 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use automerge::sync::{self, SyncDoc};
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ChangeHash, ObjType, ReadDoc};
+use automerge::sync;
+use automerge::{AutoCommit, ChangeHash};
 use log::info;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use notebook_protocol::connection::{self, Handshake};
-use runtimed_client::settings_doc::{
-    default_pool_sizes_for_python_env, read_nested_list, split_comma_list, ColorTheme,
-    CondaDefaults, EditorSettings, PixiDefaults, SyncedSettings, ThemeMode, UvDefaults,
-};
+pub use runtimed_client::settings_doc::get_all_from_doc;
+use runtimed_client::settings_doc::{SettingsDoc, SyncedSettings};
 
 /// Error type for sync client operations.
 #[derive(Debug, thiserror::Error)]
@@ -42,7 +39,7 @@ pub enum SyncClientError {
 /// Holds a local Automerge document replica that stays in sync with the
 /// daemon's live copy via the Automerge sync protocol.
 pub struct SyncClient<S> {
-    doc: AutoCommit,
+    doc: SettingsDoc,
     peer_state: sync::State,
     stream: Option<S>,
     confirm_writes: bool,
@@ -194,12 +191,12 @@ where
                 .await
                 .map_err(|e| SyncClientError::SyncError(format!("handshake: {}", e)))?;
 
-            let mut doc = AutoCommit::new();
+            let mut doc = SettingsDoc::empty();
             let mut peer_state = sync::State::new();
             loop {
                 let server_heads =
                     Self::receive_sync_frame(&mut stream, &mut doc, &mut peer_state).await?;
-                if has_heads(&mut doc, &server_heads) {
+                if doc.has_heads(&server_heads) {
                     break;
                 }
             }
@@ -208,7 +205,7 @@ where
             info!(
                 "[sync-client] Initial sync complete ({:?}): {:?}",
                 mode,
-                get_all_from_doc(&doc)
+                doc.get_all()
             );
             Ok(Self {
                 doc,
@@ -223,7 +220,7 @@ where
 
     async fn receive_sync_frame(
         stream: &mut S,
-        doc: &mut AutoCommit,
+        doc: &mut SettingsDoc,
         peer_state: &mut sync::State,
     ) -> Result<Vec<ChangeHash>, SyncClientError> {
         match connection::recv_frame(stream).await? {
@@ -231,11 +228,17 @@ where
                 let message = sync::Message::decode(&data)
                     .map_err(|e| SyncClientError::SyncError(format!("decode: {}", e)))?;
                 let server_heads = message.heads.clone();
-                doc.sync()
-                    .receive_sync_message(peer_state, message)
-                    .map_err(|e| SyncClientError::SyncError(format!("receive: {}", e)))?;
+                doc.receive_sync_message_recovering(
+                    "settings_sync_client.receive",
+                    peer_state,
+                    message,
+                )
+                .map_err(|e| SyncClientError::SyncError(format!("receive: {}", e)))?;
 
-                if let Some(msg) = doc.sync().generate_sync_message(peer_state) {
+                if let Some(msg) = doc
+                    .generate_sync_message_recovering("settings_sync_client.generate", peer_state)
+                    .map_err(|e| SyncClientError::SyncError(format!("generate: {}", e)))?
+                {
                     connection::send_frame(stream, &msg.encode()).await?;
                 }
 
@@ -247,7 +250,7 @@ where
 
     /// Get a snapshot of all settings from the local replica.
     pub fn get_all(&self) -> SyncedSettings {
-        get_all_from_doc(&self.doc)
+        self.doc.get_all()
     }
 
     /// Consume the client and return the local Automerge document.
@@ -255,22 +258,12 @@ where
     /// This is useful when you want to keep the synced settings doc
     /// without maintaining the network connection.
     pub fn into_doc(self) -> AutoCommit {
-        self.doc
+        self.doc.into_doc()
     }
 
-    /// Get a single scalar setting value.
+    /// Get a single scalar setting value (supports flat and dotted keys).
     pub fn get(&self, key: &str) -> Option<String> {
-        self.doc
-            .get(automerge::ROOT, key)
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| match value {
-                automerge::Value::Scalar(s) => match s.as_ref() {
-                    automerge::ScalarValue::Str(s) => Some(s.to_string()),
-                    _ => None,
-                },
-                _ => None,
-            })
+        self.doc.get(key)
     }
 
     /// Update a scalar setting and sync the change to the daemon.
@@ -280,23 +273,24 @@ where
     /// For either mode, a failed or cancelled write closes the connection;
     /// discard this client and reconnect before retrying.
     pub async fn put(&mut self, key: &str, value: &str) -> Result<(), SyncClientError> {
-        if let Some((map_key, sub_key)) = key.split_once('.') {
-            let map_id = self.ensure_map(map_key)?;
-            self.doc
-                .put(&map_id, sub_key, value)
-                .map_err(|e| SyncClientError::SyncError(format!("put nested: {}", e)))?;
-        } else {
-            self.doc
-                .put(automerge::ROOT, key, value)
-                .map_err(|e| SyncClientError::SyncError(format!("put: {}", e)))?;
+        if self.stream.is_none() {
+            return Err(SyncClientError::Disconnected);
         }
+
+        self.doc
+            .try_put(key, value)
+            .map_err(|e| SyncClientError::SyncError(format!("put: {}", e)))?;
 
         self.sync_to_daemon().await
     }
 
-    /// Update a setting from a `serde_json::Value` and sync the change.
+    /// Update or clear a setting from a `serde_json::Value` and sync the change.
     ///
-    /// Dispatches to scalar `put` for strings or list replacement for arrays.
+    /// Supports strings, string arrays (at dotted `section.field` keys),
+    /// booleans, non-negative integers (clamped to `i64::MAX`), and `Null`
+    /// (deletes the key). Rejects objects, negative/floating-point numbers,
+    /// non-string array elements, and writes nested under an existing non-map key.
+    ///
     /// Snapshot clients wait for daemon confirmation (up to two seconds).
     /// Watch clients send immediately and must keep driving `recv_changes`.
     /// For either mode, a failed or cancelled write closes the connection;
@@ -306,92 +300,15 @@ where
         key: &str,
         value: &serde_json::Value,
     ) -> Result<(), SyncClientError> {
-        match value {
-            serde_json::Value::String(s) => {
-                // Scalar write -- delegate to put which handles dotted paths
-                if let Some((map_key, sub_key)) = key.split_once('.') {
-                    let map_id = self.ensure_map(map_key)?;
-                    self.doc
-                        .put(&map_id, sub_key, s.as_str())
-                        .map_err(|e| SyncClientError::SyncError(format!("put nested: {}", e)))?;
-                } else {
-                    self.doc
-                        .put(automerge::ROOT, key, s.as_str())
-                        .map_err(|e| SyncClientError::SyncError(format!("put: {}", e)))?;
-                }
-            }
-            serde_json::Value::Array(arr) => {
-                let items: Vec<String> = arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect();
-                self.put_list(key, &items)?;
-            }
-            serde_json::Value::Number(n) => {
-                if let Some(u) = n.as_u64() {
-                    // Store as i64 since Automerge's Int is more widely supported
-                    self.doc
-                        .put(automerge::ROOT, key, u as i64)
-                        .map_err(|e| SyncClientError::SyncError(format!("put u64: {}", e)))?;
-                }
-            }
-            serde_json::Value::Bool(b) => {
-                if let Some((map_key, sub_key)) = key.split_once('.') {
-                    let map_id = self.ensure_map(map_key)?;
-                    self.doc.put(&map_id, sub_key, *b).map_err(|e| {
-                        SyncClientError::SyncError(format!("put nested bool: {}", e))
-                    })?;
-                } else {
-                    self.doc
-                        .put(automerge::ROOT, key, *b)
-                        .map_err(|e| SyncClientError::SyncError(format!("put bool: {}", e)))?;
-                }
-            }
-            _ => {}
+        if self.stream.is_none() {
+            return Err(SyncClientError::Disconnected);
         }
+
+        self.doc
+            .try_put_value(key, value)
+            .map_err(|e| SyncClientError::SyncError(format!("put_value: {}", e)))?;
 
         self.sync_to_daemon().await
-    }
-
-    /// Replace a list at a dotted path in the local Automerge doc.
-    fn put_list(&mut self, key: &str, values: &[String]) -> Result<(), SyncClientError> {
-        let (map_key, sub_key) = key
-            .split_once('.')
-            .ok_or_else(|| SyncClientError::SyncError("list key must be dotted".into()))?;
-
-        let map_id = self.ensure_map(map_key)?;
-
-        // Delete existing value
-        let _ = self.doc.delete(&map_id, sub_key);
-
-        // Create new list
-        let list_id = self
-            .doc
-            .put_object(&map_id, sub_key, ObjType::List)
-            .map_err(|e| SyncClientError::SyncError(format!("put_object list: {}", e)))?;
-
-        for (i, item) in values.iter().enumerate() {
-            self.doc
-                .insert(&list_id, i, item.as_str())
-                .map_err(|e| SyncClientError::SyncError(format!("insert: {}", e)))?;
-        }
-
-        Ok(())
-    }
-
-    /// Get or create a nested Map at ROOT.
-    fn ensure_map(&mut self, map_key: &str) -> Result<automerge::ObjId, SyncClientError> {
-        // Check if map already exists
-        if let Some((automerge::Value::Object(ObjType::Map), id)) =
-            self.doc.get(automerge::ROOT, map_key).ok().flatten()
-        {
-            return Ok(id);
-        }
-
-        // Create it
-        self.doc
-            .put_object(automerge::ROOT, map_key, ObjType::Map)
-            .map_err(|e| SyncClientError::SyncError(format!("put_object map: {}", e)))
     }
 
     /// Send pending changes; snapshot writers also wait for daemon confirmation.
@@ -401,7 +318,14 @@ where
         let mut stream = self.stream.take().ok_or(SyncClientError::Disconnected)?;
         let confirm_writes = self.confirm_writes;
         let exchange = async {
-            let Some(msg) = self.doc.sync().generate_sync_message(&mut self.peer_state) else {
+            let Some(msg) = self
+                .doc
+                .generate_sync_message_recovering(
+                    "settings_sync_client.generate",
+                    &mut self.peer_state,
+                )
+                .map_err(|e| SyncClientError::SyncError(format!("generate: {}", e)))?
+            else {
                 return Ok(());
             };
             connection::send_frame(&mut stream, &msg.encode()).await?;
@@ -413,8 +337,8 @@ where
                     // A Bloom false positive may require a heads/need round
                     // before the daemon receives our change. Merely sending a
                     // frame is not confirmation, even after initial convergence.
-                    if has_heads(&mut self.doc, &server_heads)
-                        && self.doc.get_changes(&server_heads).is_empty()
+                    if self.doc.has_heads(&server_heads)
+                        && !self.doc.has_changes_since(&server_heads)
                     {
                         break;
                     }
@@ -441,33 +365,26 @@ where
     /// frames are processed without emitting duplicate settings snapshots.
     /// A new document change is reported even if its resolved values are equal.
     ///
-    /// If this future is cancelled, discard the client and reconnect: a frame
-    /// read or ACK write may be partial. Initialization timeouts already do this.
+    /// A failed or cancelled read closes the connection; discard this client
+    /// and reconnect before retrying.
     pub async fn recv_changes(&mut self) -> Result<SyncedSettings, SyncClientError> {
-        let previous_heads = self.doc.get_heads();
-        loop {
-            Self::receive_sync_frame(
-                self.stream.as_mut().ok_or(SyncClientError::Disconnected)?,
-                &mut self.doc,
-                &mut self.peer_state,
-            )
-            .await?;
-            if self.doc.get_heads() != previous_heads {
-                return Ok(self.get_all());
+        let mut stream = self.stream.take().ok_or(SyncClientError::Disconnected)?;
+        let previous_heads = self.doc.heads();
+        let result = loop {
+            match Self::receive_sync_frame(&mut stream, &mut self.doc, &mut self.peer_state).await {
+                Ok(_) => {
+                    if self.doc.heads() != previous_heads {
+                        break Ok(self.get_all());
+                    }
+                }
+                Err(error) => break Err(error),
             }
+        };
+        if result.is_ok() {
+            self.stream = Some(stream);
         }
+        result
     }
-}
-
-fn has_heads(doc: &mut AutoCommit, heads: &[ChangeHash]) -> bool {
-    // SettingsDoc is seeded with defaults; an empty advertisement is not a
-    // usable initial settings snapshot for either kind of client.
-    if heads.is_empty() {
-        return false;
-    }
-    heads
-        .iter()
-        .all(|head| doc.get_change_by_hash(head).is_some())
 }
 
 fn sync_deadline(timeout: Duration) -> tokio::time::Instant {
@@ -481,193 +398,23 @@ fn remaining_sync_timeout(deadline: tokio::time::Instant) -> Result<Duration, Sy
         .ok_or(SyncClientError::Timeout)
 }
 
-/// Extract all settings from an Automerge document.
-///
-/// Reads nested maps/lists first, falling back to old flat keys for
-/// backward compatibility during upgrades.
-pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
-    let defaults = SyncedSettings::default();
-
-    let get_str = |key: &str| -> Option<String> {
-        doc.get(automerge::ROOT, key)
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| match value {
-                automerge::Value::Scalar(s) => match s.as_ref() {
-                    automerge::ScalarValue::Str(s) => Some(s.to_string()),
-                    _ => None,
-                },
-                _ => None,
-            })
-    };
-
-    let get_nested_str = |map_key: &str, sub_key: &str| -> Option<String> {
-        let map_id = match doc.get(automerge::ROOT, map_key).ok().flatten() {
-            Some((automerge::Value::Object(ObjType::Map), id)) => id,
-            _ => return None,
-        };
-        doc.get(&map_id, sub_key)
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| match value {
-                automerge::Value::Scalar(s) => match s.as_ref() {
-                    automerge::ScalarValue::Str(s) => Some(s.to_string()),
-                    _ => None,
-                },
-                _ => None,
-            })
-    };
-
-    // Get a u64 value from the doc
-    let get_u64 = |key: &str| -> Option<u64> {
-        match doc.get(automerge::ROOT, key).ok().flatten() {
-            Some((automerge::Value::Scalar(s), _)) => match s.as_ref() {
-                automerge::ScalarValue::Int(i) => u64::try_from(*i).ok(),
-                automerge::ScalarValue::Uint(u) => Some(*u),
-                automerge::ScalarValue::Str(s) => s.parse().ok(),
-                _ => None,
-            },
-            _ => None,
-        }
-    };
-
-    // Get a bool value from the doc
-    let get_bool = |key: &str| -> Option<bool> {
-        match doc.get(automerge::ROOT, key).ok().flatten() {
-            Some((automerge::Value::Scalar(s), _)) => match s.as_ref() {
-                automerge::ScalarValue::Boolean(b) => Some(*b),
-                _ => None,
-            },
-            _ => None,
-        }
-    };
-
-    let get_nested_bool = |map_key: &str, sub_key: &str| -> Option<bool> {
-        let map_id = match doc.get(automerge::ROOT, map_key).ok().flatten() {
-            Some((automerge::Value::Object(ObjType::Map), id)) => id,
-            _ => return None,
-        };
-        match doc.get(&map_id, sub_key).ok().flatten() {
-            Some((automerge::Value::Scalar(s), _)) => match s.as_ref() {
-                automerge::ScalarValue::Boolean(b) => Some(*b),
-                _ => None,
-            },
-            _ => None,
-        }
-    };
-
-    // Read uv packages: try nested list, fall back to flat comma string
-    let uv_packages = {
-        let nested = read_nested_list(doc, "uv", "default_packages");
-        if !nested.is_empty() {
-            nested
-        } else if let Some(flat) = get_str("default_uv_packages") {
-            split_comma_list(&flat)
-        } else {
-            defaults.uv.default_packages.clone()
-        }
-    };
-
-    // Read conda packages: try nested list, fall back to flat comma string
-    let conda_packages = {
-        let nested = read_nested_list(doc, "conda", "default_packages");
-        if !nested.is_empty() {
-            nested
-        } else if let Some(flat) = get_str("default_conda_packages") {
-            split_comma_list(&flat)
-        } else {
-            defaults.conda.default_packages.clone()
-        }
-    };
-
-    let default_python_env = get_str("default_python_env")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_default();
-    let pool_sizes = default_pool_sizes_for_python_env(&default_python_env);
-
-    SyncedSettings {
-        theme: get_str("theme")
-            .and_then(|s| serde_json::from_str::<ThemeMode>(&format!("\"{s}\"")).ok())
-            .unwrap_or(defaults.theme),
-        color_theme: get_str("color_theme")
-            .and_then(|s| serde_json::from_str::<ColorTheme>(&format!("\"{s}\"")).ok())
-            .unwrap_or(defaults.color_theme),
-        editor: EditorSettings {
-            code_font_family: get_nested_str("editor", "code_font_family")
-                .unwrap_or_else(|| defaults.editor.code_font_family.clone()),
-            markdown_font_family: get_nested_str("editor", "markdown_font_family")
-                .unwrap_or_else(|| defaults.editor.markdown_font_family.clone()),
-            line_numbers: get_nested_bool("editor", "line_numbers")
-                .unwrap_or(defaults.editor.line_numbers),
-        },
-        default_runtime: get_str("default_runtime")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default(),
-        default_python_env,
-        uv: UvDefaults {
-            default_packages: uv_packages,
-        },
-        conda: CondaDefaults {
-            default_packages: conda_packages,
-        },
-        pixi: PixiDefaults {
-            default_packages: read_nested_list(doc, "pixi", "default_packages"),
-        },
-        keep_alive_secs: get_u64("keep_alive_secs").unwrap_or(defaults.keep_alive_secs),
-        // For existing users: if onboarding_completed is missing but other settings exist,
-        // assume they're upgrading from before onboarding was added → treat as completed
-        onboarding_completed: get_bool("onboarding_completed")
-            .unwrap_or_else(|| get_str("theme").is_some() || get_str("default_runtime").is_some()),
-        uv_pool_size: get_u64("uv_pool_size").unwrap_or(pool_sizes.uv_pool_size),
-        conda_pool_size: get_u64("conda_pool_size").unwrap_or(pool_sizes.conda_pool_size),
-        pixi_pool_size: get_u64("pixi_pool_size").unwrap_or(pool_sizes.pixi_pool_size),
-        install_default_data_packages: get_bool("install_default_data_packages")
-            .unwrap_or(defaults.install_default_data_packages),
-        disable_nteract_launcher: get_bool("disable_nteract_launcher")
-            .unwrap_or(defaults.disable_nteract_launcher),
-        enable_comments: get_bool("enable_comments").unwrap_or(defaults.enable_comments),
-        disable_auto_format: get_bool("disable_auto_format")
-            .unwrap_or(defaults.disable_auto_format),
-        redact_env_values_in_outputs: get_bool("redact_env_values_in_outputs")
-            .unwrap_or(defaults.redact_env_values_in_outputs),
-        import_shell_environment: get_bool("import_shell_environment")
-            .unwrap_or(defaults.import_shell_environment),
-        install_id: get_str("install_id").unwrap_or_default(),
-        telemetry_enabled: get_bool("telemetry_enabled").unwrap_or(true),
-        telemetry_consent_recorded: get_bool("telemetry_consent_recorded").unwrap_or(false),
-        telemetry_last_daemon_ping_at: get_u64("telemetry_last_daemon_ping_at"),
-        telemetry_last_app_ping_at: get_u64("telemetry_last_app_ping_at"),
-        telemetry_last_mcp_ping_at: get_u64("telemetry_last_mcp_ping_at"),
-    }
-}
-
 /// Try to connect to the sync daemon and get current settings.
 ///
 /// Returns an error if the daemon is unavailable. Callers should
 /// fall back to their own local state (e.g. localStorage) on error
 /// rather than silently adopting defaults.
 pub async fn try_get_synced_settings() -> Result<SyncedSettings, SyncClientError> {
-    #[cfg(unix)]
-    {
-        let client = SyncClient::connect_snapshot(runt_workspace::default_socket_path()).await?;
-        let settings = client.get_all();
-        info!("[sync-client] Got settings from daemon: {:?}", settings);
-        Ok(settings)
-    }
-
-    #[cfg(windows)]
-    {
-        let client = SyncClient::connect_snapshot(runt_workspace::default_socket_path()).await?;
-        let settings = client.get_all();
-        info!("[sync-client] Got settings from daemon: {:?}", settings);
-        Ok(settings)
-    }
+    let client = SyncClient::connect_snapshot(runt_workspace::default_socket_path()).await?;
+    let settings = client.get_all();
+    info!("[sync-client] Got settings from daemon: {:?}", settings);
+    Ok(settings)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
+    use automerge::ObjType;
     use notebook_protocol::connection::{self, Handshake};
     use runtimed_client::runtime::Runtime;
     use runtimed_client::settings_doc::{PythonEnvType, SettingsDoc, ThemeMode};
@@ -792,7 +539,7 @@ mod tests {
             expected,
             "initialization must receive the advertised document"
         );
-        assert!(!client.doc.get_heads().is_empty());
+        assert!(!client.doc.heads().is_empty());
         client
             .put_value("theme", &serde_json::json!("dark"))
             .await
@@ -988,13 +735,8 @@ mod tests {
         let mut client = SyncClient::init(client_stream, test_mode(false, Duration::from_secs(1)))
             .await
             .unwrap();
-        client.doc.put(automerge::ROOT, "theme", "dark").unwrap();
-        let hashes: Vec<_> = client
-            .doc
-            .get_changes(&[])
-            .iter()
-            .map(|change| change.hash())
-            .collect();
+        client.doc.put("theme", "dark");
+        let hashes = client.doc.change_hashes();
         // Model a Bloom false positive deterministically. The daemon has not
         // seen this edit, but its advertised filter appears to contain it.
         client.peer_state.their_have.as_mut().unwrap()[0].bloom =
@@ -1175,8 +917,8 @@ mod tests {
 
     #[test]
     fn empty_advertised_heads_do_not_complete_snapshot_sync() {
-        let mut doc = AutoCommit::new();
-        assert!(!has_heads(&mut doc, &[]));
+        let mut doc = SettingsDoc::empty();
+        assert!(!doc.has_heads(&[]));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1347,5 +1089,142 @@ mod tests {
         let settings = get_all_from_doc(&doc);
         // Should be true because theme exists (migration scenario)
         assert!(settings.onboarding_completed);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn put_value_validates_dotted_lists_clamps_u64_and_get_supports_dotted_paths() {
+        let (client_stream, mut server_stream) = tokio::io::duplex(16 * 1024);
+        let server = tokio::spawn(async move {
+            accept_settings_handshake(&mut server_stream).await;
+            let mut doc = SettingsDoc::from_synced_settings(&SyncedSettings::default());
+            let mut peer = sync::State::new();
+            send_next_server_frame(&mut server_stream, &mut doc, &mut peer).await;
+            while doc.get_all().keep_alive_secs != i64::MAX as u64 {
+                apply_next_client_frame(&mut server_stream, &mut doc, &mut peer).await;
+                if let Some(reply) = doc.generate_sync_message(&mut peer) {
+                    connection::send_frame(&mut server_stream, &reply.encode())
+                        .await
+                        .unwrap();
+                }
+            }
+            server_stream
+        });
+
+        let mut client = SyncClient::init(client_stream, test_mode(false, Duration::from_secs(1)))
+            .await
+            .unwrap();
+
+        // Dotted `get` delegates to SettingsDoc::get.
+        assert_eq!(
+            client.get("editor.code_font_family"),
+            Some(SyncedSettings::default().editor.code_font_family)
+        );
+
+        // Non-dotted array key is rejected without closing the connection.
+        let err = client
+            .put_value("default_packages", &serde_json::json!(["numpy"]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SyncClientError::SyncError(msg) if msg.contains("dotted")));
+
+        // u64::MAX clamps to i64::MAX rather than wrapping negative.
+        client
+            .put_value("keep_alive_secs", &serde_json::json!(u64::MAX))
+            .await
+            .unwrap();
+        assert_eq!(client.get_all().keep_alive_secs, i64::MAX as u64);
+
+        tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recv_changes_error_closes_connection() {
+        let (client_stream, mut server_stream) = tokio::io::duplex(16 * 1024);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            accept_settings_handshake(&mut server_stream).await;
+            let mut doc = SettingsDoc::from_synced_settings(&SyncedSettings::default());
+            let mut peer = sync::State::new();
+            send_next_server_frame(&mut server_stream, &mut doc, &mut peer).await;
+            apply_next_client_frame(&mut server_stream, &mut doc, &mut peer).await;
+            send_next_server_frame(&mut server_stream, &mut doc, &mut peer).await;
+            apply_next_client_frame(&mut server_stream, &mut doc, &mut peer).await;
+            ready_rx.await.unwrap();
+            // Send a malformed sync frame to trigger a decode error.
+            connection::send_frame(&mut server_stream, b"not-a-valid-automerge-sync-frame")
+                .await
+                .unwrap();
+        });
+
+        let mut client = SyncClient::init(client_stream, test_mode(true, Duration::from_secs(1)))
+            .await
+            .unwrap();
+        ready_tx.send(()).unwrap();
+
+        assert!(matches!(
+            client.recv_changes().await,
+            Err(SyncClientError::SyncError(_))
+        ));
+        assert!(matches!(
+            client.recv_changes().await,
+            Err(SyncClientError::Disconnected)
+        ));
+        assert!(matches!(
+            client.put("theme", "dark").await,
+            Err(SyncClientError::Disconnected)
+        ));
+        // A disconnected put must not mutate the local replica.
+        assert_eq!(client.get_all().theme, ThemeMode::System);
+
+        tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn put_value_null_clears_telemetry_marker_on_daemon() {
+        let (client_stream, mut server_stream) = tokio::io::duplex(16 * 1024);
+        let initial = SyncedSettings {
+            telemetry_last_daemon_ping_at: Some(1_700_000_000),
+            ..SyncedSettings::default()
+        };
+        let server = tokio::spawn(async move {
+            accept_settings_handshake(&mut server_stream).await;
+            let mut doc = SettingsDoc::from_synced_settings(&initial);
+            let mut peer = sync::State::new();
+            send_next_server_frame(&mut server_stream, &mut doc, &mut peer).await;
+            while doc.get_all().telemetry_last_daemon_ping_at.is_some() {
+                apply_next_client_frame(&mut server_stream, &mut doc, &mut peer).await;
+                if let Some(reply) = doc.generate_sync_message(&mut peer) {
+                    connection::send_frame(&mut server_stream, &reply.encode())
+                        .await
+                        .unwrap();
+                }
+            }
+            server_stream
+        });
+
+        let mut client = SyncClient::init(client_stream, test_mode(false, Duration::from_secs(1)))
+            .await
+            .unwrap();
+        assert_eq!(
+            client.get_all().telemetry_last_daemon_ping_at,
+            Some(1_700_000_000)
+        );
+
+        client
+            .put_value("telemetry_last_daemon_ping_at", &serde_json::Value::Null)
+            .await
+            .unwrap();
+        assert_eq!(client.get_all().telemetry_last_daemon_ping_at, None);
+
+        tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }
