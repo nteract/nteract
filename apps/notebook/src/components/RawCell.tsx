@@ -26,6 +26,7 @@ import { sourceCommentExtension } from "../lib/source-comment-extension";
 import type { RawCell as RawCellType } from "../types";
 import { CellPresenceIndicators } from "./cell/CellPresenceIndicators";
 import { EditorContextMenu } from "./EditorContextMenu";
+import { PromptCellHeader, PromptRunControl } from "./PromptCellHeader";
 
 interface RawCellProps {
   cell: RawCellType;
@@ -47,6 +48,14 @@ interface RawCellProps {
   readOnly?: boolean;
   onCreateSourceComment?: (anchor: SourceRangeCommentAnchor, quote?: string | null) => void;
   onActivateCommentThread?: (threadId: string) => void;
+  /**
+   * Set for a prompt cell (flag on): renders the prompt header and run control.
+   * Shift+Enter runs it and keeps the cursor here, since the answer arrives below.
+   */
+  prompt?: {
+    onRun?: () => void;
+    onStop?: () => void;
+  };
 }
 
 export const RawCell = memo(function RawCell({
@@ -65,6 +74,7 @@ export const RawCell = memo(function RawCell({
   readOnly = false,
   onCreateSourceComment,
   onActivateCommentThread,
+  prompt,
 }: RawCellProps) {
   const isFocused = useIsCellFocused(cell.id);
   const isEditorTarget = useIsCellEditorTarget(cell.id);
@@ -212,14 +222,37 @@ export const RawCell = memo(function RawCell({
   const navigationKeyMap = useCellKeyboardNavigation({
     onFocusPrevious: onFocusPrevious ?? (() => {}),
     onFocusNext: handleFocusNextOrCreate,
-    onExecute: () => {}, // No-op for raw cells, enables Shift+Enter navigation
+    onExecute: () => prompt?.onRun?.(), // Mod/Ctrl-Enter runs a prompt; no-op for plain raw cells (Shift+Enter navigates)
     onDelete,
     onEnterCommandMode,
     cellId: cell.id,
   });
 
-  // Use navigation key bindings directly (Shift+Enter already handled by useCellKeyboardNavigation)
-  const keyMap: KeyBinding[] = useMemo(() => navigationKeyMap, [navigationKeyMap]);
+  // Shift+Enter is handled by useCellKeyboardNavigation (run, then focus the
+  // next cell). A prompt answers asynchronously below itself, so it runs and
+  // keeps the cursor instead of moving into a cell that is about to change.
+  const promptRef = useRef(prompt);
+  promptRef.current = prompt;
+  const isPrompt = prompt !== undefined;
+  const keyMap: KeyBinding[] = useMemo(
+    () =>
+      isPrompt
+        ? [
+            {
+              key: "Shift-Enter",
+              run: () => {
+                const onRun = promptRef.current?.onRun;
+                // Read-only: fall through to the normal Shift+Enter navigation.
+                if (!onRun) return false;
+                onRun();
+                return true;
+              },
+            },
+            ...navigationKeyMap,
+          ]
+        : navigationKeyMap,
+    [isPrompt, navigationKeyMap],
+  );
 
   // Focus the editor only when interaction state explicitly targets it.
   // Command mode also focuses the cell, but must keep DOM focus outside the
@@ -235,22 +268,36 @@ export const RawCell = memo(function RawCell({
   return (
     <CellContainer
       id={cell.id}
-      cellType="raw"
+      cellType={prompt ? "ai" : "raw"}
       isFocused={isFocused}
       isPreviousCellFromFocused={isPreviousCellFromFocused}
       isNextCellFromFocused={isNextCellFromFocused}
       onFocus={onFocus}
+      gutterContent={
+        prompt ? (
+          <PromptRunControl
+            cellId={cell.id}
+            isCellFocused={isFocused}
+            onRun={prompt.onRun}
+            onStop={prompt.onStop}
+          />
+        ) : undefined
+      }
       presenceIndicators={<CellPresenceIndicators cellId={cell.id} />}
       dragHandleProps={dragHandleProps}
       isDragging={isDragging}
       rightGutterContent={rightGutterContent}
       codeContent={
         <>
-          <div className="flex items-center gap-1 py-1">
-            <span className="text-xs text-muted-foreground font-mono">
-              {format === "plain" ? "raw" : `raw (${format})`}
-            </span>
-          </div>
+          {prompt ? (
+            <PromptCellHeader cellId={cell.id} />
+          ) : (
+            <div className="flex items-center gap-1 py-1">
+              <span className="text-xs text-muted-foreground font-mono">
+                {format === "plain" ? "raw" : `raw (${format})`}
+              </span>
+            </div>
+          )}
           <div>
             <EditorContextMenu
               cellId={cell.id}
@@ -266,7 +313,7 @@ export const RawCell = memo(function RawCell({
                 lineWrapping
                 keyMap={keyMap}
                 extensions={[crdtBridgeExt, ...searchExtensions]}
-                placeholder="Enter raw content..."
+                placeholder={prompt ? "Ask about the cells above..." : "Enter raw content..."}
                 className="min-h-[2rem]"
                 autoFocus={isEditorTarget}
                 readOnly={readOnly}

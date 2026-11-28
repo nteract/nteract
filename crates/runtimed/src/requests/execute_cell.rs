@@ -18,9 +18,9 @@ use crate::requests::trim_runtime_executions_for_doc;
 use crate::task_supervisor::spawn_best_effort;
 use notebook_protocol::protocol::ExecutionIdRejectionReason;
 
-const EXECUTION_ID_GENERATION_ATTEMPTS: usize = 16;
+pub(crate) const EXECUTION_ID_GENERATION_ATTEMPTS: usize = 16;
 
-fn execution_id_rejected(
+pub(crate) fn execution_id_rejected(
     execution_id: impl Into<String>,
     reason: ExecutionIdRejectionReason,
 ) -> NotebookResponse {
@@ -30,7 +30,7 @@ fn execution_id_rejected(
     }
 }
 
-fn validate_requested_execution_id(
+pub(crate) fn validate_requested_execution_id(
     execution_id: &str,
     already_exists: bool,
 ) -> Result<(), ExecutionIdRejectionReason> {

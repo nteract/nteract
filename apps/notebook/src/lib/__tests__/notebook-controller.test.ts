@@ -228,6 +228,46 @@ describe("createNotebookController", () => {
     expect(engine.flush).toHaveBeenCalledTimes(1);
   });
 
+  it("writes cell metadata at a path and syncs, gated by structure rather than visibility", () => {
+    const handle = createHandle();
+    const update = vi.fn(() => true);
+    handle.update_cell_metadata_at_value = update;
+    const engine = { flush: vi.fn(), scheduleFlush: vi.fn() };
+    const afterMutation = vi.fn();
+    const controller = createNotebookController({
+      getHandle: () => handle,
+      getEngine: () => engine,
+      canWriteCellSource: () => true,
+      canEditStructure: () => true,
+      canEditVisibility: () => false,
+      afterMutation,
+    });
+
+    controller.setCellMetadataAt("cell-a", ["nteract", "prompt"], {});
+
+    expect(update).toHaveBeenCalledWith("cell-a", ["nteract", "prompt"], {});
+    expect(afterMutation).toHaveBeenCalledWith(handle, "visibility");
+    expect(engine.flush).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips metadata writes when the host denies the structure capability", () => {
+    const handle = createHandle();
+    const update = vi.fn(() => true);
+    handle.update_cell_metadata_at_value = update;
+    const engine = { flush: vi.fn(), scheduleFlush: vi.fn() };
+    const controller = createNotebookController({
+      getHandle: () => handle,
+      getEngine: () => engine,
+      canWriteCellSource: () => true,
+      canEditStructure: () => false,
+    });
+
+    controller.setCellMetadataAt("cell-a", ["nteract", "prompt"], {});
+
+    expect(update).not.toHaveBeenCalled();
+    expect(engine.flush).not.toHaveBeenCalled();
+  });
+
   it("clears pending focus when deleting a cell before its editor registers", () => {
     const handle = createHandle();
     handle.cells.push("cell-b");

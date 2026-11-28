@@ -27,7 +27,7 @@
 
 use std::time::{Duration, Instant};
 
-use runtime_doc::RuntimeLifecycle;
+use runtime_doc::{is_kernel_capability, RuntimeLifecycle};
 
 use crate::handle::DocHandle;
 
@@ -100,7 +100,10 @@ pub async fn await_execution_terminal(
     output_sync_grace: Option<Duration>,
 ) -> Result<ExecutionTerminalState, ExecutionTerminalError> {
     let deadline = Instant::now() + timeout;
-    let mut observed_execution = false;
+    // Set once the execution is observed and runs on the kernel. Only then
+    // does a kernel failure end the wait: a prompt execution runs on the
+    // prompt agent and outlives kernel errors and shutdowns.
+    let mut observed_kernel_execution = false;
 
     // ── Phase 1: wait for terminal status ───────────────────────────────
     let mut final_state = loop {
@@ -117,7 +120,7 @@ pub async fn await_execution_terminal(
             // execution's real status/outputs rather than being handed a
             // generic `KernelFailed`.
             if let Some(exec) = state.executions.get(execution_id) {
-                observed_execution = true;
+                observed_kernel_execution = is_kernel_capability(exec.capability.as_deref());
                 if exec.status == "done" || exec.status == "error" || exec.status == "cancelled" {
                     break ExecutionTerminalState {
                         status: exec.status.clone(),
@@ -131,12 +134,16 @@ pub async fn await_execution_terminal(
             // A queue response can arrive before its runtime sync. Until
             // this execution appears, Shutdown/Error may describe the kernel
             // generation that preceded its accepted launch.
-            if observed_execution && matches!(state.kernel.lifecycle, RuntimeLifecycle::Error) {
+            if observed_kernel_execution
+                && matches!(state.kernel.lifecycle, RuntimeLifecycle::Error)
+            {
                 return Err(ExecutionTerminalError::KernelFailed {
                     reason: "kernel error".to_string(),
                 });
             }
-            if observed_execution && matches!(state.kernel.lifecycle, RuntimeLifecycle::Shutdown) {
+            if observed_kernel_execution
+                && matches!(state.kernel.lifecycle, RuntimeLifecycle::Shutdown)
+            {
                 return Err(ExecutionTerminalError::KernelFailed {
                     reason: "kernel shutdown".to_string(),
                 });

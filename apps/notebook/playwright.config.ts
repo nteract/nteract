@@ -43,6 +43,9 @@ export default defineConfig({
         ...(process.env.NTERACT_BROWSER_E2E_CHANNEL
           ? { channel: process.env.NTERACT_BROWSER_E2E_CHANNEL }
           : {}),
+        ...(process.env.NTERACT_BROWSER_E2E_EXECUTABLE_PATH
+          ? { launchOptions: { executablePath: process.env.NTERACT_BROWSER_E2E_EXECUTABLE_PATH } }
+          : {}),
       },
     },
   ],

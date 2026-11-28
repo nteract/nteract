@@ -68,6 +68,8 @@ pub(crate) mod pixi_project;
 pub mod process_groups;
 pub mod project_file;
 pub(crate) mod project_trust;
+pub mod prompt_agent;
+pub mod prompt_cells;
 pub(crate) mod requests;
 pub mod runtime_agent;
 pub(crate) mod runtime_agent_extension;

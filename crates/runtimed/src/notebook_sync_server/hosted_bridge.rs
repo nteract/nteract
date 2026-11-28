@@ -1494,7 +1494,7 @@ mod tests {
 
         let response = crate::requests::handle_notebook_request(
             &room,
-            NotebookRequest::InterruptExecution {},
+            NotebookRequest::InterruptExecution { cell_id: None },
             daemon.clone(),
             None,
         )

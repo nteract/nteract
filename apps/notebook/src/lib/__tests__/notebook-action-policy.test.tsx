@@ -489,6 +489,94 @@ describe("useNotebookActionPolicy", () => {
     expect(options.launchKernel).not.toHaveBeenCalled();
   });
 
+  it("runs a prompt cell without starting a kernel, trust dialog or kernel gating", async () => {
+    const options = createPolicyOptions({
+      promptCellsEnabled: true,
+      kernelStatus: KERNEL_STATUS.NOT_STARTED,
+      getNotebookCellsSnapshot: () => [
+        { id: "prompt-1", cell_type: "raw", metadata: { nteract: { prompt: {} } } },
+      ],
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      await result.current.handleExecuteCell("prompt-1");
+    });
+
+    expect(options.executeCell).toHaveBeenCalledWith("prompt-1");
+    expect(options.launchKernel).not.toHaveBeenCalled();
+    expect(options.checkTrust).not.toHaveBeenCalled();
+    expect(result.current.trustActionNotice).toBeNull();
+  });
+
+  it("shows the daemon's rejection of a prompt run as a notice", async () => {
+    const message = 'Prompt cells are disabled. Turn on "Prompt cells" in Settings.';
+    const options = createPolicyOptions({
+      promptCellsEnabled: true,
+      getNotebookCellsSnapshot: () => [
+        { id: "prompt-1", cell_type: "raw", metadata: { nteract: { prompt: {} } } },
+      ],
+      executeCell: vi.fn().mockResolvedValue({ result: "error", error: message }),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      await result.current.handleExecuteCell("prompt-1");
+    });
+
+    expect(result.current.trustActionNotice).toBe(message);
+    expect(options.launchKernel).not.toHaveBeenCalled();
+  });
+
+  it("shows a failed prompt run request as a notice", async () => {
+    const options = createPolicyOptions({
+      promptCellsEnabled: true,
+      getNotebookCellsSnapshot: () => [
+        { id: "prompt-1", cell_type: "raw", metadata: { nteract: { prompt: {} } } },
+      ],
+      executeCell: vi.fn().mockRejectedValue(new Error("Request timed out")),
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      await result.current.handleExecuteCell("prompt-1");
+    });
+
+    expect(result.current.trustActionNotice).toBe("Request timed out");
+  });
+
+  it("still ignores plain raw cells while the prompt_cells flag is on", async () => {
+    const options = createPolicyOptions({
+      promptCellsEnabled: true,
+      getNotebookCellsSnapshot: () => [{ id: "raw-1", cell_type: "raw", metadata: {} }],
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      await result.current.handleExecuteCell("raw-1");
+    });
+
+    expect(options.executeCell).not.toHaveBeenCalled();
+    expect(options.launchKernel).not.toHaveBeenCalled();
+  });
+
+  it("ignores a prompt cell silently while the prompt_cells flag is off", async () => {
+    const options = createPolicyOptions({
+      getNotebookCellsSnapshot: () => [
+        { id: "prompt-1", cell_type: "raw", metadata: { nteract: { prompt: {} } } },
+      ],
+    });
+    const { result } = renderHook(() => useNotebookActionPolicy(options));
+
+    await act(async () => {
+      await result.current.handleExecuteCell("prompt-1");
+    });
+
+    expect(options.executeCell).not.toHaveBeenCalled();
+    expect(options.launchKernel).not.toHaveBeenCalled();
+    expect(result.current.trustActionNotice).toBeNull();
+  });
+
   it("accepts another cell run as soon as the previous request settles", async () => {
     vi.useFakeTimers();
     try {

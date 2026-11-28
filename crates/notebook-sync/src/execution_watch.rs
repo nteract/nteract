@@ -357,6 +357,7 @@ mod tests {
                 cell_id: None,
                 seq: Some(1),
                 submitted_by_actor_label: None,
+                ..Default::default()
             },
         );
         tx.send(runtime).expect("send runtime");

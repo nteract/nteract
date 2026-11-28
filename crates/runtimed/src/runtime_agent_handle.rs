@@ -90,19 +90,63 @@ impl RuntimeAgentHandle {
         socket_path: PathBuf,
         runtime_agent_exe: Option<PathBuf>,
     ) -> Result<Self> {
+        Self::spawn_subcommand(
+            "runtime-agent",
+            Vec::new(),
+            notebook_id,
+            runtime_agent_id,
+            blob_root,
+            socket_path,
+            runtime_agent_exe,
+        )
+        .await
+    }
+
+    /// Spawn a prompt agent subprocess (`runtimed prompt-agent`) that runs
+    /// prompt cells through `agent_command`. Otherwise like [`Self::spawn`].
+    pub async fn spawn_prompt_agent(
+        notebook_id: String,
+        runtime_agent_id: String,
+        blob_root: PathBuf,
+        socket_path: PathBuf,
+        runtime_agent_exe: Option<PathBuf>,
+        agent_command: String,
+    ) -> Result<Self> {
+        Self::spawn_subcommand(
+            "prompt-agent",
+            vec![format!("--agent-command={agent_command}")],
+            notebook_id,
+            runtime_agent_id,
+            blob_root,
+            socket_path,
+            runtime_agent_exe,
+        )
+        .await
+    }
+
+    async fn spawn_subcommand(
+        subcommand: &'static str,
+        extra_args: Vec<String>,
+        notebook_id: String,
+        runtime_agent_id: String,
+        blob_root: PathBuf,
+        socket_path: PathBuf,
+        runtime_agent_exe: Option<PathBuf>,
+    ) -> Result<Self> {
         let exe = match runtime_agent_exe {
             Some(path) => path,
             None => std::env::current_exe()?,
         };
         info!(
-            "[runtime-agent-handle] Spawning runtime agent: {} runtime-agent --notebook-id {} (socket: {})",
+            "[runtime-agent-handle] Spawning agent: {} {} --notebook-id {} (socket: {})",
             exe.display(),
+            subcommand,
             notebook_id,
             socket_path.display(),
         );
 
         let mut cmd = tokio::process::Command::new(&exe);
-        cmd.arg("runtime-agent")
+        cmd.arg(subcommand)
             .arg("--notebook-id")
             .arg(&notebook_id)
             .arg("--runtime-agent-id")
@@ -111,6 +155,7 @@ impl RuntimeAgentHandle {
             .arg(blob_root.as_os_str())
             .arg("--socket")
             .arg(socket_path.as_os_str())
+            .args(&extra_args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::inherit())

@@ -792,7 +792,13 @@ pub enum NotebookRequest {
     },
 
     /// Interrupt the currently executing cell.
-    InterruptExecution {},
+    ///
+    /// With a `cell_id` the interrupt targets that prompt cell's run and never
+    /// the kernel; without it the kernel is interrupted.
+    InterruptExecution {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cell_id: Option<String>,
+    },
 
     /// Shutdown the kernel for this room.
     ShutdownKernel {},
@@ -2199,6 +2205,28 @@ mod tests {
 
     fn expected_values(values: &[&str]) -> BTreeSet<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn interrupt_execution_cell_id_is_optional_and_additive() {
+        // Without a cell id the wire shape is unchanged.
+        let bare =
+            serde_json::to_value(NotebookRequest::InterruptExecution { cell_id: None }).unwrap();
+        assert_eq!(bare, serde_json::json!({ "action": "interrupt_execution" }));
+        let parsed: NotebookRequest = serde_json::from_value(bare).unwrap();
+        assert!(matches!(
+            parsed,
+            NotebookRequest::InterruptExecution { cell_id: None }
+        ));
+
+        // With a cell id it round-trips and matches the TS contract field.
+        let with_id = serde_json::json!({ "action": "interrupt_execution", "cell_id": "c1" });
+        let parsed: NotebookRequest = serde_json::from_value(with_id.clone()).unwrap();
+        assert!(matches!(
+            &parsed,
+            NotebookRequest::InterruptExecution { cell_id: Some(id) } if id == "c1"
+        ));
+        assert_eq!(serde_json::to_value(parsed).unwrap(), with_id);
     }
 
     #[test]

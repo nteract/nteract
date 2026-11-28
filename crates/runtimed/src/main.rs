@@ -147,6 +147,26 @@ enum Commands {
         blob_root: PathBuf,
     },
 
+    /// Run as a prompt agent subprocess (internal, used by coordinator)
+    #[command(hide = true, name = "prompt-agent")]
+    PromptAgent {
+        /// Daemon socket path to connect to
+        #[arg(long)]
+        socket: PathBuf,
+        /// Notebook ID to attach to
+        #[arg(long)]
+        notebook_id: String,
+        /// Runtime agent ID
+        #[arg(long)]
+        runtime_agent_id: String,
+        /// Blob store root path
+        #[arg(long)]
+        blob_root: PathBuf,
+        /// Agent CLI to run for each prompt (for example `claude`)
+        #[arg(long)]
+        agent_command: String,
+    },
+
     /// Run a runtime agent attached to a hosted cloud room over WebSocket
     /// (internal/automation). The daemon-managed kernel is unchanged; only the
     /// sync wire differs from `runtime-agent`. The credential is read from the
@@ -673,6 +693,24 @@ async fn daemon_main() -> anyhow::Result<()> {
         .await
         .map_err(|e| {
             eprintln!("[runtime-agent] Fatal: {}", e);
+            e
+        }),
+        Some(Commands::PromptAgent {
+            socket,
+            notebook_id,
+            runtime_agent_id,
+            blob_root,
+            agent_command,
+        }) => runtimed::prompt_agent::run_prompt_agent(
+            socket,
+            notebook_id,
+            runtime_agent_id,
+            blob_root,
+            agent_command,
+        )
+        .await
+        .map_err(|e| {
+            eprintln!("[prompt-agent] Fatal: {}", e);
             e
         }),
         Some(Commands::CloudRuntimeAgent {

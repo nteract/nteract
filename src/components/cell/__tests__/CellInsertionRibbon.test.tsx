@@ -185,4 +185,16 @@ describe("CellInsertionRibbon", () => {
     expect(container.querySelector('[data-slot="cell-adder-primary-bridge"]')).toBeNull();
     expect(container.querySelector('[data-slot="cell-adder-leading-rule"]')).toHaveClass("h-px");
   });
+
+  it("offers a Prompt button only when the host opts in", () => {
+    const { rerender } = render(<CellInsertionRibbon forceActionsVisible onInsert={vi.fn()} />);
+    expect(screen.queryByTitle("Add prompt cell")).toBeNull();
+
+    const onInsert = vi.fn();
+    rerender(<CellInsertionRibbon forceActionsVisible includePrompt onInsert={onInsert} />);
+    const addPrompt = screen.getByTitle("Add prompt cell");
+    expect(addPrompt).toHaveTextContent("Prompt");
+    fireEvent.click(addPrompt);
+    expect(onInsert).toHaveBeenCalledWith("prompt");
+  });
 });

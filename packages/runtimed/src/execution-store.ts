@@ -4,6 +4,8 @@ export interface ExecutionViewSnapshot {
   success: boolean | null;
   output_ids: string[];
   submitted_by_actor_label?: string | null;
+  /** Prompt executions: the context is built and dispatched to the prompt agent. */
+  dispatched?: boolean;
 }
 
 export interface ExecutionQueueProjection {
@@ -212,7 +214,8 @@ export function createNotebookExecutionStore() {
       prev.execution_count === snap.execution_count &&
       prev.status === snap.status &&
       prev.success === snap.success &&
-      (prev.submitted_by_actor_label ?? null) === (snap.submitted_by_actor_label ?? null)
+      (prev.submitted_by_actor_label ?? null) === (snap.submitted_by_actor_label ?? null) &&
+      (prev.dispatched ?? false) === (snap.dispatched ?? false)
     )
       return;
     const owned = Object.freeze({

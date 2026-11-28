@@ -1618,6 +1618,7 @@ impl LoadedExecution {
                 cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
+                ..Default::default()
             },
         }
     }

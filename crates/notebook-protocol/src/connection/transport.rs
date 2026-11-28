@@ -173,6 +173,7 @@ pub struct UdsFrameTransport {
     notebook_id: String,
     runtime_agent_id: String,
     blob_root: PathBuf,
+    capabilities: Vec<String>,
 }
 
 impl UdsFrameTransport {
@@ -188,7 +189,16 @@ impl UdsFrameTransport {
             notebook_id: notebook_id.into(),
             runtime_agent_id: runtime_agent_id.into(),
             blob_root: blob_root.into(),
+            capabilities: Vec::new(),
         }
+    }
+
+    /// Declare the capabilities this agent offers in the handshake
+    /// (e.g. `["prompt"]`). Empty (the default) means a kernel agent.
+    #[must_use]
+    pub fn with_capabilities(mut self, capabilities: Vec<String>) -> Self {
+        self.capabilities = capabilities;
+        self
     }
 
     /// The socket path this transport dials. Exposed for diagnostics/logging.
@@ -221,6 +231,7 @@ impl FrameTransport for UdsFrameTransport {
                 notebook_id: self.notebook_id.clone(),
                 runtime_agent_id: self.runtime_agent_id.clone(),
                 blob_root: self.blob_root.display().to_string(),
+                capabilities: self.capabilities.clone(),
             },
         )
         .await

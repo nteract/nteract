@@ -467,7 +467,12 @@ export async function createBrowserHost(
 
   const idleUpdaterState: HostUpdaterState = { status: "idle", version: null, error: null };
   const commands = createCommandRegistry();
-  let syncedSettingsSnapshot: HostSyncedSettings = {};
+  // Browser E2E tests seed flags (e.g. `prompt_cells`) via `__NTERACT_BROWSER_HOST_SETTINGS__`.
+  const seededSettings = (globalThis as { __NTERACT_BROWSER_HOST_SETTINGS__?: unknown })
+    .__NTERACT_BROWSER_HOST_SETTINGS__;
+  let syncedSettingsSnapshot: HostSyncedSettings = isRecord(seededSettings)
+    ? ({ ...seededSettings } as HostSyncedSettings)
+    : {};
   const settingsSubscribers = new Set<(settings: HostSyncedSettings) => void>();
 
   const emitSettingsChanged = () => {

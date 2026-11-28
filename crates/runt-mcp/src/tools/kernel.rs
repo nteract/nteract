@@ -123,7 +123,7 @@ pub async fn interrupt_kernel(
     let handle = access.handle.clone();
 
     let response = handle
-        .send_request(NotebookRequest::InterruptExecution {})
+        .send_request(NotebookRequest::InterruptExecution { cell_id: None })
         .await;
     if let Err(error) = server.ensure_session_access_current(&access).await {
         return super::session_access_error(error);

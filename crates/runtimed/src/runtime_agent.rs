@@ -144,7 +144,7 @@ fn record_runtime_room_link_seen(state: &RuntimeStateHandle) {
     }
 }
 
-fn install_runtime_agent_shutdown_signal_handlers(
+pub(crate) fn install_runtime_agent_shutdown_signal_handlers(
     shutdown_tx: mpsc::UnboundedSender<&'static str>,
 ) {
     #[cfg(unix)]

@@ -221,6 +221,8 @@ export interface ExecutionState {
   cell_id?: string | null;
   /** Queue sequence number from RuntimeStateDoc; used as execution recency. */
   seq?: number | null;
+  /** Capability that runs the execution. Absent means "kernel"; "prompt" for prompt cells. */
+  capability?: string | null;
   /**
    * Output manifests in emission order, as the WASM runtime-state snapshot
    * exposes them. Each entry is the raw on-the-wire manifest (un-narrowed,

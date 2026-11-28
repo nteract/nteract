@@ -205,6 +205,7 @@ async fn cleanup_room_environment(
 ///   - synchronous flush of the persist debouncer,
 ///   - `ShutdownKernel` RPC to the runtime agent (with timeout),
 ///   - clear `runtime_agent_handle` and `runtime_agent_request_tx`,
+///   - tear down the prompt agent slot and coordinator sender,
 ///   - flush hot-installed dependencies into notebook metadata,
 ///   - one final autosave of the `.ipynb`,
 ///   - rename the env directory to the post-flush unified hash,
@@ -461,6 +462,11 @@ pub(super) async fn handle_peer_disconnect(
                     }
                 }
             }
+            // The prompt agent is room-scoped like the kernel agent: drop its
+            // subprocess, channel and coordinator sender with the last peer.
+            // It runs independently of the kernel, so it is torn down even
+            // when no kernel agent exists.
+            super::peer_prompt_agent::teardown_prompt_agent(&room_for_teardown).await;
             if let Some(generation) = cancelled_launch {
                 // The cancelled owner keeps the gate fenced until it reaches
                 // a cancellation-safe checkpoint and finishes agent cleanup.

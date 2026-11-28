@@ -628,6 +628,10 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
         enable_comments: get_bool("enable_comments").unwrap_or(defaults.enable_comments),
         disable_auto_format: get_bool("disable_auto_format")
             .unwrap_or(defaults.disable_auto_format),
+        prompt_cells: get_bool("prompt_cells").unwrap_or(defaults.prompt_cells),
+        prompt_agent_command: get_str("prompt_agent_command")
+            .filter(|command| !command.is_empty())
+            .unwrap_or(defaults.prompt_agent_command),
         redact_env_values_in_outputs: get_bool("redact_env_values_in_outputs")
             .unwrap_or(defaults.redact_env_values_in_outputs),
         import_shell_environment: get_bool("import_shell_environment")
@@ -1250,6 +1254,22 @@ mod tests {
 
         let settings = get_all_from_doc(&doc);
         assert!(settings.disable_auto_format);
+    }
+
+    #[test]
+    fn test_get_all_reads_prompt_settings() {
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "prompt_cells", true).unwrap();
+        doc.put(automerge::ROOT, "prompt_agent_command", "my-claude")
+            .unwrap();
+        let settings = get_all_from_doc(&doc);
+        assert!(settings.prompt_cells);
+        assert_eq!(settings.prompt_agent_command, "my-claude");
+
+        // An empty command falls back to the default.
+        doc.put(automerge::ROOT, "prompt_agent_command", "")
+            .unwrap();
+        assert_eq!(get_all_from_doc(&doc).prompt_agent_command, "claude");
     }
 
     #[test]

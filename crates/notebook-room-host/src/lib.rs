@@ -1785,13 +1785,17 @@ fn execution_status_values<'a>(
     read().map_err(|e| RoomHostError::new(format!("read managed execution status: {e}")))
 }
 
+/// Kernel-only activity: prompt executions (`capability != kernel`) run on a
+/// separate agent and must not hold the kernel's idle timeout or queue depth.
+/// `state.queue` is already kernel-only because `read_state` excludes prompt
+/// executions from the synthesized queue.
 fn runtime_execution_activity(state: &RuntimeState) -> RuntimeExecutionActivity {
     RuntimeExecutionActivity {
         executing: state.queue.executing.is_some()
-            || state
-                .executions
-                .values()
-                .any(|execution| execution.status == "running"),
+            || state.executions.values().any(|execution| {
+                execution.status == "running"
+                    && runtime_doc::is_kernel_capability(execution.capability.as_deref())
+            }),
         queue_depth: state.queue.queued.len(),
     }
 }
@@ -2842,6 +2846,39 @@ mod tests {
 
         assert!(activity.executing);
         assert_eq!(activity.queue_depth, 1);
+    }
+
+    #[test]
+    fn runtime_execution_activity_ignores_prompt_executions() {
+        let mut host = RoomHostEngine::create_empty("demo", "system/schema:notebook-cloud-room")
+            .expect("create room host");
+        host.state_doc
+            .create_execution_with_capability(
+                "exec-prompt-running",
+                "ask",
+                0,
+                None,
+                None,
+                runtime_doc::CAPABILITY_PROMPT,
+            )
+            .unwrap();
+        host.state_doc
+            .set_execution_running("exec-prompt-running")
+            .unwrap();
+        host.state_doc
+            .create_execution_with_capability(
+                "exec-prompt-queued",
+                "ask",
+                1,
+                None,
+                None,
+                runtime_doc::CAPABILITY_PROMPT,
+            )
+            .unwrap();
+
+        let activity = runtime_execution_activity(&host.state_doc.read_state());
+        assert!(!activity.executing);
+        assert_eq!(activity.queue_depth, 0);
     }
 
     #[test]

@@ -387,7 +387,7 @@ export type NotebookRequest =
       execution_id?: string | null;
       observed_heads: string[];
     }}
-  | {{ type: "interrupt_execution" }}
+  | {{ type: "interrupt_execution"; cell_id?: string | null }}
   | {{ type: "shutdown_kernel" }}
   | {{ type: "run_all_cells"; cell_execution_ids?: Record<string, string> | null }}
   | {{

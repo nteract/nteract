@@ -125,6 +125,16 @@ pub fn load_settings() -> SyncedSettings {
             .get("disable_auto_format")
             .and_then(|v| v.as_bool())
             .unwrap_or(defaults.disable_auto_format),
+        prompt_cells: json
+            .get("prompt_cells")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(defaults.prompt_cells),
+        prompt_agent_command: json
+            .get("prompt_agent_command")
+            .and_then(|v| v.as_str())
+            .filter(|command| !command.is_empty())
+            .map(String::from)
+            .unwrap_or(defaults.prompt_agent_command),
         redact_env_values_in_outputs: json
             .get("redact_env_values_in_outputs")
             .and_then(|v| v.as_bool())
@@ -193,6 +203,8 @@ mod tests {
         assert!(!settings.disable_nteract_launcher);
         assert!(!settings.enable_comments);
         assert!(!settings.disable_auto_format);
+        assert!(!settings.prompt_cells);
+        assert_eq!(settings.prompt_agent_command, "claude");
         assert_eq!(settings.editor, EditorSettings::default());
         assert!(settings.redact_env_values_in_outputs);
     }
@@ -223,6 +235,8 @@ mod tests {
             disable_nteract_launcher: false,
             enable_comments: true,
             disable_auto_format: true,
+            prompt_cells: true,
+            prompt_agent_command: "my-claude".into(),
             ..SyncedSettings::default()
         };
 
@@ -235,6 +249,8 @@ mod tests {
         assert_eq!(parsed.uv.default_packages, vec!["numpy", "pandas"]);
         assert!(parsed.enable_comments);
         assert!(parsed.disable_auto_format);
+        assert!(parsed.prompt_cells);
+        assert_eq!(parsed.prompt_agent_command, "my-claude");
         assert_eq!(parsed.editor.code_font_family, "\"Hack\", monospace");
         assert_eq!(parsed.editor.markdown_font_family, "Georgia, serif");
         assert!(parsed.editor.line_numbers);

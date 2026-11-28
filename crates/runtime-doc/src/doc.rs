@@ -242,7 +242,7 @@ pub struct QueueState {
 ///
 /// Tracks the status of an execution from queue to completion.
 /// Stored in `executions/{execution_id}/` in the RuntimeStateDoc.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionState {
     /// Current status: "queued", "running", "done", "error", "cancelled".
     ///
@@ -280,6 +280,46 @@ pub struct ExecutionState {
     /// Older RuntimeStateDocs omit it.
     #[serde(default)]
     pub submitted_by_actor_label: Option<String>,
+    /// Capability that runs this execution. Absent means [`CAPABILITY_KERNEL`];
+    /// [`CAPABILITY_PROMPT`] marks a prompt-cell execution. Older
+    /// RuntimeStateDocs omit it.
+    #[serde(default)]
+    pub capability: Option<String>,
+    /// Blob hash of the context the coordinator built for this execution
+    /// (prompt executions only). Present once the run was dispatched to the
+    /// prompt agent.
+    #[serde(default)]
+    pub context_blob: Option<String>,
+    /// How many times the user pressed Stop on this execution (prompt
+    /// executions only): 0 = none, 1 = interrupt, 2 or more = kill. Written
+    /// only by the coordinator; the agent running the execution reacts to it.
+    #[serde(default)]
+    pub stop_requested: u64,
+}
+
+impl ExecutionState {
+    /// `done`, `error` or `cancelled`: the execution will not change again.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self.status.as_str(), "done" | "error" | "cancelled")
+    }
+
+    /// `queued` or `running`.
+    pub fn is_active(&self) -> bool {
+        matches!(self.status.as_str(), "queued" | "running")
+    }
+}
+
+/// Capability name for executions run by the kernel runtime agent.
+pub const CAPABILITY_KERNEL: &str = "kernel";
+/// Capability name for executions run by the prompt runtime agent.
+pub const CAPABILITY_PROMPT: &str = "prompt";
+
+/// Whether an execution's `capability` value means "runs on the kernel".
+///
+/// An absent capability (every execution written before capabilities existed)
+/// and an explicit `"kernel"` both count as kernel executions.
+pub fn is_kernel_capability(capability: Option<&str>) -> bool {
+    matches!(capability, None | Some(CAPABILITY_KERNEL))
 }
 
 /// Environment sync state snapshot.
@@ -1761,6 +1801,9 @@ impl RuntimeStateDoc {
 
     /// Create a new execution entry with source code, queue sequence number,
     /// authenticated submitter, and optional notebook cell provenance.
+    ///
+    /// Creates a kernel execution: no `capability` key is written, so the
+    /// entry stays readable by peers that predate capabilities.
     pub fn create_execution_with_source_provenance(
         &mut self,
         execution_id: &str,
@@ -1768,6 +1811,49 @@ impl RuntimeStateDoc {
         seq: u64,
         submitted_by_actor_label: Option<&str>,
         cell_id: Option<&str>,
+    ) -> Result<bool, RuntimeStateError> {
+        self.create_execution_entry(
+            execution_id,
+            source,
+            seq,
+            submitted_by_actor_label,
+            cell_id,
+            None,
+        )
+    }
+
+    /// Create a new execution entry owned by `capability` (for example
+    /// [`CAPABILITY_PROMPT`]). Same semantics as
+    /// [`create_execution_with_source_provenance`](Self::create_execution_with_source_provenance)
+    /// plus the `capability` key. Returns `false` when the entry already
+    /// exists.
+    pub fn create_execution_with_capability(
+        &mut self,
+        execution_id: &str,
+        source: &str,
+        seq: u64,
+        submitted_by_actor_label: Option<&str>,
+        cell_id: Option<&str>,
+        capability: &str,
+    ) -> Result<bool, RuntimeStateError> {
+        self.create_execution_entry(
+            execution_id,
+            source,
+            seq,
+            submitted_by_actor_label,
+            cell_id,
+            Some(capability),
+        )
+    }
+
+    fn create_execution_entry(
+        &mut self,
+        execution_id: &str,
+        source: &str,
+        seq: u64,
+        submitted_by_actor_label: Option<&str>,
+        cell_id: Option<&str>,
+        capability: Option<&str>,
     ) -> Result<bool, RuntimeStateError> {
         let executions = self.scaffold_map("executions")?;
 
@@ -1798,7 +1884,39 @@ impl RuntimeStateDoc {
             self.doc
                 .put(&entry, "submitted_by_actor_label", actor_label)?;
         }
+        if let Some(capability) = capability {
+            self.doc.put(&entry, "capability", capability)?;
+        }
         Ok(true)
+    }
+
+    /// Record the context the coordinator built for an execution: the blob
+    /// hash holding the model input. No-op when the execution does not exist.
+    pub fn set_execution_context(
+        &mut self,
+        execution_id: &str,
+        context_blob: &str,
+    ) -> Result<(), RuntimeStateError> {
+        let Some(entry) = self.get_execution_entry(execution_id) else {
+            return Ok(());
+        };
+        if self.read_opt_str(&entry, "context_blob").as_deref() != Some(context_blob) {
+            self.doc.put(&entry, "context_blob", context_blob)?;
+        }
+        Ok(())
+    }
+
+    /// Record one more Stop on an execution (see
+    /// [`ExecutionState::stop_requested`]) and return the new count. Returns 0
+    /// when the execution does not exist.
+    pub fn request_execution_stop(&mut self, execution_id: &str) -> Result<u64, RuntimeStateError> {
+        let Some(entry) = self.get_execution_entry(execution_id) else {
+            return Ok(0);
+        };
+        let count = self.read_uint(&entry, "stop_requested").unwrap_or(0) + 1;
+        self.doc
+            .put(&entry, "stop_requested", ScalarValue::Uint(count))?;
+        Ok(count)
     }
 
     /// Restore a validated terminal execution without submitting new work.
@@ -1852,6 +1970,13 @@ impl RuntimeStateDoc {
         if let Some(actor) = &execution.submitted_by_actor_label {
             self.doc
                 .put(&entry, "submitted_by_actor_label", actor.as_str())?;
+        }
+        if let Some(capability) = &execution.capability {
+            self.doc.put(&entry, "capability", capability.as_str())?;
+        }
+        if let Some(context_blob) = &execution.context_blob {
+            self.doc
+                .put(&entry, "context_blob", context_blob.as_str())?;
         }
         self.set_outputs(execution_id, &execution.outputs)?;
         Ok(true)
@@ -1929,12 +2054,13 @@ impl RuntimeStateDoc {
         Ok(())
     }
 
-    /// Resolve all in-flight executions to a terminal status: "running"
-    /// entries become "error" (the kernel went away mid-run), "queued"
-    /// entries become "cancelled" (they never started). Returns the number of
-    /// executions resolved. Used during kernel restart or interrupt to catch
-    /// any entries that the local KernelState doesn't know about (e.g.,
-    /// entries created by CRDT sync that haven't been processed locally yet).
+    /// Resolve all in-flight **kernel** executions to a terminal status:
+    /// "running" entries become "error" (the kernel went away mid-run),
+    /// "queued" entries become "cancelled" (they never started). Returns the
+    /// number of executions resolved. Used during kernel restart or interrupt
+    /// to catch any entries that the local KernelState doesn't know about
+    /// (e.g., entries created by CRDT sync that haven't been processed locally
+    /// yet). Executions owned by another capability (prompt) are left alone.
     pub fn abort_inflight_executions(&mut self) -> Result<usize, RuntimeStateError> {
         let Some(executions) = self.get_map("executions") else {
             return Ok(0);
@@ -1945,6 +2071,10 @@ impl RuntimeStateDoc {
                 .map_range(&executions, ..)
                 .filter_map(|item| {
                     if !matches!(item.value, automerge::ValueRef::Object(ObjType::Map)) {
+                        return None;
+                    }
+                    let capability = self.read_opt_str(&item.id(), "capability");
+                    if !is_kernel_capability(capability.as_deref()) {
                         return None;
                     }
                     let status = self.doc.get(item.id(), "status").ok().flatten().and_then(
@@ -1989,6 +2119,9 @@ impl RuntimeStateDoc {
         let seq = self.read_execution_seq(&entry);
 
         let submitted_by_actor_label = self.read_opt_str(&entry, "submitted_by_actor_label");
+        let capability = self.read_opt_str(&entry, "capability");
+        let context_blob = self.read_opt_str(&entry, "context_blob");
+        let stop_requested = self.read_uint(&entry, "stop_requested").unwrap_or(0);
 
         Some(ExecutionState {
             status,
@@ -1999,6 +2132,9 @@ impl RuntimeStateDoc {
             cell_id,
             seq,
             submitted_by_actor_label,
+            capability,
+            context_blob,
+            stop_requested,
         })
     }
 
@@ -2032,8 +2168,12 @@ impl RuntimeStateDoc {
     }
 
     fn read_execution_seq(&self, entry: &ObjId) -> Option<u64> {
+        self.read_uint(entry, "seq")
+    }
+
+    fn read_uint(&self, obj: &ObjId, key: &str) -> Option<u64> {
         self.doc
-            .get(entry, "seq")
+            .get(obj, key)
             .ok()
             .flatten()
             .and_then(|(value, _)| match value {
@@ -2046,11 +2186,26 @@ impl RuntimeStateDoc {
             })
     }
 
-    /// Get execution entries with `status == "queued"`, sorted by `seq`.
+    /// Get **kernel** execution entries with `status == "queued"`, sorted by
+    /// `seq`.
     ///
-    /// Used by the runtime agent to discover new work via CRDT sync. Returns
-    /// `(execution_id, ExecutionState)` pairs in execution order.
+    /// Used by the kernel runtime agent to discover new work via CRDT sync.
+    /// Returns `(execution_id, ExecutionState)` pairs in execution order.
+    /// Executions owned by another capability (prompt) are excluded.
     pub fn get_queued_executions(&self) -> Vec<(String, ExecutionState)> {
+        self.executions_with_status("queued", is_kernel_capability)
+    }
+
+    /// Prompt executions with `status`, sorted by `seq` (outputs not read).
+    pub fn get_prompt_executions(&self, status: &str) -> Vec<(String, ExecutionState)> {
+        self.executions_with_status(status, |capability| capability == Some(CAPABILITY_PROMPT))
+    }
+
+    fn executions_with_status(
+        &self,
+        wanted_status: &str,
+        wanted_capability: impl Fn(Option<&str>) -> bool,
+    ) -> Vec<(String, ExecutionState)> {
         let Some(executions) = self.get_map("executions") else {
             return Vec::new();
         };
@@ -2061,7 +2216,11 @@ impl RuntimeStateDoc {
                 continue;
             };
             let status = self.read_str(&entry, "status");
-            if status != "queued" {
+            if status != wanted_status {
+                continue;
+            }
+            let capability = self.read_opt_str(&entry, "capability");
+            if !wanted_capability(capability.as_deref()) {
                 continue;
             }
 
@@ -2076,6 +2235,9 @@ impl RuntimeStateDoc {
                     cell_id: self.read_opt_str(&entry, "cell_id"),
                     seq: self.read_execution_seq(&entry),
                     submitted_by_actor_label: self.read_opt_str(&entry, "submitted_by_actor_label"),
+                    capability,
+                    context_blob: self.read_opt_str(&entry, "context_blob"),
+                    stop_requested: self.read_uint(&entry, "stop_requested").unwrap_or(0),
                 },
             ));
         }
@@ -4412,7 +4574,9 @@ fn synthesize_queued_entries_from_executions(
     let mut queued_from_executions: Vec<_> = executions
         .iter()
         .filter(|(execution_id, exec)| {
-            exec.status == "queued" && !known_execution_ids.contains(execution_id.as_str())
+            exec.status == "queued"
+                && is_kernel_capability(exec.capability.as_deref())
+                && !known_execution_ids.contains(execution_id.as_str())
         })
         .collect();
     queued_from_executions.sort_by(|(a_id, a), (b_id, b)| {
@@ -4768,6 +4932,194 @@ mod tests {
             err,
             RuntimeStateError::MissingScaffold("injected")
         ));
+    }
+
+    // ── Prompt capability ───────────────────────────────────────────
+
+    #[test]
+    fn execution_state_capability_fields_default_when_absent() {
+        let state: ExecutionState = serde_json::from_str(r#"{"status":"queued"}"#).unwrap();
+        assert_eq!(state.capability, None);
+        assert_eq!(state.context_blob, None);
+        assert_eq!(state.stop_requested, 0);
+        assert!(is_kernel_capability(state.capability.as_deref()));
+    }
+
+    #[test]
+    fn is_kernel_capability_matches_absent_and_kernel_only() {
+        assert!(is_kernel_capability(None));
+        assert!(is_kernel_capability(Some(CAPABILITY_KERNEL)));
+        assert!(!is_kernel_capability(Some(CAPABILITY_PROMPT)));
+        assert!(!is_kernel_capability(Some("other")));
+    }
+
+    #[test]
+    fn terminal_and_active_statuses() {
+        let with = |status: &str| ExecutionState {
+            status: status.to_string(),
+            ..Default::default()
+        };
+        for status in ["done", "error", "cancelled"] {
+            assert!(with(status).is_terminal() && !with(status).is_active());
+        }
+        for status in ["queued", "running"] {
+            assert!(with(status).is_active() && !with(status).is_terminal());
+        }
+    }
+
+    #[test]
+    fn create_execution_with_capability_round_trips() {
+        let mut doc = RuntimeStateDoc::new();
+        assert!(doc
+            .create_execution_with_capability(
+                "p1",
+                "what is 2+2?",
+                7,
+                Some("human:alice"),
+                Some("cell-p"),
+                CAPABILITY_PROMPT,
+            )
+            .unwrap());
+        // Idempotent like the kernel constructor.
+        assert!(!doc
+            .create_execution_with_capability("p1", "x", 8, None, None, CAPABILITY_PROMPT)
+            .unwrap());
+
+        let exec = doc.get_execution("p1").unwrap();
+        assert_eq!(exec.status, "queued");
+        assert_eq!(exec.capability.as_deref(), Some("prompt"));
+        assert_eq!(exec.source.as_deref(), Some("what is 2+2?"));
+        assert_eq!(exec.cell_id.as_deref(), Some("cell-p"));
+        assert_eq!(exec.seq, Some(7));
+        assert_eq!(
+            exec.submitted_by_actor_label.as_deref(),
+            Some("human:alice")
+        );
+        assert_eq!(exec.context_blob, None);
+
+        // read_state sees the same fields.
+        assert_eq!(
+            doc.read_state().executions["p1"].capability.as_deref(),
+            Some("prompt")
+        );
+    }
+
+    #[test]
+    fn kernel_constructor_writes_no_capability_key() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution_with_source_provenance("k1", "1+1", 0, None, Some("c"))
+            .unwrap();
+        assert_eq!(doc.get_execution("k1").unwrap().capability, None);
+    }
+
+    #[test]
+    fn set_execution_context_round_trips() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution_with_capability("p1", "q", 0, None, None, CAPABILITY_PROMPT)
+            .unwrap();
+        doc.set_execution_context("p1", "blobhash").unwrap();
+        let exec = doc.get_execution("p1").unwrap();
+        assert_eq!(exec.context_blob.as_deref(), Some("blobhash"));
+
+        // Missing execution is a no-op.
+        doc.set_execution_context("missing", "b").unwrap();
+        assert!(doc.get_execution("missing").is_none());
+
+        // Also visible through the prompt listing.
+        let queued = doc.get_prompt_executions("queued");
+        assert_eq!(queued[0].1.context_blob.as_deref(), Some("blobhash"));
+    }
+
+    #[test]
+    fn request_execution_stop_counts_each_stop() {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution_with_capability("p1", "q", 0, None, None, CAPABILITY_PROMPT)
+            .unwrap();
+        assert_eq!(doc.get_execution("p1").unwrap().stop_requested, 0);
+        assert_eq!(doc.request_execution_stop("p1").unwrap(), 1);
+        assert_eq!(doc.request_execution_stop("p1").unwrap(), 2);
+        assert_eq!(doc.get_execution("p1").unwrap().stop_requested, 2);
+        assert_eq!(doc.get_prompt_executions("queued")[0].1.stop_requested, 2);
+        // A missing execution records nothing.
+        assert_eq!(doc.request_execution_stop("missing").unwrap(), 0);
+        assert!(doc.get_execution("missing").is_none());
+    }
+
+    #[test]
+    fn restore_terminal_execution_keeps_capability_fields() {
+        let mut doc = RuntimeStateDoc::new();
+        let exec = ExecutionState {
+            status: "done".to_string(),
+            success: Some(true),
+            capability: Some(CAPABILITY_PROMPT.to_string()),
+            context_blob: Some("b".to_string()),
+            ..Default::default()
+        };
+        assert!(doc.restore_terminal_execution("p1", &exec).unwrap());
+        let read = doc.get_execution("p1").unwrap();
+        assert_eq!(read.capability.as_deref(), Some("prompt"));
+        assert_eq!(read.context_blob.as_deref(), Some("b"));
+    }
+
+    fn mixed_capability_doc() -> RuntimeStateDoc {
+        let mut doc = RuntimeStateDoc::new();
+        doc.create_execution_with_source_provenance("k-old", "1", 0, None, None)
+            .unwrap();
+        doc.create_execution_with_capability("p1", "ask", 1, None, None, CAPABILITY_PROMPT)
+            .unwrap();
+        doc.create_execution_with_capability("k-explicit", "2", 2, None, None, CAPABILITY_KERNEL)
+            .unwrap();
+        doc.create_execution_with_capability("p2", "ask2", 3, None, None, CAPABILITY_PROMPT)
+            .unwrap();
+        doc
+    }
+
+    #[test]
+    fn get_queued_executions_is_kernel_only() {
+        let mut doc = mixed_capability_doc();
+        let kernel: Vec<_> = doc
+            .get_queued_executions()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(kernel, vec!["k-old", "k-explicit"]);
+
+        doc.set_execution_running("p2").unwrap();
+        let ids = |executions: Vec<(String, ExecutionState)>| -> Vec<String> {
+            executions.into_iter().map(|(id, _)| id).collect()
+        };
+        assert_eq!(ids(doc.get_prompt_executions("queued")), vec!["p1"]);
+        assert_eq!(ids(doc.get_prompt_executions("running")), vec!["p2"]);
+    }
+
+    #[test]
+    fn abort_inflight_executions_is_kernel_only() {
+        let mut doc = mixed_capability_doc();
+        doc.set_execution_running("k-old").unwrap();
+        doc.set_execution_running("p1").unwrap();
+
+        assert_eq!(doc.abort_inflight_executions().unwrap(), 2);
+        // k-old running -> error, k-explicit queued -> cancelled.
+        assert_eq!(doc.get_execution("k-old").unwrap().status, "error");
+        assert_eq!(doc.get_execution("k-explicit").unwrap().status, "cancelled");
+        // Prompt executions untouched.
+        assert_eq!(doc.get_execution("p1").unwrap().status, "running");
+        assert_eq!(doc.get_execution("p2").unwrap().status, "queued");
+    }
+
+    #[test]
+    fn read_state_synthesized_queue_excludes_prompt_executions() {
+        let doc = mixed_capability_doc();
+        let state = doc.read_state();
+        let kernel_queue: Vec<_> = state
+            .queue
+            .queued
+            .iter()
+            .map(|e| e.execution_id.as_str())
+            .collect();
+        assert_eq!(kernel_queue, vec!["k-old", "k-explicit"]);
+        assert_eq!(state.queue.executing, None);
+        assert_eq!(state.executions["p1"].capability.as_deref(), Some("prompt"));
     }
 
     #[test]
@@ -5871,6 +6223,7 @@ mod tests {
                     cell_id: known_source.then(|| "original-cell".into()),
                     seq: known_source.then_some(42),
                     submitted_by_actor_label: known_source.then(|| "mcp:original-peer".into()),
+                    ..Default::default()
                 };
                 assert!(doc
                     .restore_terminal_execution("exec-1", &execution)
@@ -6926,6 +7279,7 @@ mod tests {
                 cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
+                ..Default::default()
             },
         );
 
@@ -6960,6 +7314,7 @@ mod tests {
                 cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
+                ..Default::default()
             },
         );
 
@@ -7566,6 +7921,7 @@ mod tests {
                 cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
+                ..Default::default()
             },
         );
         let (changed, _) = diff_execution_outputs(&prev, &execs);
@@ -7587,6 +7943,7 @@ mod tests {
                 cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
+                ..Default::default()
             },
         );
         let (changed, _) = diff_execution_outputs(&prev, &execs);
@@ -7609,6 +7966,7 @@ mod tests {
                 cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
+                ..Default::default()
             },
         );
         let (changed, _) = diff_execution_outputs(&prev, &execs);
@@ -7634,6 +7992,7 @@ mod tests {
                 cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
+                ..Default::default()
             },
         );
         let (changed, snapshot) = diff_execution_outputs(&prev, &execs);
@@ -7656,6 +8015,7 @@ mod tests {
                 cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
+                ..Default::default()
             },
         );
         let (changed, snapshot) = diff_execution_outputs(&snapshot, &execs);
@@ -7690,6 +8050,7 @@ mod tests {
                 cell_id: None,
                 seq: None,
                 submitted_by_actor_label: None,
+                ..Default::default()
             },
         );
 

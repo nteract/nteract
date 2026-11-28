@@ -1661,7 +1661,7 @@ impl Session {
     pub async fn interrupt_kernel(&self) -> Result<bool> {
         let handle = session_handle(&self.state).await?;
         let response = handle
-            .send_request(NotebookRequest::InterruptExecution {})
+            .send_request(NotebookRequest::InterruptExecution { cell_id: None })
             .await
             .map_err(to_napi_err)?;
         match response {
@@ -2950,6 +2950,7 @@ async fn cell_result_from_record(
         cell_id: record.cell_id,
         seq: record.seq,
         submitted_by_actor_label: record.submitted_by_actor_label,
+        ..Default::default()
     };
     cell_result_from_execution_state(
         &execution_id,
@@ -3707,6 +3708,7 @@ mod tests {
             cell_id: None,
             seq: Some(9),
             submitted_by_actor_label: None,
+            ..Default::default()
         };
 
         let result =
@@ -3745,6 +3747,7 @@ mod tests {
             cell_id: None,
             seq: Some(11),
             submitted_by_actor_label: None,
+            ..Default::default()
         };
         let record = runtimed_client::execution_store::ExecutionRecord::from_execution_state(
             "exec-from-store",

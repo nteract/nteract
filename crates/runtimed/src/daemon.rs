@@ -2261,6 +2261,7 @@ impl Daemon {
                     *tx = None;
                 }
             }
+            crate::notebook_sync_server::teardown_prompt_agent(room).await;
 
             if Self::room_requires_durability_repair(room) {
                 room.durability.freeze_commits();
@@ -3729,10 +3730,14 @@ impl Daemon {
                 notebook_id,
                 runtime_agent_id,
                 blob_root: _,
+                capabilities,
             } => {
+                let is_prompt_agent = capabilities
+                    .iter()
+                    .any(|capability| capability == runtime_doc::CAPABILITY_PROMPT);
                 info!(
-                    "[runtimed] Runtime agent connecting via socket: notebook={} runtime_agent={}",
-                    notebook_id, runtime_agent_id
+                    "[runtimed] Runtime agent connecting via socket: notebook={} runtime_agent={} prompt={}",
+                    notebook_id, runtime_agent_id, is_prompt_agent
                 );
                 let room = match uuid::Uuid::parse_str(&notebook_id) {
                     Ok(uuid) => self.notebook_rooms.peek_uuid(uuid).await,
@@ -3741,15 +3746,27 @@ impl Daemon {
                 match room {
                     Some(room) => {
                         let (reader, writer) = tokio::io::split(stream);
-                        crate::notebook_sync_server::handle_runtime_agent_sync_connection(
-                            reader,
-                            writer,
-                            room,
-                            notebook_id,
-                            runtime_agent_id,
-                            self.config.execution_store_dir.clone(),
-                        )
-                        .await;
+                        if is_prompt_agent {
+                            crate::notebook_sync_server::handle_prompt_agent_sync_connection(
+                                reader,
+                                writer,
+                                room,
+                                notebook_id,
+                                runtime_agent_id,
+                                self.config.execution_store_dir.clone(),
+                            )
+                            .await;
+                        } else {
+                            crate::notebook_sync_server::handle_runtime_agent_sync_connection(
+                                reader,
+                                writer,
+                                room,
+                                notebook_id,
+                                runtime_agent_id,
+                                self.config.execution_store_dir.clone(),
+                            )
+                            .await;
+                        }
                         Ok(())
                     }
                     None => {
@@ -5901,6 +5918,7 @@ impl Daemon {
                             *tx = None;
                         }
                     }
+                    crate::notebook_sync_server::teardown_prompt_agent(&room).await;
 
                     // Hand the path to other daemon processes only after this
                     // daemon's writers are gone, mirroring the reaper's eviction
@@ -12554,6 +12572,8 @@ mod tests {
                 source: Some("display('live')".to_string()),
                 seq: Some(0),
                 submitted_by_actor_label: None,
+                capability: None,
+                context_blob: None,
                 outputs: vec![serde_json::json!({
                     "output_type": "display_data",
                     "data": {"image/png": {"blob": "live-blob", "size": 4}}
@@ -12578,6 +12598,8 @@ mod tests {
             source: Some("display('expired')".to_string()),
             seq: Some(0),
             submitted_by_actor_label: None,
+            capability: None,
+            context_blob: None,
             outputs: vec![serde_json::json!({
                 "output_type": "display_data",
                 "data": {"image/png": {"blob": "expired-blob", "size": 4}}

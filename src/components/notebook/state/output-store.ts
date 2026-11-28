@@ -111,6 +111,18 @@ export function useOutput(output_id: string): JupyterOutput | undefined {
  */
 export function useCellOutputs(cell_id: string): JupyterOutput[] {
   const execution_id = useCellExecutionId(cell_id);
+  return useExecutionOutputs(execution_id);
+}
+
+/**
+ * Resolve the current output list of an execution by id.
+ *
+ * `useCellOutputs` goes through the cell's execution pointer; this hook is for
+ * surfaces that know the execution id but have no pointer to it, such as the
+ * live placeholder of a prompt answer (`prompt_response.execution_id`).
+ * Same subscription and identity guarantees as `useCellOutputs`.
+ */
+export function useExecutionOutputs(execution_id: string | null): JupyterOutput[] {
   // Pulls `output_ids` (plus status fingerprint) for this cell's current
   // execution. Snapshot equality in the executions store makes this a
   // no-op re-render when only outputs change without a new output_id

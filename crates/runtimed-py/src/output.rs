@@ -1503,6 +1503,7 @@ mod tests {
                 cell_id: None,
                 seq: Some(7),
                 submitted_by_actor_label: Some("local:kyle/agent:codex:s1".to_string()),
+                ..Default::default()
             },
         );
 

@@ -93,6 +93,11 @@ pub struct ExecutionViewSnapshot {
     pub output_ids: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub submitted_by_actor_label: Option<String>,
+    /// A prompt execution whose context is built and dispatched to the prompt
+    /// agent (`context_blob` is set). Lets clients tell "waiting for the cells
+    /// above" from "waiting for the agent" while the status is `queued`.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub dispatched: bool,
 }
 
 /// Queue state projected in execution-id terms.
@@ -308,13 +313,14 @@ fn execution_snapshot(exec: &ExecutionState) -> ExecutionViewSnapshot {
         success: exec.success,
         output_ids: output_ids_for_execution(exec),
         submitted_by_actor_label: exec.submitted_by_actor_label.clone(),
+        dispatched: exec.context_blob.is_some(),
     }
 }
 
 fn execution_fingerprint(exec: &ExecutionState) -> String {
     let output_ids = output_ids_for_execution(exec);
     format!(
-        "{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}",
         exec.execution_count
             .map(|count| count.to_string())
             .unwrap_or_default(),
@@ -323,7 +329,8 @@ fn execution_fingerprint(exec: &ExecutionState) -> String {
             .map(|success| success.to_string())
             .unwrap_or_default(),
         output_ids.join(","),
-        exec.submitted_by_actor_label.as_deref().unwrap_or_default()
+        exec.submitted_by_actor_label.as_deref().unwrap_or_default(),
+        exec.context_blob.is_some()
     )
 }
 
@@ -341,8 +348,7 @@ mod tests {
             outputs: vec![],
             source: None,
             cell_id: None,
-            seq: None,
-            submitted_by_actor_label: None,
+            ..Default::default()
         }
     }
 
@@ -362,8 +368,7 @@ mod tests {
                 .collect(),
             source: None,
             cell_id: None,
-            seq: None,
-            submitted_by_actor_label: None,
+            ..Default::default()
         }
     }
 
@@ -417,6 +422,33 @@ mod tests {
         assert_eq!(transitions.len(), 1);
         assert_eq!(transitions[0].kind, ExecutionTransitionKind::Started);
         assert_eq!(transitions[0].execution_count, Some(3));
+    }
+
+    #[test]
+    fn execution_view_reemits_when_the_prompt_is_dispatched() {
+        let mut state = RuntimeState::default();
+        let mut prompt = exec("queued", None);
+        state
+            .executions
+            .insert("exec-p".to_string(), prompt.clone());
+
+        let mut projector = ExecutionViewProjector::default();
+        let changeset = projector.project_runtime(&state);
+        assert!(!changeset.execution_upserts[0].1.dispatched);
+
+        // The context blob arrives later with no other change: the projector
+        // must still emit an upsert.
+        prompt.context_blob = Some("blob".to_string());
+        state.executions.insert("exec-p".to_string(), prompt);
+        let changeset = projector.project_runtime(&state);
+        assert_eq!(changeset.execution_upserts.len(), 1);
+        assert!(changeset.execution_upserts[0].1.dispatched);
+
+        // And an unchanged state emits nothing.
+        assert!(projector
+            .project_runtime(&state)
+            .execution_upserts
+            .is_empty());
     }
 
     #[test]
