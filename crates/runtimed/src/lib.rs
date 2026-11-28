@@ -43,6 +43,7 @@ pub mod kernel_connection;
 pub mod kernel_dispatch;
 pub(crate) mod kernel_extensions;
 pub(crate) mod kernel_launch_failure;
+pub(crate) mod kernel_launch_pipeline;
 pub(crate) mod kernel_ports;
 pub(crate) mod kernel_shell_requester;
 pub mod kernel_state;
