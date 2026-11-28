@@ -933,26 +933,49 @@ impl SettingsDoc {
     /// Migrate old flat keys to nested structure.
     ///
     /// Reads `default_uv_packages` and `default_conda_packages` from ROOT,
-    /// splits comma values, stores them as nested lists, and deletes the old keys.
+    /// splits comma values, stores them as nested lists, and deletes the old keys
+    /// only after the nested write succeeds.
     fn migrate_flat_to_nested(&mut self) {
         // Migrate default_uv_packages -> uv.default_packages
         if let Some(val) = self.get_flat("default_uv_packages") {
             let packages = split_comma_list(&val);
-            if !packages.is_empty() {
-                self.put_list("uv.default_packages", &packages);
+            let migrated = if packages.is_empty() {
+                Ok(())
+            } else {
+                self.try_put_list("uv.default_packages", &packages)
+            };
+            match migrated {
+                Ok(()) => {
+                    let _ = self.doc.delete(automerge::ROOT, "default_uv_packages");
+                    info!("[settings] Migrated default_uv_packages to uv.default_packages");
+                }
+                Err(error) => {
+                    log::warn!(
+                        "[settings] Preserving default_uv_packages after nested migration failed: {error}"
+                    );
+                }
             }
-            let _ = self.doc.delete(automerge::ROOT, "default_uv_packages");
-            info!("[settings] Migrated default_uv_packages to uv.default_packages");
         }
 
         // Migrate default_conda_packages -> conda.default_packages
         if let Some(val) = self.get_flat("default_conda_packages") {
             let packages = split_comma_list(&val);
-            if !packages.is_empty() {
-                self.put_list("conda.default_packages", &packages);
+            let migrated = if packages.is_empty() {
+                Ok(())
+            } else {
+                self.try_put_list("conda.default_packages", &packages)
+            };
+            match migrated {
+                Ok(()) => {
+                    let _ = self.doc.delete(automerge::ROOT, "default_conda_packages");
+                    info!("[settings] Migrated default_conda_packages to conda.default_packages");
+                }
+                Err(error) => {
+                    log::warn!(
+                        "[settings] Preserving default_conda_packages after nested migration failed: {error}"
+                    );
+                }
             }
-            let _ = self.doc.delete(automerge::ROOT, "default_conda_packages");
-            info!("[settings] Migrated default_conda_packages to conda.default_packages");
         }
     }
 
@@ -1655,6 +1678,20 @@ fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
     }
 }
 
+/// Read a strict Automerge boolean value from ROOT (does not coerce string `"true"`).
+fn read_bool_strict(doc: &AutoCommit, key: &str) -> Option<bool> {
+    doc.get(automerge::ROOT, key)
+        .ok()
+        .flatten()
+        .and_then(|(value, _)| match value {
+            automerge::Value::Scalar(s) => match s.as_ref() {
+                automerge::ScalarValue::Boolean(b) => Some(*b),
+                _ => None,
+            },
+            _ => None,
+        })
+}
+
 /// Read a boolean value at a flat or dotted path (supporting string `"true"`/`"false"`).
 fn read_bool(doc: &AutoCommit, key: &str) -> Option<bool> {
     let entry = if let Some((map_key, sub_key)) = key.split_once('.') {
@@ -1781,7 +1818,8 @@ pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
             .unwrap_or(defaults.import_shell_environment),
         install_id: read_str(doc, "install_id").unwrap_or_default(),
         telemetry_enabled: read_bool(doc, "telemetry_enabled").unwrap_or(true),
-        telemetry_consent_recorded: read_bool(doc, "telemetry_consent_recorded").unwrap_or(false),
+        telemetry_consent_recorded: read_bool_strict(doc, "telemetry_consent_recorded")
+            .unwrap_or(false),
         telemetry_last_daemon_ping_at: read_u64(doc, "telemetry_last_daemon_ping_at"),
         telemetry_last_app_ping_at: read_u64(doc, "telemetry_last_app_ping_at"),
         telemetry_last_mcp_ping_at: read_u64(doc, "telemetry_last_mcp_ping_at"),
@@ -2301,6 +2339,52 @@ mod tests {
         ));
         // Existing scalar value remains intact.
         assert_eq!(doc.get("theme"), Some("dark".to_string()));
+    }
+
+    #[test]
+    fn test_telemetry_consent_recorded_requires_strict_boolean() {
+        let mut doc = SettingsDoc::empty();
+        doc.try_put("telemetry_consent_recorded", "true").unwrap();
+        assert!(
+            !doc.get_all().telemetry_consent_recorded,
+            "string \"true\" must not satisfy telemetry_consent_recorded"
+        );
+        assert!(!get_all_from_doc(&doc.doc).telemetry_consent_recorded);
+
+        doc.try_put_bool("telemetry_consent_recorded", true)
+            .unwrap();
+        assert!(doc.get_all().telemetry_consent_recorded);
+        assert!(get_all_from_doc(&doc.doc).telemetry_consent_recorded);
+    }
+
+    #[test]
+    fn test_migrate_flat_to_nested_preserves_legacy_list_when_parent_is_scalar() {
+        let dir = tempfile::tempdir().unwrap();
+        let automerge_path = dir.path().join("settings.automerge");
+        let json_path = dir.path().join("settings.json");
+
+        let mut raw = AutoCommit::new();
+        raw.put(automerge::ROOT, "uv", "malformed-scalar").unwrap();
+        raw.put(automerge::ROOT, "default_uv_packages", "numpy, pandas")
+            .unwrap();
+        raw.put(automerge::ROOT, "conda", "malformed-scalar")
+            .unwrap();
+        raw.put(automerge::ROOT, "default_conda_packages", "scipy")
+            .unwrap();
+        std::fs::write(&automerge_path, raw.save()).unwrap();
+
+        let reloaded = SettingsDoc::load_or_create(&automerge_path, Some(&json_path));
+        assert_eq!(
+            reloaded.get("default_uv_packages"),
+            Some("numpy, pandas".to_string())
+        );
+        assert_eq!(
+            reloaded.get("default_conda_packages"),
+            Some("scipy".to_string())
+        );
+        let settings = reloaded.get_all();
+        assert_eq!(settings.uv.default_packages, vec!["numpy", "pandas"]);
+        assert_eq!(settings.conda.default_packages, vec!["scipy"]);
     }
 
     #[test]
