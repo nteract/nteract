@@ -17,7 +17,7 @@ notebook-doc = { path = "../notebook-doc" }
 notebook-room-host = { path = "../notebook-room-host" }
 notebook-wire = { path = "../notebook-wire" }
 nteract-identity = { path = "../nteract-identity", default-features = false }
-nteract-markdown-engine = { path = "../nteract-markdown-engine" }
+nteract-markdown-wasm = { path = "../nteract-markdown-wasm" }
 runtime-doc = { path = "../runtime-doc" }
 wasm-bindgen = { workspace = true }
 serde = { workspace = true }

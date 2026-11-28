@@ -7,15 +7,6 @@ mod render_json;
 
 pub use render_json::{error_to_json, render_plan_json};
 
-/// Project markdown source directly into the JSON plan envelope consumed by
-/// the notebook frontend and daemon output store.
-pub fn project_to_json(source: &str) -> String {
-    match project_markdown(source) {
-        Ok(plan) => render_plan_json(&plan, source, "rust-wasm"),
-        Err(error) => error_to_json(&error.to_string(), "rust-wasm"),
-    }
-}
-
 const DEFAULT_WIDTH: usize = 720;
 const AVG_CHAR_WIDTH: usize = 8;
 const BODY_LINE_HEIGHT: usize = 22;

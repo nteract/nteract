@@ -23,7 +23,7 @@ runtimed-outputs = { path = "../runtimed-outputs" }
 runtimed-service = { path = "../runtimed-service" }
 runtimed-settings-sync = { path = "../runtimed-settings-sync" }
 nteract-telemetry = { path = "../nteract-telemetry" }
-nteract-markdown-engine = { path = "../nteract-markdown-engine" }
+nteract-markdown-wasm = { path = "../nteract-markdown-wasm" }
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-wire = { path = "../notebook-wire" }
 notebook-cloud-transport = { path = "../notebook-cloud-transport", features = ["registry"] }

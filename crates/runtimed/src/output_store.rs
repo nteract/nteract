@@ -1375,7 +1375,7 @@ async fn maybe_insert_markdown_projection(
         // resolution; small inline markdown gets the zero-fetch plan sibling.
         ContentRef::Blob { .. } => return Ok(()),
     };
-    let plan_json = nteract_markdown_engine::project_to_json(markdown);
+    let plan_json = nteract_markdown_wasm::project_to_json(markdown);
     data.insert(
         MARKDOWN_PROJECTION_MIME.to_string(),
         ContentRef::from_data(&plan_json, MARKDOWN_PROJECTION_MIME, blob_store, threshold).await?,
