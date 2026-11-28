@@ -5,7 +5,6 @@ import { visualizer } from "rollup-plugin-visualizer";
 import { type Plugin, defineConfig } from "vite-plus";
 import { browserDevRelayPlugin } from "./vite-plugin-browser-relay";
 import { isolatedRendererPlugin } from "./vite-plugin-isolated-renderer";
-import { rawLibPlugin } from "./vite-plugin-raw-lib";
 
 /**
  * Redirect missing-trailing-slash URLs for our multi-entry sub-apps to the
@@ -68,7 +67,6 @@ export default defineConfig(() => {
       react(),
       tailwindcss(),
       prototypeRootRedirect(process.env.RUNT_NOTEBOOK_PROTOTYPE_ROUTE),
-      rawLibPlugin(path.resolve(__dirname, "../../node_modules")),
       isolatedRendererPlugin(),
       browserDevRelayPlugin({ repoRoot: path.resolve(__dirname, "../..") }),
       subAppTrailingSlashRedirect([

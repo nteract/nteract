@@ -78,6 +78,7 @@ test("workspace recursion includes transitive dependencies, resolved peers, ship
   f.link("packages/sift", "nested", "packages/nested");
   f.link("packages/sift", "@nteract/odometer", "packages/odometer");
   f.file("packages/sift/src/LICENSE.lucide", "Vendored icon copyright and license\n");
+  f.file("src/components/outputs/LICENSE.ansi-to-react", "Vendored ANSI backspace attribution\n");
   f.pkg("alpha", { dependencies: { beta: "1.0.0" }, peerDependencies: { peer: "*" } });
   f.lock.snapshots["alpha@1.0.0"].dependencies.peer = "1.0.0";
   f.pkg("beta");
@@ -86,6 +87,7 @@ test("workspace recursion includes transitive dependencies, resolved peers, ship
   const report = await f.collect();
   assert.deepEqual(report.components.map((c) => c.name), ["alpha", "beta", "peer", "tw-animate-css"]);
   assert.match(report.notices, /Vendored icon copyright and license/);
+  assert.match(report.notices, /Vendored ANSI backspace attribution/);
 });
 
 test("missing license file fails even with SPDX metadata or NOTICE", async (t) => {

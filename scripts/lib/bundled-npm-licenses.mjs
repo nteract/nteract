@@ -201,7 +201,12 @@ export async function collectBundledNpm(repoRoot) {
     const dir = resolve(root, id);
     if (!inside(root, dir)) throw new Error(`Workspace escapes repository: ${id}`);
     const manifest = json(join(dir, "package.json"));
-    if (id !== ".") addEvidence(manifest.name || id, dir, true);
+    if (id === ".") {
+      const srcDir = join(dir, "src");
+      if (existsSync(srcDir)) addEvidence(`${manifest.name || "root"}/src`, srcDir, true);
+    } else {
+      addEvidence(manifest.name || id, dir, true);
+    }
     for (const name of Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies }).sort(compare)) {
       if (!importer.dependencies?.[name] && !importer.optionalDependencies?.[name]) {
         throw new Error(`${id}: declared production dependency ${name} missing from lockfile`);

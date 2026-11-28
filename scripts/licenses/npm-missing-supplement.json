@@ -181,36 +181,6 @@
         }
       ]
     },
-    "@uiw/react-json-view@2.0.0-alpha.41": {
-      "files": {
-        "package.json": "07d0762e4c5f386cb0298fa3aa6ea0703a02c9cc190fb4b1bb39b15ab3a25586"
-      },
-      "covers": [
-        "full-license"
-      ],
-      "notices": [
-        {
-          "path": "npm-missing/uiw-react-json-view.txt",
-          "sha256": "d6c29a4acc00299dddc5ffb5d07a6480c1ddcc73adf3ade50743988b13c43808",
-          "source": "https://raw.githubusercontent.com/uiwjs/react-json-view/4685111ae16e3ec6d6d543c2db0b5009b5142eae/LICENSE"
-        }
-      ]
-    },
-    "ansi-to-react@6.2.6": {
-      "files": {
-        "package.json": "6669789531a5fb393815b54aaa6ee853be53a60e00054c9de436dfc11a90c6ae"
-      },
-      "covers": [
-        "full-license"
-      ],
-      "notices": [
-        {
-          "path": "npm-missing/ansi-to-react.txt",
-          "sha256": "866e6fa48cb8810d36d8d85a3085d7aa1c4317d3731f0ef84919428fee87bf71",
-          "source": "https://raw.githubusercontent.com/nteract/archived-desktop-app/d58b7ba291f5902c5ea36f78462d4bc607ea6f0d/LICENSE"
-        }
-      ]
-    },
     "react-remove-scroll-bar@2.3.8": {
       "files": {
         "package.json": "e372f857ce05f266137c65293436b5380fec42ac311e6acb9378ed78b98d75d0"

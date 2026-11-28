@@ -26,22 +26,6 @@ const sources = [
     hash: "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
   },
   {
-    packages: ["@uiw/react-json-view@2.0.0-alpha.41"],
-    repository: "uiwjs/react-json-view", license: "MIT", file: "uiw-react-json-view.txt",
-    upstream: "uiwjs/react-json-view/4685111ae16e3ec6d6d543c2db0b5009b5142eae/LICENSE",
-    hash: "d6c29a4acc00299dddc5ffb5d07a6480c1ddcc73adf3ade50743988b13c43808",
-  },
-  {
-    packages: ["ansi-to-react@6.2.6"],
-    repository: "nteract/ansi-to-react", license: "BSD-3-Clause", file: "ansi-to-react.txt",
-    // The original monorepo is now archived-desktop-app. Its 6.0.3 npm
-    // gitHead contains packages/ansi-to-react and this root license. Standalone
-    // commit f37e277c4402038456ebb120d8ec9c10335a4959 migrates that package;
-    // 6.2.6 still declares BSD-3-Clause but omits the inherited full notice.
-    upstream: "nteract/archived-desktop-app/d58b7ba291f5902c5ea36f78462d4bc607ea6f0d/LICENSE",
-    hash: "866e6fa48cb8810d36d8d85a3085d7aa1c4317d3731f0ef84919428fee87bf71",
-  },
-  {
     packages: ["react-remove-scroll-bar@2.3.8"],
     repository: "theKashey/react-remove-scroll-bar", license: "MIT", file: "react-remove-scroll-bar.txt",
     // Upstream's explicit license clarification merged after 2.3.8. The npm
