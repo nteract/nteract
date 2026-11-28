@@ -526,6 +526,22 @@ pub fn write_synced_settings_json(path: &Path, settings: &SyncedSettings) -> std
     std::fs::write(path, format!("{json}\n"))
 }
 
+/// Error returned by fallible `SettingsDoc` write operations.
+#[derive(Debug, thiserror::Error)]
+pub enum SettingsWriteError {
+    #[error("list key `{0}` must use dotted `section.field` form")]
+    NonDottedListKey(String),
+
+    #[error("cannot write nested key under `{0}`: existing value is not a map")]
+    NonMapParent(String),
+
+    #[error("unsupported value for settings key `{0}`")]
+    UnsupportedValue(String),
+
+    #[error("automerge error: {0}")]
+    Automerge(#[from] AutomergeError),
+}
+
 /// Wrapper around an Automerge document storing application settings.
 ///
 /// The document uses a mix of root-level scalar strings and nested maps
@@ -542,6 +558,16 @@ static PANIC_ON_NEXT_RECEIVE_SYNC_CALLS: AtomicUsize = AtomicUsize::new(0);
 static PATCH_LOG_MISMATCH_ON_NEXT_RECEIVE_SYNC_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 impl SettingsDoc {
+    /// Create a bare Automerge settings document with no local seed operations.
+    ///
+    /// Use this for sync replicas that will receive their initial document state
+    /// from the daemon rather than generating local default ops with a new actor.
+    pub fn empty() -> Self {
+        Self {
+            doc: AutoCommit::new(),
+        }
+    }
+
     /// Create a new empty settings document with defaults.
     pub fn new() -> Self {
         let mut doc = AutoCommit::new();
@@ -951,6 +977,35 @@ impl SettingsDoc {
         Ok(Self { doc })
     }
 
+    /// Consume this wrapper and return the underlying Automerge document.
+    pub fn into_doc(self) -> AutoCommit {
+        self.doc
+    }
+
+    /// True when `heads` is non-empty and every advertised change is present locally.
+    pub fn has_heads(&mut self, heads: &[automerge::ChangeHash]) -> bool {
+        if heads.is_empty() {
+            return false;
+        }
+        heads
+            .iter()
+            .all(|head| self.doc.get_change_by_hash(head).is_some())
+    }
+
+    /// True when this replica has local changes not yet included in `heads`.
+    pub fn has_changes_since(&mut self, heads: &[automerge::ChangeHash]) -> bool {
+        !self.doc.get_changes(heads).is_empty()
+    }
+
+    /// Return all change hashes recorded in this document.
+    pub fn change_hashes(&mut self) -> Vec<automerge::ChangeHash> {
+        self.doc
+            .get_changes(&[])
+            .iter()
+            .map(|change| change.hash())
+            .collect()
+    }
+
     /// Serialize the document to bytes for persistence.
     pub fn save(&mut self) -> Vec<u8> {
         self.doc.save()
@@ -985,89 +1040,67 @@ impl SettingsDoc {
     ///
     /// E.g. `"theme"` reads from ROOT, `"uv.some_key"` reads from the `uv` sub-map.
     pub fn get(&self, key: &str) -> Option<String> {
-        if let Some((map_key, sub_key)) = key.split_once('.') {
-            let map_id = self.get_map_id(map_key)?;
-            read_scalar_str(&self.doc, map_id, sub_key)
-        } else {
-            self.get_flat(key)
-        }
+        read_str(&self.doc, key)
     }
 
-    /// Get a boolean setting value from the root.
+    /// Get a boolean setting value, supporting dotted paths for nested maps.
     pub fn get_bool(&self, key: &str) -> Option<bool> {
-        if let Some((map_key, sub_key)) = key.split_once('.') {
-            let map_id = self.get_map_id(map_key)?;
-            return self.doc.get(&map_id, sub_key).ok().flatten().and_then(
-                |(value, _)| match value {
-                    automerge::Value::Scalar(s) => match s.as_ref() {
-                        automerge::ScalarValue::Boolean(b) => Some(*b),
-                        automerge::ScalarValue::Str(s) => match s.as_str() {
-                            "true" => Some(true),
-                            "false" => Some(false),
-                            _ => None,
-                        },
-                        _ => None,
-                    },
-                    _ => None,
-                },
-            );
-        }
-
-        self.doc
-            .get(automerge::ROOT, key)
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| match value {
-                automerge::Value::Scalar(s) => match s.as_ref() {
-                    automerge::ScalarValue::Boolean(b) => Some(*b),
-                    // Also support string "true"/"false" for migration
-                    automerge::ScalarValue::Str(s) => match s.as_str() {
-                        "true" => Some(true),
-                        "false" => Some(false),
-                        _ => None,
-                    },
-                    _ => None,
-                },
-                _ => None,
-            })
+        read_bool(&self.doc, key)
     }
 
-    /// Set a boolean setting value at the root.
-    pub fn put_bool(&mut self, key: &str, value: bool) {
+    /// Set a boolean setting value, supporting dotted paths, propagating errors.
+    pub fn try_put_bool(&mut self, key: &str, value: bool) -> Result<(), SettingsWriteError> {
         if let Some((map_key, sub_key)) = key.split_once('.') {
-            let map_id = self.ensure_map(map_key);
-            let _ = self.doc.put(&map_id, sub_key, value);
+            let map_id = self.try_ensure_map(map_key)?;
+            self.doc.put(&map_id, sub_key, value)?;
         } else {
-            let _ = self.doc.put(automerge::ROOT, key, value);
+            self.doc.put(automerge::ROOT, key, value)?;
         }
+        Ok(())
+    }
+
+    /// Set a boolean setting value at the root or a nested map.
+    pub fn put_bool(&mut self, key: &str, value: bool) {
+        let _ = self.try_put_bool(key, value);
     }
 
     /// Get a u64 setting value from the root.
     pub fn get_u64(&self, key: &str) -> Option<u64> {
-        self.doc
-            .get(automerge::ROOT, key)
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| match value {
-                automerge::Value::Scalar(s) => match s.as_ref() {
-                    // Use try_from to prevent negative values wrapping to huge u64
-                    automerge::ScalarValue::Int(i) => u64::try_from(*i).ok(),
-                    automerge::ScalarValue::Uint(u) => Some(*u),
-                    // Also support string for migration/JSON compatibility
-                    automerge::ScalarValue::Str(s) => s.parse().ok(),
-                    _ => None,
-                },
-                _ => None,
-            })
+        read_u64(&self.doc, key)
+    }
+
+    /// Set a u64 setting value at the root, propagating Automerge errors.
+    ///
+    /// Values are clamped to `i64::MAX` to prevent overflow during conversion.
+    pub fn try_put_u64(&mut self, key: &str, value: u64) -> Result<(), SettingsWriteError> {
+        let clamped = value.min(i64::MAX as u64);
+        self.doc.put(automerge::ROOT, key, clamped as i64)?;
+        Ok(())
     }
 
     /// Set a u64 setting value at the root.
     ///
     /// Values are clamped to i64::MAX to prevent overflow during conversion.
     pub fn put_u64(&mut self, key: &str, value: u64) {
-        // Clamp to i64::MAX to prevent overflow (Automerge stores as signed int)
-        let clamped = value.min(i64::MAX as u64);
-        let _ = self.doc.put(automerge::ROOT, key, clamped as i64);
+        let _ = self.try_put_u64(key, value);
+    }
+
+    /// Delete a key at the root or inside an existing nested map.
+    pub fn try_delete(&mut self, key: &str) -> Result<(), SettingsWriteError> {
+        if let Some((map_key, sub_key)) = key.split_once('.') {
+            match self.doc.get(automerge::ROOT, map_key)? {
+                Some((automerge::Value::Object(ObjType::Map), map_id)) => {
+                    self.doc.delete(&map_id, sub_key)?;
+                }
+                Some(_) => {
+                    return Err(SettingsWriteError::NonMapParent(map_key.to_string()));
+                }
+                None => {}
+            }
+        } else {
+            self.doc.delete(automerge::ROOT, key)?;
+        }
+        Ok(())
     }
 
     /// Check if a key exists in the document but has a null value.
@@ -1080,122 +1113,111 @@ impl SettingsDoc {
             .unwrap_or(false)
     }
 
+    /// Set a scalar setting value, supporting dotted paths, propagating errors.
+    pub fn try_put(&mut self, key: &str, value: &str) -> Result<(), SettingsWriteError> {
+        if let Some((map_key, sub_key)) = key.split_once('.') {
+            let map_id = self.try_ensure_map(map_key)?;
+            self.doc.put(&map_id, sub_key, value)?;
+        } else {
+            self.doc.put(automerge::ROOT, key, value)?;
+        }
+        Ok(())
+    }
+
     /// Set a scalar setting value, supporting dotted paths for nested maps.
     pub fn put(&mut self, key: &str, value: &str) {
-        if let Some((map_key, sub_key)) = key.split_once('.') {
-            let map_id = self.ensure_map(map_key);
-            let _ = self.doc.put(&map_id, sub_key, value);
-        } else {
-            let _ = self.doc.put(automerge::ROOT, key, value);
-        }
+        let _ = self.try_put(key, value);
     }
 
     // ── List accessors ───────────────────────────────────────────────
 
     /// Read a list of strings at a dotted path (e.g. `"uv.default_packages"`).
     pub fn get_list(&self, key: &str) -> Vec<String> {
-        let (map_key, sub_key) = match key.split_once('.') {
-            Some(pair) => pair,
-            None => return vec![],
+        let Some((map_key, sub_key)) = key.split_once('.') else {
+            return vec![];
         };
-        let map_id = match self.get_map_id(map_key) {
-            Some(id) => id,
-            None => return vec![],
+        read_nested_list(&self.doc, map_key, sub_key)
+    }
+
+    /// Replace a list of strings at a dotted path, propagating errors.
+    ///
+    /// Replaces any existing value at `key` with a new Automerge list.
+    pub fn try_put_list(&mut self, key: &str, values: &[String]) -> Result<(), SettingsWriteError> {
+        let Some((map_key, sub_key)) = key.split_once('.') else {
+            return Err(SettingsWriteError::NonDottedListKey(key.to_string()));
         };
-        let list_id = match self.doc.get(&map_id, sub_key).ok().flatten() {
-            Some((automerge::Value::Object(ObjType::List), id)) => id,
-            _ => return vec![],
-        };
-        let len = self.doc.length(&list_id);
-        (0..len)
-            .filter_map(|i| {
-                self.doc
-                    .get(&list_id, i)
-                    .ok()
-                    .flatten()
-                    .and_then(|(value, _)| match value {
-                        automerge::Value::Scalar(s) => match s.as_ref() {
-                            automerge::ScalarValue::Str(s) => Some(s.to_string()),
-                            _ => None,
-                        },
-                        _ => None,
-                    })
-            })
-            .collect()
+        let map_id = self.try_ensure_map(map_key)?;
+
+        // `put_object` replaces any existing value at `sub_key` atomically.
+        let list_id = self.doc.put_object(&map_id, sub_key, ObjType::List)?;
+        for (i, item) in values.iter().enumerate() {
+            self.doc.insert(&list_id, i, item.as_str())?;
+        }
+        Ok(())
     }
 
     /// Replace a list of strings at a dotted path.
     ///
     /// Deletes the existing list (if any) and creates a new one with the given items.
     pub fn put_list(&mut self, key: &str, values: &[String]) {
-        let (map_key, sub_key) = match key.split_once('.') {
-            Some(pair) => pair,
-            None => return,
-        };
-        let map_id = self.ensure_map(map_key);
+        let _ = self.try_put_list(key, values);
+    }
 
-        // Delete existing value at this key (list or otherwise)
-        let _ = self.doc.delete(&map_id, sub_key);
-
-        // Create new list and insert items
-        if let Ok(list_id) = self.doc.put_object(&map_id, sub_key, ObjType::List) {
-            for (i, item) in values.iter().enumerate() {
-                let _ = self.doc.insert(&list_id, i, item.as_str());
+    /// Set or clear a value from a `serde_json::Value`, propagating validation
+    /// and Automerge errors.
+    ///
+    /// Supports strings, string arrays (at dotted `section.field` keys),
+    /// booleans, non-negative integers (clamped to `i64::MAX`), and `Null`
+    /// (deletes the key). Rejects objects, negative/floating-point numbers, and
+    /// arrays containing non-string elements.
+    pub fn try_put_value(
+        &mut self,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), SettingsWriteError> {
+        match value {
+            serde_json::Value::String(s) => self.try_put(key, s),
+            serde_json::Value::Array(arr) => {
+                let items = arr
+                    .iter()
+                    .map(|v| v.as_str().map(String::from))
+                    .collect::<Option<Vec<String>>>()
+                    .ok_or_else(|| SettingsWriteError::UnsupportedValue(key.to_string()))?;
+                self.try_put_list(key, &items)
+            }
+            serde_json::Value::Bool(b) => self.try_put_bool(key, *b),
+            serde_json::Value::Number(n) => {
+                let u = n
+                    .as_u64()
+                    .ok_or_else(|| SettingsWriteError::UnsupportedValue(key.to_string()))?;
+                self.try_put_u64(key, u)
+            }
+            serde_json::Value::Null => self.try_delete(key),
+            serde_json::Value::Object(_) => {
+                Err(SettingsWriteError::UnsupportedValue(key.to_string()))
             }
         }
     }
 
-    /// Set a value from a `serde_json::Value` — dispatches to `put` for strings,
-    /// `put_list` for arrays, `put_bool` for booleans, or `put_u64` for numbers.
+    /// Set or clear a value from a `serde_json::Value` — dispatches to `put` for
+    /// strings, `put_list` for string arrays, `put_bool` for booleans, `put_u64`
+    /// for non-negative integers (clamped to `i64::MAX`), or key deletion for `Null`.
     /// Used by Tauri commands.
     pub fn put_value(&mut self, key: &str, value: &serde_json::Value) {
-        match value {
-            serde_json::Value::String(s) => self.put(key, s),
-            serde_json::Value::Array(arr) => {
-                let items: Vec<String> = arr
-                    .iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect();
-                self.put_list(key, &items);
-            }
-            serde_json::Value::Bool(b) => self.put_bool(key, *b),
-            serde_json::Value::Number(n) => {
-                if let Some(u) = n.as_u64() {
-                    self.put_u64(key, u);
-                }
-            }
-            _ => {}
-        }
+        let _ = self.try_put_value(key, value);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────
 
-    /// Look up a nested Map object at ROOT.
-    fn get_map_id(&self, map_key: &str) -> Option<ObjId> {
-        self.doc
-            .get(automerge::ROOT, map_key)
-            .ok()
-            .flatten()
-            .and_then(|(value, id)| match value {
-                automerge::Value::Object(ObjType::Map) => Some(id),
-                _ => None,
-            })
-    }
-
-    /// Get or create a nested Map at ROOT.
-    ///
-    /// # Panics
-    /// Panics if `put_object` fails, which only happens if the Automerge document
-    /// is in an invalid state. This would indicate a fundamental corruption that
-    /// would break all document operations - crashing is the correct response.
-    #[allow(clippy::expect_used)]
-    fn ensure_map(&mut self, map_key: &str) -> ObjId {
-        if let Some(id) = self.get_map_id(map_key) {
-            return id;
+    /// Get or create a nested Map at ROOT, refusing to overwrite an existing non-map key.
+    fn try_ensure_map(&mut self, map_key: &str) -> Result<ObjId, SettingsWriteError> {
+        match self.doc.get(automerge::ROOT, map_key)? {
+            Some((automerge::Value::Object(ObjType::Map), id)) => Ok(id),
+            Some(_) => Err(SettingsWriteError::NonMapParent(map_key.to_string())),
+            None => Ok(self
+                .doc
+                .put_object(automerge::ROOT, map_key, ObjType::Map)?),
         }
-        self.doc
-            .put_object(automerge::ROOT, map_key, ObjType::Map)
-            .expect("failed to create nested map")
     }
 
     // ── Aggregate accessor ───────────────────────────────────────────
@@ -1205,117 +1227,7 @@ impl SettingsDoc {
     /// Reads from nested maps first, falling back to old flat keys for
     /// backward compatibility during upgrades.
     pub fn get_all(&self) -> SyncedSettings {
-        let defaults = SyncedSettings::default();
-
-        // Read uv packages: try nested list, fall back to flat comma string
-        let uv_packages = {
-            let nested = self.get_list("uv.default_packages");
-            if !nested.is_empty() {
-                nested
-            } else if let Some(flat) = self.get_flat("default_uv_packages") {
-                split_comma_list(&flat)
-            } else {
-                defaults.uv.default_packages.clone()
-            }
-        };
-
-        // Read conda packages: try nested list, fall back to flat comma string
-        let conda_packages = {
-            let nested = self.get_list("conda.default_packages");
-            if !nested.is_empty() {
-                nested
-            } else if let Some(flat) = self.get_flat("default_conda_packages") {
-                split_comma_list(&flat)
-            } else {
-                defaults.conda.default_packages.clone()
-            }
-        };
-
-        let default_python_env = self
-            .get("default_python_env")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_default();
-        let pool_sizes = default_pool_sizes_for_python_env(&default_python_env);
-
-        SyncedSettings {
-            theme: self
-                .get("theme")
-                .and_then(|s| serde_json::from_str::<ThemeMode>(&format!("\"{s}\"")).ok())
-                .unwrap_or(defaults.theme),
-            color_theme: self
-                .get("color_theme")
-                .and_then(|s| serde_json::from_str::<ColorTheme>(&format!("\"{s}\"")).ok())
-                .unwrap_or(defaults.color_theme),
-            editor: EditorSettings {
-                code_font_family: self
-                    .get("editor.code_font_family")
-                    .unwrap_or_else(|| defaults.editor.code_font_family.clone()),
-                markdown_font_family: self
-                    .get("editor.markdown_font_family")
-                    .unwrap_or_else(|| defaults.editor.markdown_font_family.clone()),
-                line_numbers: self
-                    .get_bool("editor.line_numbers")
-                    .unwrap_or(defaults.editor.line_numbers),
-            },
-            default_runtime: self
-                .get("default_runtime")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or_default(),
-            default_python_env,
-            uv: UvDefaults {
-                default_packages: uv_packages,
-            },
-            conda: CondaDefaults {
-                default_packages: conda_packages,
-            },
-            pixi: PixiDefaults {
-                default_packages: self.get_list("pixi.default_packages"),
-            },
-            keep_alive_secs: self
-                .get_u64("keep_alive_secs")
-                .unwrap_or(defaults.keep_alive_secs),
-            // For existing users: if onboarding_completed is missing but other settings exist,
-            // assume they're upgrading from before onboarding was added → treat as completed
-            onboarding_completed: self.get_bool("onboarding_completed").unwrap_or_else(|| {
-                // Check if this is an existing user by looking for other settings
-                self.get("theme").is_some() || self.get("default_runtime").is_some()
-            }),
-            uv_pool_size: self
-                .get_u64("uv_pool_size")
-                .unwrap_or(pool_sizes.uv_pool_size),
-            conda_pool_size: self
-                .get_u64("conda_pool_size")
-                .unwrap_or(pool_sizes.conda_pool_size),
-            pixi_pool_size: self
-                .get_u64("pixi_pool_size")
-                .unwrap_or(pool_sizes.pixi_pool_size),
-            install_default_data_packages: self
-                .get_bool("install_default_data_packages")
-                .unwrap_or(defaults.install_default_data_packages),
-            disable_nteract_launcher: self
-                .get_bool("disable_nteract_launcher")
-                .unwrap_or(defaults.disable_nteract_launcher),
-            enable_comments: self
-                .get_bool("enable_comments")
-                .unwrap_or(defaults.enable_comments),
-            disable_auto_format: self
-                .get_bool("disable_auto_format")
-                .unwrap_or(defaults.disable_auto_format),
-            redact_env_values_in_outputs: self
-                .get_bool("redact_env_values_in_outputs")
-                .unwrap_or(defaults.redact_env_values_in_outputs),
-            import_shell_environment: self
-                .get_bool("import_shell_environment")
-                .unwrap_or(defaults.import_shell_environment),
-            install_id: self.get("install_id").unwrap_or_default(),
-            telemetry_enabled: self.get_bool("telemetry_enabled").unwrap_or(true),
-            telemetry_consent_recorded: self
-                .get_bool("telemetry_consent_recorded")
-                .unwrap_or(false),
-            telemetry_last_daemon_ping_at: self.get_u64("telemetry_last_daemon_ping_at"),
-            telemetry_last_app_ping_at: self.get_u64("telemetry_last_app_ping_at"),
-            telemetry_last_mcp_ping_at: self.get_u64("telemetry_last_mcp_ping_at"),
-        }
+        get_all_from_doc(&self.doc)
     }
 
     /// Generate a sync message to send to a peer.
@@ -1708,6 +1620,17 @@ impl Default for SettingsDoc {
 
 // ── Free helpers ─────────────────────────────────────────────────────
 
+/// Look up a nested Map object at ROOT within a raw `AutoCommit`.
+fn read_map_id(doc: &AutoCommit, map_key: &str) -> Option<ObjId> {
+    doc.get(automerge::ROOT, map_key)
+        .ok()
+        .flatten()
+        .and_then(|(value, id)| match value {
+            automerge::Value::Object(ObjType::Map) => Some(id),
+            _ => None,
+        })
+}
+
 /// Read a scalar string value from any Automerge object.
 fn read_scalar_str<O: AsRef<ObjId>>(doc: &AutoCommit, obj: O, key: &str) -> Option<String> {
     doc.get(obj, key)
@@ -1722,6 +1645,149 @@ fn read_scalar_str<O: AsRef<ObjId>>(doc: &AutoCommit, obj: O, key: &str) -> Opti
         })
 }
 
+/// Read a scalar string at a flat or dotted path (e.g. `"editor.code_font_family"`).
+fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
+    if let Some((map_key, sub_key)) = key.split_once('.') {
+        let map_id = read_map_id(doc, map_key)?;
+        read_scalar_str(doc, map_id, sub_key)
+    } else {
+        read_scalar_str(doc, automerge::ROOT, key)
+    }
+}
+
+/// Read a boolean value at a flat or dotted path (supporting string `"true"`/`"false"`).
+fn read_bool(doc: &AutoCommit, key: &str) -> Option<bool> {
+    let entry = if let Some((map_key, sub_key)) = key.split_once('.') {
+        let map_id = read_map_id(doc, map_key)?;
+        doc.get(&map_id, sub_key).ok().flatten()
+    } else {
+        doc.get(automerge::ROOT, key).ok().flatten()
+    };
+    entry.and_then(|(value, _)| match value {
+        automerge::Value::Scalar(s) => match s.as_ref() {
+            automerge::ScalarValue::Boolean(b) => Some(*b),
+            automerge::ScalarValue::Str(s) => match s.as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+/// Read a u64 setting value from ROOT.
+fn read_u64(doc: &AutoCommit, key: &str) -> Option<u64> {
+    doc.get(automerge::ROOT, key)
+        .ok()
+        .flatten()
+        .and_then(|(value, _)| match value {
+            automerge::Value::Scalar(s) => match s.as_ref() {
+                // Use try_from to prevent negative values wrapping to huge u64
+                automerge::ScalarValue::Int(i) => u64::try_from(*i).ok(),
+                automerge::ScalarValue::Uint(u) => Some(*u),
+                // Also support string for migration/JSON compatibility
+                automerge::ScalarValue::Str(s) => s.parse().ok(),
+                _ => None,
+            },
+            _ => None,
+        })
+}
+
+/// Extract all settings from an Automerge document.
+///
+/// Reads from nested maps first, falling back to old flat keys for
+/// backward compatibility during upgrades.
+pub fn get_all_from_doc(doc: &AutoCommit) -> SyncedSettings {
+    let defaults = SyncedSettings::default();
+
+    // Read uv packages: try nested list, fall back to flat comma string
+    let uv_packages = {
+        let nested = read_nested_list(doc, "uv", "default_packages");
+        if !nested.is_empty() {
+            nested
+        } else if let Some(flat) = read_scalar_str(doc, automerge::ROOT, "default_uv_packages") {
+            split_comma_list(&flat)
+        } else {
+            defaults.uv.default_packages.clone()
+        }
+    };
+
+    // Read conda packages: try nested list, fall back to flat comma string
+    let conda_packages = {
+        let nested = read_nested_list(doc, "conda", "default_packages");
+        if !nested.is_empty() {
+            nested
+        } else if let Some(flat) = read_scalar_str(doc, automerge::ROOT, "default_conda_packages") {
+            split_comma_list(&flat)
+        } else {
+            defaults.conda.default_packages.clone()
+        }
+    };
+
+    let default_python_env = read_str(doc, "default_python_env")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_default();
+    let pool_sizes = default_pool_sizes_for_python_env(&default_python_env);
+
+    SyncedSettings {
+        theme: read_str(doc, "theme")
+            .and_then(|s| serde_json::from_str::<ThemeMode>(&format!("\"{s}\"")).ok())
+            .unwrap_or(defaults.theme),
+        color_theme: read_str(doc, "color_theme")
+            .and_then(|s| serde_json::from_str::<ColorTheme>(&format!("\"{s}\"")).ok())
+            .unwrap_or(defaults.color_theme),
+        editor: EditorSettings {
+            code_font_family: read_str(doc, "editor.code_font_family")
+                .unwrap_or_else(|| defaults.editor.code_font_family.clone()),
+            markdown_font_family: read_str(doc, "editor.markdown_font_family")
+                .unwrap_or_else(|| defaults.editor.markdown_font_family.clone()),
+            line_numbers: read_bool(doc, "editor.line_numbers")
+                .unwrap_or(defaults.editor.line_numbers),
+        },
+        default_runtime: read_str(doc, "default_runtime")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_default(),
+        default_python_env,
+        uv: UvDefaults {
+            default_packages: uv_packages,
+        },
+        conda: CondaDefaults {
+            default_packages: conda_packages,
+        },
+        pixi: PixiDefaults {
+            default_packages: read_nested_list(doc, "pixi", "default_packages"),
+        },
+        keep_alive_secs: read_u64(doc, "keep_alive_secs").unwrap_or(defaults.keep_alive_secs),
+        // For existing users: if onboarding_completed is missing but other settings exist,
+        // assume they're upgrading from before onboarding was added → treat as completed
+        onboarding_completed: read_bool(doc, "onboarding_completed").unwrap_or_else(|| {
+            read_str(doc, "theme").is_some() || read_str(doc, "default_runtime").is_some()
+        }),
+        uv_pool_size: read_u64(doc, "uv_pool_size").unwrap_or(pool_sizes.uv_pool_size),
+        conda_pool_size: read_u64(doc, "conda_pool_size").unwrap_or(pool_sizes.conda_pool_size),
+        pixi_pool_size: read_u64(doc, "pixi_pool_size").unwrap_or(pool_sizes.pixi_pool_size),
+        install_default_data_packages: read_bool(doc, "install_default_data_packages")
+            .unwrap_or(defaults.install_default_data_packages),
+        disable_nteract_launcher: read_bool(doc, "disable_nteract_launcher")
+            .unwrap_or(defaults.disable_nteract_launcher),
+        enable_comments: read_bool(doc, "enable_comments").unwrap_or(defaults.enable_comments),
+        disable_auto_format: read_bool(doc, "disable_auto_format")
+            .unwrap_or(defaults.disable_auto_format),
+        redact_env_values_in_outputs: read_bool(doc, "redact_env_values_in_outputs")
+            .unwrap_or(defaults.redact_env_values_in_outputs),
+        import_shell_environment: read_bool(doc, "import_shell_environment")
+            .unwrap_or(defaults.import_shell_environment),
+        install_id: read_str(doc, "install_id").unwrap_or_default(),
+        telemetry_enabled: read_bool(doc, "telemetry_enabled").unwrap_or(true),
+        telemetry_consent_recorded: read_bool(doc, "telemetry_consent_recorded").unwrap_or(false),
+        telemetry_last_daemon_ping_at: read_u64(doc, "telemetry_last_daemon_ping_at"),
+        telemetry_last_app_ping_at: read_u64(doc, "telemetry_last_app_ping_at"),
+        telemetry_last_mcp_ping_at: read_u64(doc, "telemetry_last_mcp_ping_at"),
+    }
+}
+
 /// Split a comma-separated string into a list of trimmed, non-empty strings.
 pub fn split_comma_list(s: &str) -> Vec<String> {
     s.split(',')
@@ -1731,12 +1797,9 @@ pub fn split_comma_list(s: &str) -> Vec<String> {
 }
 
 /// Read a list of strings from a nested Automerge map within a raw `AutoCommit`.
-///
-/// Used by `sync_client::get_all_from_doc` which operates on bare docs.
 pub fn read_nested_list(doc: &AutoCommit, map_key: &str, sub_key: &str) -> Vec<String> {
-    let map_id = match doc.get(automerge::ROOT, map_key).ok().flatten() {
-        Some((automerge::Value::Object(ObjType::Map), id)) => id,
-        _ => return vec![],
+    let Some(map_id) = read_map_id(doc, map_key) else {
+        return vec![];
     };
     let list_id = match doc.get(&map_id, sub_key).ok().flatten() {
         Some((automerge::Value::Object(ObjType::List), id)) => id,
@@ -2179,6 +2242,65 @@ mod tests {
             &serde_json::json!(["numpy", "pandas"]),
         );
         assert_eq!(doc.get_list("uv.default_packages"), vec!["numpy", "pandas"]);
+    }
+
+    #[test]
+    fn test_try_put_value_null_clears_key_and_rejects_invalid_inputs() {
+        let mut doc = SettingsDoc::new();
+        doc.try_put_u64("telemetry_last_daemon_ping_at", 1_700_000_000)
+            .unwrap();
+        assert_eq!(
+            doc.get_all().telemetry_last_daemon_ping_at,
+            Some(1_700_000_000)
+        );
+
+        // Null deletes the key so rotated telemetry markers actually clear.
+        doc.try_put_value("telemetry_last_daemon_ping_at", &serde_json::Value::Null)
+            .unwrap();
+        assert_eq!(doc.get_all().telemetry_last_daemon_ping_at, None);
+
+        // Non-dotted list keys, non-string list items, objects, and negative/float numbers error.
+        assert!(matches!(
+            doc.try_put_value("default_packages", &serde_json::json!(["numpy"])),
+            Err(SettingsWriteError::NonDottedListKey(_))
+        ));
+        assert!(matches!(
+            doc.try_put_value("uv.default_packages", &serde_json::json!(["numpy", 1])),
+            Err(SettingsWriteError::UnsupportedValue(_))
+        ));
+        assert!(matches!(
+            doc.try_put_value("keep_alive_secs", &serde_json::json!(-1)),
+            Err(SettingsWriteError::UnsupportedValue(_))
+        ));
+        assert!(matches!(
+            doc.try_put_value("keep_alive_secs", &serde_json::json!(2.5)),
+            Err(SettingsWriteError::UnsupportedValue(_))
+        ));
+        assert!(matches!(
+            doc.try_put_value("editor", &serde_json::json!({ "line_numbers": true })),
+            Err(SettingsWriteError::UnsupportedValue(_))
+        ));
+    }
+
+    #[test]
+    fn test_try_ensure_map_refuses_to_overwrite_existing_scalar() {
+        let mut doc = SettingsDoc::new();
+        doc.try_put("theme", "dark").unwrap();
+
+        assert!(matches!(
+            doc.try_put("theme.nested", "oops"),
+            Err(SettingsWriteError::NonMapParent(_))
+        ));
+        assert!(matches!(
+            doc.try_put_list("theme.items", &["x".to_string()]),
+            Err(SettingsWriteError::NonMapParent(_))
+        ));
+        assert!(matches!(
+            doc.try_delete("theme.nested"),
+            Err(SettingsWriteError::NonMapParent(_))
+        ));
+        // Existing scalar value remains intact.
+        assert_eq!(doc.get("theme"), Some("dark".to_string()));
     }
 
     #[test]
