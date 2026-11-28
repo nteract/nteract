@@ -1046,6 +1046,60 @@ impl DevNotebookLaunch {
     }
 }
 
+/// Admitted-time decision for `up`'s daemon step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UpDaemonDecision {
+    AlreadyRunning,
+    Restart { reason: String, mode_switch: bool },
+}
+
+/// Pure admitted-time decision for `up`'s daemon step.
+///
+/// Called strictly inside `DaemonLifecycleGate::run_profile_transition` using
+/// the admitted `(old_profile, target_profile)` pair so an explicit `up mode=…`
+/// is never discarded if another request switched profiles before gate entry.
+fn decide_up_daemon_action(
+    old_profile: BuildProfile,
+    target_profile: BuildProfile,
+    daemon_running: bool,
+    running_version: Option<&str>,
+    expected_version: Option<&str>,
+    rebuilt_daemon_profile: Option<BuildProfile>,
+) -> UpDaemonDecision {
+    if target_profile != old_profile {
+        return UpDaemonDecision::Restart {
+            reason: format!(
+                "daemon: switching to {} profile — restarting",
+                target_profile.as_str()
+            ),
+            mode_switch: true,
+        };
+    }
+    if !daemon_running {
+        return UpDaemonDecision::Restart {
+            reason: "daemon: not running — starting".into(),
+            mode_switch: false,
+        };
+    }
+    if rebuilt_daemon_profile == Some(target_profile) {
+        return UpDaemonDecision::Restart {
+            reason: "daemon: binary changed — restarting".into(),
+            mode_switch: false,
+        };
+    }
+    if let (Some(running), Some(expected)) = (running_version, expected_version) {
+        if running != expected {
+            return UpDaemonDecision::Restart {
+                reason: format!(
+                    "daemon: version mismatch (running={running}, expected={expected}) — restarting"
+                ),
+                mode_switch: false,
+            };
+        }
+    }
+    UpDaemonDecision::AlreadyRunning
+}
+
 /// Outcome returned from a profiled daemon lifecycle transition.
 struct ProfileTransitionOutcome<T> {
     value: T,
@@ -1991,10 +2045,10 @@ impl Supervisor {
 
         let mut report = Vec::<String>::new();
 
-        // Step 1: validate requested build profile without publishing it yet.
-        // The published profile only flips inside an admitted lifecycle
-        // transition so a queued or canceled `up mode=...` cannot alter an
-        // in-flight restart's binary resolution.
+        // Step 1: validate requested build profile without publishing or
+        // deciding "already in mode" before taking `daemon_lifecycle_gate`.
+        // The requested mode is kept intact until admission so a concurrent
+        // switch before gate entry cannot cause `up mode=…` to be discarded.
         let requested_profile = match params.mode.as_deref() {
             Some("release") => Some(BuildProfile::Release),
             Some("debug") => Some(BuildProfile::Debug),
@@ -2005,14 +2059,7 @@ impl Supervisor {
             }
             None => None,
         };
-        let target_profile = requested_profile.unwrap_or_else(current_build_profile);
-        let profile_change_requested =
-            requested_profile.is_some_and(|want| want != current_build_profile());
-        if let Some(want) = requested_profile {
-            if !profile_change_requested {
-                report.push(format!("mode: already {}", want.as_str()));
-            }
-        }
+        let build_profile = requested_profile.unwrap_or_else(current_build_profile);
 
         let (project_root, daemon_workspace_path, mode) = {
             let state = self.state.read().await;
@@ -2026,7 +2073,7 @@ impl Supervisor {
         // Step 2: rebuild (cargo + maturin)
         //
         // Snapshot *both* managed binaries before cargo build.
-        // `run_cargo_build_daemon` actually compiles `runtimed` AND
+        // `run_cargo_build_daemon_for_profile` actually compiles `runtimed` AND
         // `runt` (the MCP child host) in one invocation; they can
         // change independently on the same rebuild call — editing
         // `crates/runt-mcp/src/**` relinks runt while leaving
@@ -2036,16 +2083,16 @@ impl Supervisor {
         // needs. Matches the file-watcher's existing rule: changes in
         // crates/runt-mcp trigger child-only restart.
         let (daemon_before, child_before) = if params.rebuild {
-            managed_binary_fingerprints_for_profile(&project_root, target_profile)
+            managed_binary_fingerprints_for_profile(&project_root, build_profile)
         } else {
             (None, None)
         };
-        let mut daemon_changed_by_rebuild = false;
-        let mut child_changed_by_rebuild = false;
+        let mut rebuilt_daemon_profile = None;
+        let mut rebuilt_child_profile = None;
         if params.rebuild {
             info!("[supervisor] up: rebuild requested");
             // `run_cargo_build_daemon_for_profile` also runs `run_xtask_wasm_ensure` and `ensure_mcp_assets`.
-            if !run_cargo_build_daemon_for_profile_async(&project_root, target_profile).await {
+            if !run_cargo_build_daemon_for_profile_async(&project_root, build_profile).await {
                 let message =
                     "up: cargo build -p runtimed failed. See the supervisor logs for details.";
                 self.state
@@ -2056,9 +2103,15 @@ impl Supervisor {
             }
             self.state.write().await.build_succeeded(true);
             let (daemon_after, child_after) =
-                managed_binary_fingerprints_for_profile(&project_root, target_profile);
-            daemon_changed_by_rebuild = fingerprint_changed(&daemon_before, &daemon_after);
-            child_changed_by_rebuild = fingerprint_changed(&child_before, &child_after);
+                managed_binary_fingerprints_for_profile(&project_root, build_profile);
+            let daemon_changed_by_rebuild = fingerprint_changed(&daemon_before, &daemon_after);
+            let child_changed_by_rebuild = fingerprint_changed(&child_before, &child_after);
+            if daemon_changed_by_rebuild {
+                rebuilt_daemon_profile = Some(build_profile);
+            }
+            if child_changed_by_rebuild {
+                rebuilt_child_profile = Some(build_profile);
+            }
             report.push(
                 match (daemon_changed_by_rebuild, child_changed_by_rebuild) {
                     (true, true) => "rebuild: daemon + runt binaries built".into(),
@@ -2101,88 +2154,152 @@ impl Supervisor {
             ));
         }
 
-        // Step 4: ensure daemon running
+        // Step 4: ensure daemon running under `daemon_lifecycle_gate`.
         //
-        // `rebuild=true` used to imply a daemon restart unconditionally.
-        // That meant every `up rebuild=true` call killed the dev daemon
-        // and collaterally evicted any ephemeral notebook sessions,
-        // even when cargo's rebuild was a no-op (Rust source unchanged).
-        // Now we only restart when the binary actually changed — the
-        // check below reuses the existing "is the running daemon at the
-        // expected version?" path for the not-rebuilt case.
-        let needs_daemon_restart = if profile_change_requested {
-            report.push(format!(
-                "daemon: switching to {} profile — restarting",
-                target_profile.as_str()
-            ));
-            true
-        } else {
-            match daemon_status_for_profile_async(
-                &project_root,
-                &daemon_workspace_path,
-                target_profile,
-            )
-            .await
-            {
-                Some(info) if info.running => {
-                    if daemon_changed_by_rebuild {
-                        report.push("daemon: binary changed — restarting".into());
-                        true
-                    } else {
-                        // Check for version mismatch with expected. Covers
-                        // both `rebuild=false` and `rebuild=true` where the
-                        // cargo output was Fresh (binary_changed_by_rebuild
-                        // is false).
-                        let running = info.daemon_info.as_ref().and_then(|di| di.version.as_ref());
-                        let expected = expected_daemon_version_for_profile_async(
-                            &project_root,
+        // Both mode-change detection and daemon status/version inspection run
+        // inside the admitted transition so an explicit `up mode=…` is never
+        // discarded by a concurrent mode switch before gate entry, and a
+        // mode-less `up` never reverts a concurrent mode switch.
+        struct UpDaemonStepOutcome {
+            ready: bool,
+            restarted: bool,
+            active_profile: BuildProfile,
+            lines: Vec<String>,
+        }
+
+        let daemon_step = {
+            let state = self.state.clone();
+            let gate = self.daemon_lifecycle_gate.clone();
+            let pr = project_root.clone();
+            let wp = daemon_workspace_path.clone();
+            let disable_env_pools = mode.uses_isolated_workspace();
+            self.daemon_lifecycle_gate
+                .run_profile_transition(
+                    requested_profile,
+                    move |old_profile, target_profile| async move {
+                        let (daemon_running, running_version, expected_version) =
+                            if target_profile != old_profile {
+                                (false, None, None)
+                            } else {
+                                match daemon_status_for_profile_async(&pr, &wp, target_profile)
+                                    .await
+                                {
+                                    Some(info) if info.running => {
+                                        let running =
+                                            info.daemon_info.and_then(|di| di.version);
+                                        let expected = if rebuilt_daemon_profile
+                                            == Some(target_profile)
+                                        {
+                                            None
+                                        } else {
+                                            expected_daemon_version_for_profile_async(
+                                                &pr,
+                                                target_profile,
+                                            )
+                                            .await
+                                        };
+                                        (true, running, expected)
+                                    }
+                                    _ => (false, None, None),
+                                }
+                            };
+
+                        match decide_up_daemon_action(
+                            old_profile,
                             target_profile,
-                        )
-                        .await;
-                        match (running, expected) {
-                            (Some(r), Some(e)) if r != &e => {
-                                warn!(
-                                "[supervisor] Daemon version mismatch: running={r}, expected={e}"
-                            );
-                                report.push(format!(
-                                "daemon: version mismatch (running={r}, expected={e}) — restarting"
-                            ));
-                                true
+                            daemon_running,
+                            running_version.as_deref(),
+                            expected_version.as_deref(),
+                            rebuilt_daemon_profile,
+                        ) {
+                            UpDaemonDecision::AlreadyRunning => {
+                                let mut lines = Vec::new();
+                                if let Some(want) = requested_profile {
+                                    lines.push(format!("mode: already {}", want.as_str()));
+                                }
+                                lines.push("daemon: already running".into());
+                                ProfileTransitionOutcome {
+                                    value: UpDaemonStepOutcome {
+                                        ready: true,
+                                        restarted: false,
+                                        active_profile: target_profile,
+                                        lines,
+                                    },
+                                    publish_profile: false,
+                                }
                             }
-                            _ => {
-                                report.push("daemon: already running".into());
-                                false
+                            UpDaemonDecision::Restart {
+                                reason,
+                                mode_switch,
+                            } => {
+                                if !mode_switch {
+                                    if let (Some(r), Some(e)) =
+                                        (running_version.as_deref(), expected_version.as_deref())
+                                    {
+                                        if r != e {
+                                            warn!(
+                                                "[supervisor] Daemon version mismatch: running={r}, expected={e}"
+                                            );
+                                        }
+                                    }
+                                }
+                                let mut lines = vec![reason];
+                                let ready = Self::stop_and_start_daemon_admitted(
+                                    &state,
+                                    &gate,
+                                    &pr,
+                                    &wp,
+                                    disable_env_pools,
+                                    old_profile,
+                                    target_profile,
+                                )
+                                .await;
+                                if ready {
+                                    if mode_switch {
+                                        lines.push(format!(
+                                            "mode: switched to {}",
+                                            target_profile.as_str()
+                                        ));
+                                    } else if let Some(want) = requested_profile {
+                                        lines.push(format!("mode: already {}", want.as_str()));
+                                    }
+                                    lines.push("daemon: ready".into());
+                                }
+                                ProfileTransitionOutcome {
+                                    value: UpDaemonStepOutcome {
+                                        ready,
+                                        restarted: true,
+                                        active_profile: if ready {
+                                            target_profile
+                                        } else {
+                                            old_profile
+                                        },
+                                        lines,
+                                    },
+                                    publish_profile: ready && mode_switch,
+                                }
                             }
                         }
-                    }
-                }
-                _ => {
-                    report.push("daemon: not running — starting".into());
-                    true
-                }
-            }
-        };
-
-        if needs_daemon_restart {
-            if !self
-                .restart_daemon(
-                    project_root.clone(),
-                    daemon_workspace_path.clone(),
-                    mode.uses_isolated_workspace(),
-                    requested_profile.filter(|_| profile_change_requested),
+                    },
                 )
                 .await
-            {
-                return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                    "up: daemon did not become ready within 30s.\n\n{}",
-                    report.join("\n")
-                ))]));
-            }
-            if profile_change_requested {
-                report.push(format!("mode: switched to {}", target_profile.as_str()));
-            }
-            report.push("daemon: ready".into());
+                .unwrap_or_else(|| UpDaemonStepOutcome {
+                    ready: false,
+                    restarted: false,
+                    active_profile: current_build_profile(),
+                    lines: vec!["daemon: supervisor shutting down".into()],
+                })
+        };
+
+        report.extend(daemon_step.lines);
+        if !daemon_step.ready {
+            return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                "up: daemon did not become ready within 30s.\n\n{}",
+                report.join("\n")
+            ))]));
         }
+        let needs_daemon_restart = daemon_step.restarted;
+        let child_changed_by_rebuild = rebuilt_child_profile == Some(daemon_step.active_profile);
 
         // Step 5: optionally start vite
         if params.vite {
@@ -5641,6 +5758,121 @@ mod tests {
             switched_binary,
             cargo_binary_for_profile(&root, BuildProfile::Release, "runtimed")
         );
+        assert_eq!(gate.current_profile(), BuildProfile::Release);
+    }
+
+    #[tokio::test]
+    async fn up_explicit_mode_decides_under_gate_after_concurrent_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let gate = DaemonLifecycleGate::new_isolated(BuildProfile::Debug);
+        let initial_read_done = Arc::new(tokio::sync::Barrier::new(2));
+        let concurrent_switch_done = Arc::new(tokio::sync::Barrier::new(2));
+
+        // 1. `up mode=debug` starts when the initial published profile is Debug,
+        // then pauses before entering `daemon_lifecycle_gate`.
+        let up_gate = gate.clone();
+        let up_root = root.clone();
+        let up_read_done = initial_read_done.clone();
+        let up_after_switch = concurrent_switch_done.clone();
+        let up_task = tokio::spawn(async move {
+            let requested_profile = Some(BuildProfile::Debug);
+            let initial_profile = up_gate.current_profile();
+            assert_eq!(initial_profile, BuildProfile::Debug);
+            up_read_done.wait().await;
+            up_after_switch.wait().await;
+
+            // Keep `requested_profile` intact and decide whether to restart under the gate.
+            up_gate
+                .run_profile_transition(
+                    requested_profile,
+                    move |old_profile, target_profile| async move {
+                        let decision = decide_up_daemon_action(
+                            old_profile,
+                            target_profile,
+                            true,
+                            Some("1.0"),
+                            Some("1.0"),
+                            None,
+                        );
+                        let bin = cargo_binary_for_profile(&up_root, target_profile, "runtimed");
+                        let mode_switch = matches!(
+                            decision,
+                            UpDaemonDecision::Restart {
+                                mode_switch: true,
+                                ..
+                            }
+                        );
+                        ProfileTransitionOutcome {
+                            value: (old_profile, target_profile, decision, bin),
+                            publish_profile: mode_switch,
+                        }
+                    },
+                )
+                .await
+                .unwrap()
+        });
+
+        // 2. Between `up`'s initial read and gate entry, another request switches to Release.
+        initial_read_done.wait().await;
+        gate.run_profile_transition(
+            Some(BuildProfile::Release),
+            |old_profile, target_profile| async move {
+                assert_eq!(old_profile, BuildProfile::Debug);
+                assert_eq!(target_profile, BuildProfile::Release);
+                ProfileTransitionOutcome {
+                    value: (),
+                    publish_profile: true,
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(gate.current_profile(), BuildProfile::Release);
+        concurrent_switch_done.wait().await;
+
+        // 3. `up mode=debug` must observe Release at admission, restart into Debug,
+        // resolve the Debug binary, and publish Debug (not skip as "already debug"
+        // or restart in Release).
+        let (old_profile, target_profile, decision, bin) = up_task.await.unwrap();
+        assert_eq!(old_profile, BuildProfile::Release);
+        assert_eq!(target_profile, BuildProfile::Debug);
+        assert!(matches!(
+            decision,
+            UpDaemonDecision::Restart {
+                mode_switch: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            bin,
+            cargo_binary_for_profile(&root, BuildProfile::Debug, "runtimed")
+        );
+        assert_eq!(gate.current_profile(), BuildProfile::Debug);
+
+        // 4. Mode-less `up rebuild=true` whose pre-gate build ran in Debug does not
+        // restart or revert if a concurrent switch moved the gate to Release before admission.
+        gate.publish_profile(BuildProfile::Release);
+        let decision = gate
+            .run_profile_transition(None, |old_profile, target_profile| async move {
+                assert_eq!(old_profile, BuildProfile::Release);
+                assert_eq!(target_profile, BuildProfile::Release);
+                let decision = decide_up_daemon_action(
+                    old_profile,
+                    target_profile,
+                    true,
+                    Some("1.0"),
+                    Some("1.0"),
+                    Some(BuildProfile::Debug),
+                );
+                ProfileTransitionOutcome {
+                    value: decision,
+                    publish_profile: false,
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(decision, UpDaemonDecision::AlreadyRunning);
         assert_eq!(gate.current_profile(), BuildProfile::Release);
     }
 }
