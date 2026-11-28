@@ -5812,19 +5812,13 @@ pub fn run(
     let daemon_status_state = DaemonStatusState(Arc::new(Mutex::new(None)));
     let daemon_status_for_startup = daemon_status_state.0.clone();
 
-    // Daemon sync completion flag - set when notebook sync initialization completes
-    // Used to coordinate auto-launch decision with daemon connection status
-    let daemon_sync_complete = Arc::new(AtomicBool::new(false));
-    let daemon_sync_success = Arc::new(AtomicBool::new(false));
+    // Daemon sync completion channel: `None` while startup sync is in flight,
+    // `Some(true)` on success, `Some(false)` on failure.
+    let (daemon_sync_tx, daemon_sync_rx) = tokio::sync::watch::channel::<Option<bool>>(None);
 
-    // Clone for notebook sync initialization
+    // Clone for notebook sync initialization and auto-launch coordination
     let registry_for_sync = window_registry.clone();
-    let daemon_sync_complete_for_init = daemon_sync_complete.clone();
-    let daemon_sync_success_for_init = daemon_sync_success.clone();
-
-    // Clone for auto-launch coordination
-    let daemon_sync_complete_for_autolaunch = daemon_sync_complete.clone();
-    let daemon_sync_success_for_autolaunch = daemon_sync_success.clone();
+    let mut daemon_sync_rx_for_autolaunch = daemon_sync_rx.clone();
 
     // Deferred file-open URLs — queued when RunEvent::Opened arrives before
     // startup sync completes, preventing prune_stale_entries from removing
@@ -6250,18 +6244,15 @@ pub fn run(
                             }
                         }
                     }
-                    if any_success {
-                        daemon_sync_success_for_init.store(true, Ordering::SeqCst);
-                    }
+                    let _ = daemon_sync_tx.send(Some(any_success));
                 } else if daemon_available && skip_notebook_sync {
                     // Onboarding mode: daemon is available, notebook sync deliberately skipped
                     // Mark as success so autolaunch task doesn't emit error events
                     log::info!("[startup] Skipping notebook sync during onboarding");
-                    daemon_sync_success_for_init.store(true, Ordering::SeqCst);
+                    let _ = daemon_sync_tx.send(Some(true));
+                } else {
+                    let _ = daemon_sync_tx.send(Some(false));
                 }
-                // Signal that startup-blocking daemon sync attempts are complete.
-                // Hosted cloud attachments may still be loading independently.
-                daemon_sync_complete_for_init.store(true, Ordering::SeqCst);
 
                 // Clear session after all windows have been started or scheduled.
                 // Keeping it until now allows a retry on next launch if the local
@@ -6281,55 +6272,55 @@ pub fn run(
 
                 // Wait up to 10 seconds for daemon sync to complete
                 // This needs to be long enough for large notebooks with many cells
-                let sync_timeout = tokio::time::timeout(
+                let sync_result = tokio::time::timeout(
                     std::time::Duration::from_secs(10),
-                    async {
-                        while !daemon_sync_complete_for_autolaunch.load(Ordering::SeqCst) {
-                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                        }
-                    },
+                    daemon_sync_rx_for_autolaunch.wait_for(|state| state.is_some()),
                 )
                 .await;
 
                 let sync_wait_ms = autolaunch_start.elapsed().as_millis();
 
-                if sync_timeout.is_err() {
-                    // Daemon sync timed out - emit error event for frontend to display
-                    log::error!(
-                        "[autolaunch] Daemon sync timed out after {}ms. Daemon is not available.",
-                        sync_wait_ms
-                    );
-                    let payload = serde_json::json!({
-                        "reason": "sync_timeout",
-                        "message": "Daemon sync timed out. The runtime daemon may not be running.",
-                        "guidance": runt_workspace::daemon_unavailable_guidance()
-                    });
-                    for window in app_for_autolaunch.webview_windows().into_values() {
-                        app_for_autolaunch.state::<SyncReadyState>().emit_generic_unavailable(window.label(), || {
-                            let _ = emit_to_label::<_, _, _>(&window, window.label(), "daemon:unavailable", &payload);
+                match sync_result {
+                    Err(_) => {
+                        // Daemon sync timed out - emit error event for frontend to display
+                        log::error!(
+                            "[autolaunch] Daemon sync timed out after {}ms. Daemon is not available.",
+                            sync_wait_ms
+                        );
+                        let payload = serde_json::json!({
+                            "reason": "sync_timeout",
+                            "message": "Daemon sync timed out. The runtime daemon may not be running.",
+                            "guidance": runt_workspace::daemon_unavailable_guidance()
                         });
+                        for window in app_for_autolaunch.webview_windows().into_values() {
+                            app_for_autolaunch.state::<SyncReadyState>().emit_generic_unavailable(window.label(), || {
+                                let _ = emit_to_label::<_, _, _>(&window, window.label(), "daemon:unavailable", &payload);
+                            });
+                        }
                     }
-                } else if daemon_sync_success_for_autolaunch.load(Ordering::SeqCst) {
-                    // Daemon sync succeeded - daemon handles auto-launch
-                    log::info!(
-                        "[autolaunch] Daemon sync succeeded in {}ms, daemon handles auto-launch",
-                        sync_wait_ms
-                    );
-                } else {
-                    // Daemon sync completed but failed - emit error event
-                    log::error!(
-                        "[autolaunch] Daemon sync failed after {}ms. Connection failed.",
-                        sync_wait_ms
-                    );
-                    let payload = serde_json::json!({
-                        "reason": "sync_failed",
-                        "message": "Failed to connect to runtime daemon.",
-                        "guidance": runt_workspace::daemon_unavailable_guidance()
-                    });
-                    for window in app_for_autolaunch.webview_windows().into_values() {
-                        app_for_autolaunch.state::<SyncReadyState>().emit_generic_unavailable(window.label(), || {
-                            let _ = emit_to_label::<_, _, _>(&window, window.label(), "daemon:unavailable", &payload);
+                    Ok(Ok(guard)) if *guard == Some(true) => {
+                        // Daemon sync succeeded - daemon handles auto-launch
+                        log::info!(
+                            "[autolaunch] Daemon sync succeeded in {}ms, daemon handles auto-launch",
+                            sync_wait_ms
+                        );
+                    }
+                    Ok(_) => {
+                        // Daemon sync completed with failure or init task dropped sender
+                        log::error!(
+                            "[autolaunch] Daemon sync failed after {}ms. Connection failed.",
+                            sync_wait_ms
+                        );
+                        let payload = serde_json::json!({
+                            "reason": "sync_failed",
+                            "message": "Failed to connect to runtime daemon.",
+                            "guidance": runt_workspace::daemon_unavailable_guidance()
                         });
+                        for window in app_for_autolaunch.webview_windows().into_values() {
+                            app_for_autolaunch.state::<SyncReadyState>().emit_generic_unavailable(window.label(), || {
+                                let _ = emit_to_label::<_, _, _>(&window, window.label(), "daemon:unavailable", &payload);
+                            });
+                        }
                     }
                 }
             });
@@ -6639,7 +6630,7 @@ pub fn run(
     #[cfg(target_os = "macos")]
     let registry_for_open = window_registry.clone();
     #[cfg(target_os = "macos")]
-    let daemon_sync_complete_for_open = daemon_sync_complete.clone();
+    let daemon_sync_rx_for_open = daemon_sync_rx.clone();
     #[cfg(target_os = "macos")]
     let deferred_urls_for_open = deferred_open_urls.clone();
     let registry_for_session = window_registry.clone();
@@ -6654,7 +6645,7 @@ pub fn run(
         // These were queued by RunEvent::Opened events that arrived before
         // startup windows were fully created and synced.
         #[cfg(target_os = "macos")]
-        if daemon_sync_complete_for_open.load(Ordering::SeqCst) {
+        if daemon_sync_rx_for_open.borrow().is_some() {
             if let Ok(mut q) = deferred_urls_for_open.lock() {
                 if !q.is_empty() {
                     let urls: Vec<tauri::Url> = std::mem::take(&mut *q);
@@ -6776,7 +6767,7 @@ pub fn run(
                     .filter_map(|u| u.to_file_path().ok())
                     .collect::<Vec<_>>()
             );
-            if !daemon_sync_complete_for_open.load(Ordering::SeqCst) {
+            if daemon_sync_rx_for_open.borrow().is_none() {
                 log::info!(
                     "[file-open] Deferring {} open event(s) until startup completes",
                     urls.len()

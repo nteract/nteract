@@ -118,24 +118,72 @@ struct IsolatedContext {
     cache_dir: PathBuf,
 }
 
+/// Cargo build profile for resolving, building, and launching managed binaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildProfile {
+    Debug,
+    Release,
+}
+
+impl BuildProfile {
+    fn from_release(release: bool) -> Self {
+        if release {
+            Self::Release
+        } else {
+            Self::Debug
+        }
+    }
+
+    fn is_release(self) -> bool {
+        matches!(self, Self::Release)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Debug => "debug",
+            Self::Release => "release",
+        }
+    }
+}
+
+/// Current published Cargo build profile.
+fn current_build_profile() -> BuildProfile {
+    BuildProfile::from_release(RELEASE_MODE.load(Ordering::Acquire))
+}
+
+/// Publish a new Cargo build profile. Must only be called during startup
+/// initialization or inside an admitted `DaemonLifecycleGate` transition.
+fn set_build_profile(profile: BuildProfile) {
+    RELEASE_MODE.store(profile.is_release(), Ordering::Release);
+}
+
 /// Whether to use release-mode binaries.
 fn use_release_binaries() -> bool {
-    RELEASE_MODE.load(Ordering::Relaxed)
+    current_build_profile().is_release()
 }
 
-/// Resolve the path to a Cargo-built binary, respecting release mode.
+/// Resolve the path to a Cargo-built binary for an explicit build profile.
+fn cargo_binary_for_profile(
+    project_root: &Path,
+    profile: BuildProfile,
+    name: &str,
+) -> std::path::PathBuf {
+    runt_workspace::cargo_binary_path_for_workspace(project_root, profile.as_str(), name)
+}
+
+/// Resolve the path to a Cargo-built binary using the currently published profile.
 fn cargo_binary(project_root: &Path, name: &str) -> std::path::PathBuf {
-    let profile = if use_release_binaries() {
-        "release"
-    } else {
-        "debug"
-    };
-    runt_workspace::cargo_binary_path_for_workspace(project_root, profile, name)
+    cargo_binary_for_profile(project_root, current_build_profile(), name)
 }
 
-/// Check if the dev daemon for `workspace_path` is running and get its socket path.
-fn daemon_status(project_root: &Path, workspace_path: &Path) -> Option<DaemonInfo> {
-    let runt = cargo_binary(project_root, "runt");
+/// Check if the dev daemon for `workspace_path` is running and get its socket path
+/// using the `runt` binary for `profile`.
+fn daemon_status_for_profile(
+    project_root: &Path,
+    workspace_path: &Path,
+    profile: BuildProfile,
+) -> Option<DaemonInfo> {
+    let runt = cargo_binary_for_profile(project_root, profile, "runt");
 
     if !runt.exists() {
         return None;
@@ -175,10 +223,13 @@ struct DaemonProcessInfo {
     version: Option<String>,
 }
 
-/// Get the version string from the built runtimed binary (e.g. "runtimed 2.0.2+abc1234").
+/// Get the version string from the built runtimed binary for an explicit profile.
 /// Returns just the version part after "runtimed " or the full line if parsing fails.
-fn expected_daemon_version(project_root: &Path) -> Option<String> {
-    let runtimed = cargo_binary(project_root, "runtimed");
+fn expected_daemon_version_for_profile(
+    project_root: &Path,
+    profile: BuildProfile,
+) -> Option<String> {
+    let runtimed = cargo_binary_for_profile(project_root, profile, "runtimed");
     if !runtimed.exists() {
         return None;
     }
@@ -193,14 +244,19 @@ fn expected_daemon_version(project_root: &Path) -> Option<String> {
     Some(full.strip_prefix("runtimed ").unwrap_or(&full).to_string())
 }
 
-/// Stop a running daemon by PID. Works whether or not we started it.
+/// Stop a running daemon by PID using the `runt` binary for `profile`.
 /// Tries `runt daemon stop` first (graceful), falls back to kill(pid).
 ///
 /// Safety: always receives the target workspace path explicitly so the `runt`
 /// CLI cannot fall back to the system nightly daemon.
-fn stop_daemon_by_pid(project_root: &Path, workspace_path: &Path, pid: u32) {
+fn stop_daemon_by_pid_for_profile(
+    project_root: &Path,
+    workspace_path: &Path,
+    pid: u32,
+    profile: BuildProfile,
+) {
     // Try graceful stop via runt CLI
-    let runt = cargo_binary(project_root, "runt");
+    let runt = cargo_binary_for_profile(project_root, profile, "runt");
     if runt.exists() {
         info!(
             "Stopping daemon (PID {pid}) via runt daemon stop (workspace: {})...",
@@ -324,13 +380,14 @@ fn cleanup_isolated_context(context: &IsolatedContext) {
     }
 }
 
-/// Start the dev daemon as a background process. Returns the child handle.
-fn start_daemon(
+/// Start the dev daemon for an explicit build profile as a background process.
+fn start_daemon_for_profile(
     project_root: &Path,
     workspace_path: &Path,
     disable_env_pools: bool,
+    profile: BuildProfile,
 ) -> Option<std::process::Child> {
-    let runtimed = cargo_binary(project_root, "runtimed");
+    let runtimed = cargo_binary_for_profile(project_root, profile, "runtimed");
 
     if !runtimed.exists() {
         error!("runtimed binary not found at {}", runtimed.display());
@@ -350,8 +407,9 @@ fn start_daemon(
     match cmd.spawn() {
         Ok(child) => {
             info!(
-                "Started dev daemon (PID {}, workspace: {})",
+                "Started dev daemon (PID {}, profile: {}, workspace: {})",
                 child.id(),
+                profile.as_str(),
                 workspace_path.display()
             );
             Some(child)
@@ -363,11 +421,16 @@ fn start_daemon(
     }
 }
 
-/// Wait for the daemon to become ready (up to `timeout`).
-fn wait_for_daemon(project_root: &Path, workspace_path: &Path, timeout: Duration) -> bool {
+/// Wait for the daemon to become ready (up to `timeout`) using the `runt` binary for `profile`.
+fn wait_for_daemon_for_profile(
+    project_root: &Path,
+    workspace_path: &Path,
+    timeout: Duration,
+    profile: BuildProfile,
+) -> bool {
     let start = Instant::now();
     while start.elapsed() < timeout {
-        if let Some(info) = daemon_status(project_root, workspace_path) {
+        if let Some(info) = daemon_status_for_profile(project_root, workspace_path, profile) {
             if info.running {
                 return true;
             }
@@ -375,6 +438,96 @@ fn wait_for_daemon(project_root: &Path, workspace_path: &Path, timeout: Duration
         std::thread::sleep(Duration::from_millis(500));
     }
     false
+}
+
+async fn daemon_status_for_profile_async(
+    project_root: &Path,
+    workspace_path: &Path,
+    profile: BuildProfile,
+) -> Option<DaemonInfo> {
+    let pr = project_root.to_path_buf();
+    let wp = workspace_path.to_path_buf();
+    tokio::task::spawn_blocking(move || daemon_status_for_profile(&pr, &wp, profile))
+        .await
+        .ok()
+        .flatten()
+}
+
+async fn daemon_status_async(project_root: &Path, workspace_path: &Path) -> Option<DaemonInfo> {
+    daemon_status_for_profile_async(project_root, workspace_path, current_build_profile()).await
+}
+
+async fn expected_daemon_version_for_profile_async(
+    project_root: &Path,
+    profile: BuildProfile,
+) -> Option<String> {
+    let pr = project_root.to_path_buf();
+    tokio::task::spawn_blocking(move || expected_daemon_version_for_profile(&pr, profile))
+        .await
+        .ok()
+        .flatten()
+}
+
+async fn expected_daemon_version_async(project_root: &Path) -> Option<String> {
+    expected_daemon_version_for_profile_async(project_root, current_build_profile()).await
+}
+
+async fn stop_daemon_by_pid_for_profile_async(
+    project_root: &Path,
+    workspace_path: &Path,
+    pid: u32,
+    profile: BuildProfile,
+) {
+    let pr = project_root.to_path_buf();
+    let wp = workspace_path.to_path_buf();
+    let _ =
+        tokio::task::spawn_blocking(move || stop_daemon_by_pid_for_profile(&pr, &wp, pid, profile))
+            .await;
+}
+
+async fn wait_for_daemon_for_profile_async(
+    project_root: &Path,
+    workspace_path: &Path,
+    timeout: Duration,
+    profile: BuildProfile,
+) -> bool {
+    let pr = project_root.to_path_buf();
+    let wp = workspace_path.to_path_buf();
+    tokio::task::spawn_blocking(move || wait_for_daemon_for_profile(&pr, &wp, timeout, profile))
+        .await
+        .unwrap_or(false)
+}
+
+async fn run_cargo_build_daemon_for_profile_async(
+    project_root: &Path,
+    profile: BuildProfile,
+) -> bool {
+    let pr = project_root.to_path_buf();
+    tokio::task::spawn_blocking(move || run_cargo_build_daemon_for_profile(&pr, profile))
+        .await
+        .unwrap_or(false)
+}
+
+async fn build_runt_cli_for_profile_async(project_root: &Path, profile: BuildProfile) -> bool {
+    let pr = project_root.to_path_buf();
+    tokio::task::spawn_blocking(move || build_runt_cli_for_profile(&pr, profile))
+        .await
+        .unwrap_or(false)
+}
+
+async fn run_maturin_develop_async(project_root: &Path) -> MaturinDevelopStatus {
+    let pr = project_root.to_path_buf();
+    tokio::task::spawn_blocking(move || run_maturin_develop(&pr))
+        .await
+        .unwrap_or(MaturinDevelopStatus::Failed)
+}
+
+async fn stop_child_async(mut child: std::process::Child) {
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = child.kill();
+        let _ = child.wait();
+    })
+    .await;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -527,21 +680,37 @@ type BinaryFingerprint = Option<(std::time::SystemTime, u64)>;
 /// that doesn't require hashing the whole ~200 MB binary.
 ///
 /// Returns `None` when the binary doesn't exist (first build).
-fn binary_fingerprint(project_root: &Path, name: &str) -> BinaryFingerprint {
-    let path = cargo_binary(project_root, name);
+fn binary_fingerprint_for_profile(
+    project_root: &Path,
+    profile: BuildProfile,
+    name: &str,
+) -> BinaryFingerprint {
+    let path = cargo_binary_for_profile(project_root, profile, name);
     let meta = std::fs::metadata(&path).ok()?;
     Some((meta.modified().ok()?, meta.len()))
 }
 
-/// Snapshot both binaries `up rebuild=true` touches: the daemon
-/// (`runtimed`) and the MCP child host (`runt`).
-/// Returns a tuple of fingerprints; `None` in either slot means the
-/// binary didn't exist at snapshot time.
-fn managed_binary_fingerprints(project_root: &Path) -> (BinaryFingerprint, BinaryFingerprint) {
+#[cfg(test)]
+fn binary_fingerprint(project_root: &Path, name: &str) -> BinaryFingerprint {
+    binary_fingerprint_for_profile(project_root, current_build_profile(), name)
+}
+
+/// Snapshot both binaries `up rebuild=true` touches for an explicit profile:
+/// the daemon (`runtimed`) and the MCP child host (`runt`).
+fn managed_binary_fingerprints_for_profile(
+    project_root: &Path,
+    profile: BuildProfile,
+) -> (BinaryFingerprint, BinaryFingerprint) {
     (
-        binary_fingerprint(project_root, "runtimed"),
-        binary_fingerprint(project_root, "runt"),
+        binary_fingerprint_for_profile(project_root, profile, "runtimed"),
+        binary_fingerprint_for_profile(project_root, profile, "runt"),
     )
+}
+
+/// Snapshot both binaries `up rebuild=true` touches using the published profile.
+#[cfg(test)]
+fn managed_binary_fingerprints(project_root: &Path) -> (BinaryFingerprint, BinaryFingerprint) {
+    managed_binary_fingerprints_for_profile(project_root, current_build_profile())
 }
 
 /// Compare a before/after fingerprint pair. Returns true iff cargo
@@ -558,12 +727,16 @@ fn fingerprint_changed(before: &BinaryFingerprint, after: &BinaryFingerprint) ->
 
 /// Run `cargo build -p runtimed` to rebuild the daemon binary.
 ///
+/// Build daemon and CLI for an explicit profile.
 /// Returns `true` on success, `false` on failure.
-fn run_cargo_build_daemon(project_root: &Path) -> bool {
+fn run_cargo_build_daemon_for_profile(project_root: &Path, profile: BuildProfile) -> bool {
     if !run_xtask_wasm_ensure(project_root) || !ensure_mcp_assets(project_root) {
         return false;
     }
-    info!("Building daemon + CLI (cargo build -p runtimed -p runt)...");
+    info!(
+        "Building daemon + CLI ({}, cargo build -p runtimed -p runt)...",
+        profile.as_str()
+    );
     let mut cmd = std::process::Command::new("cargo");
     cmd.arg("build")
         .stdin(Stdio::null())
@@ -574,7 +747,7 @@ fn run_cargo_build_daemon(project_root: &Path) -> bool {
         .current_dir(project_root)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
-    if use_release_binaries() {
+    if profile.is_release() {
         cmd.arg("--release");
     }
     match cmd.status() {
@@ -651,14 +824,14 @@ fn ensure_mcp_assets(project_root: &Path) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// Build the runt CLI binary (which includes runt-mcp) in the selected profile.
-fn build_runt_cli(project_root: &Path) -> bool {
+/// Build the runt CLI binary (which includes runt-mcp) for an explicit profile.
+fn build_runt_cli_for_profile(project_root: &Path, profile: BuildProfile) -> bool {
     if !ensure_mcp_assets(project_root) {
         error!("MCP asset preparation failed; see build diagnostics above");
         return false;
     }
     let mut args = vec!["build", "-p", "runt"];
-    if use_release_binaries() {
+    if profile.is_release() {
         args.push("--release");
     }
     let status = std::process::Command::new("cargo")
@@ -873,9 +1046,200 @@ impl DevNotebookLaunch {
     }
 }
 
+/// Admitted-time decision for `up`'s daemon step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UpDaemonDecision {
+    AlreadyRunning,
+    Restart { reason: String, mode_switch: bool },
+}
+
+/// Pure admitted-time decision for `up`'s daemon step.
+///
+/// Called strictly inside `DaemonLifecycleGate::run_profile_transition` using
+/// the admitted `(old_profile, target_profile)` pair so an explicit `up mode=…`
+/// is never discarded if another request switched profiles before gate entry.
+fn decide_up_daemon_action(
+    old_profile: BuildProfile,
+    target_profile: BuildProfile,
+    daemon_running: bool,
+    running_version: Option<&str>,
+    expected_version: Option<&str>,
+    rebuilt_daemon_profile: Option<BuildProfile>,
+) -> UpDaemonDecision {
+    if target_profile != old_profile {
+        return UpDaemonDecision::Restart {
+            reason: format!(
+                "daemon: switching to {} profile — restarting",
+                target_profile.as_str()
+            ),
+            mode_switch: true,
+        };
+    }
+    if !daemon_running {
+        return UpDaemonDecision::Restart {
+            reason: "daemon: not running — starting".into(),
+            mode_switch: false,
+        };
+    }
+    if rebuilt_daemon_profile == Some(target_profile) {
+        return UpDaemonDecision::Restart {
+            reason: "daemon: binary changed — restarting".into(),
+            mode_switch: false,
+        };
+    }
+    if let (Some(running), Some(expected)) = (running_version, expected_version) {
+        if running != expected {
+            return UpDaemonDecision::Restart {
+                reason: format!(
+                    "daemon: version mismatch (running={running}, expected={expected}) — restarting"
+                ),
+                mode_switch: false,
+            };
+        }
+    }
+    UpDaemonDecision::AlreadyRunning
+}
+
+/// Outcome returned from a profiled daemon lifecycle transition.
+struct ProfileTransitionOutcome<T> {
+    value: T,
+    /// When `true`, `DaemonLifecycleGate` publishes `target_profile` before
+    /// releasing the lifecycle permit.
+    publish_profile: bool,
+}
+
+/// Serializes daemon stop → start → ready transitions, owns profile
+/// publication ordering, and coordinates shutdown draining on supervisor
+/// disconnect without holding a Tokio lock across `.await`.
+#[derive(Clone)]
+struct DaemonLifecycleGate {
+    semaphore: Arc<tokio::sync::Semaphore>,
+    shutting_down: Arc<AtomicBool>,
+    published_profile: Arc<AtomicBool>,
+    sync_global_release_mode: bool,
+}
+
+impl DaemonLifecycleGate {
+    fn new() -> Self {
+        Self {
+            semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+            shutting_down: Arc::new(AtomicBool::new(false)),
+            published_profile: Arc::new(AtomicBool::new(current_build_profile().is_release())),
+            sync_global_release_mode: true,
+        }
+    }
+
+    #[cfg(test)]
+    fn new_isolated(initial_profile: BuildProfile) -> Self {
+        Self {
+            semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+            shutting_down: Arc::new(AtomicBool::new(false)),
+            published_profile: Arc::new(AtomicBool::new(initial_profile.is_release())),
+            sync_global_release_mode: false,
+        }
+    }
+
+    fn current_profile(&self) -> BuildProfile {
+        if self.sync_global_release_mode {
+            current_build_profile()
+        } else {
+            BuildProfile::from_release(self.published_profile.load(Ordering::Acquire))
+        }
+    }
+
+    fn publish_profile(&self, profile: BuildProfile) {
+        self.published_profile
+            .store(profile.is_release(), Ordering::Release);
+        if self.sync_global_release_mode {
+            set_build_profile(profile);
+        }
+    }
+
+    fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Acquire)
+    }
+
+    /// Acquire the lifecycle permit in the caller's task before detaching work.
+    ///
+    /// Returns `None` once shutdown has begun; if the caller is canceled while
+    /// awaiting the permit, no transition task is spawned.
+    async fn acquire(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        if self.is_shutting_down() {
+            return None;
+        }
+        let permit = self.semaphore.clone().acquire_owned().await.ok()?;
+        if self.is_shutting_down() {
+            return None;
+        }
+        Some(permit)
+    }
+
+    /// Run a daemon lifecycle transition under the gate:
+    /// 1. Acquire the permit before spawning so a caller canceled while queued
+    ///    never executes the transition.
+    /// 2. Detach execution in `tokio::spawn` holding the permit so caller
+    ///    cancellation mid-transition lets the active transition publish its
+    ///    result cleanly before releasing the gate.
+    async fn run_transition<F, Fut, T>(&self, transition: F) -> Option<T>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let permit = self.acquire().await?;
+        tokio::spawn(async move {
+            let _permit = permit;
+            transition().await
+        })
+        .await
+        .ok()
+    }
+
+    /// Run a profiled daemon lifecycle transition under the gate.
+    ///
+    /// Resolves `(old_profile, target_profile)` strictly after admission and
+    /// publishes `target_profile` only when the transition completes with
+    /// `publish_profile == true`, so a queued or canceled profile switch never
+    /// skews an in-flight transition's binary resolution or published profile.
+    async fn run_profile_transition<F, Fut, T>(
+        &self,
+        requested_profile: Option<BuildProfile>,
+        transition: F,
+    ) -> Option<T>
+    where
+        F: FnOnce(BuildProfile, BuildProfile) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ProfileTransitionOutcome<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        let gate = self.clone();
+        self.run_transition(move || async move {
+            let old_profile = gate.current_profile();
+            let target_profile = requested_profile.unwrap_or(old_profile);
+            let outcome = transition(old_profile, target_profile).await;
+            if outcome.publish_profile {
+                gate.publish_profile(target_profile);
+            }
+            outcome.value
+        })
+        .await
+    }
+
+    /// Stop admitting new lifecycle transitions and wait for any active
+    /// transition to finish before cleanup takes the final child and tears
+    /// down the workspace.
+    async fn drain_for_shutdown(&self) {
+        self.shutting_down.store(true, Ordering::Release);
+        let permit = self.semaphore.clone().acquire_owned().await.ok();
+        self.semaphore.close();
+        drop(permit);
+    }
+}
+
 #[derive(Clone)]
 struct Supervisor {
     state: Arc<RwLock<SupervisorState>>,
+    /// Serializes daemon lifecycle transitions and drains active transitions on disconnect.
+    daemon_lifecycle_gate: DaemonLifecycleGate,
     /// Signaled when the child client is first connected by the background
     /// init task. `list_tools` waits on this so the initial tool list
     /// includes the proxied nteract tools (not just supervisor tools).
@@ -933,8 +1297,122 @@ impl Supervisor {
                 tool_list_changed_tx: Some(tool_list_changed_tx),
                 managed: HashMap::new(),
             })),
+            daemon_lifecycle_gate: DaemonLifecycleGate::new(),
             child_ready: Arc::new(Notify::new()),
         }
+    }
+
+    /// Stop both any managed child and any unmanaged daemon on the socket using
+    /// `old_profile`, start a fresh daemon for `target_profile`, and wait until
+    /// ready. If readiness fails or shutdown begins mid-flight, stops and clears
+    /// the newly spawned child so no unready target-profile process remains
+    /// tracked or claims the socket under a stale published profile.
+    async fn stop_and_start_daemon_admitted(
+        state: &Arc<RwLock<SupervisorState>>,
+        gate: &DaemonLifecycleGate,
+        project_root: &Path,
+        daemon_workspace_path: &Path,
+        disable_env_pools: bool,
+        old_profile: BuildProfile,
+        target_profile: BuildProfile,
+    ) -> bool {
+        let old_child = { state.write().await.daemon_child.take() };
+        if let Some(child) = old_child {
+            info!("Stopping managed daemon (PID {:?})...", child.id());
+            stop_child_async(child).await;
+        }
+        // Also stop any unmanaged daemon on the socket (e.g. launchd or manually started)
+        if let Some(info) =
+            daemon_status_for_profile_async(project_root, daemon_workspace_path, old_profile).await
+        {
+            if info.running {
+                if let Some(pid) = info.daemon_info.and_then(|di| di.pid) {
+                    info!("Stopping unmanaged daemon (PID {pid})...");
+                    stop_daemon_by_pid_for_profile_async(
+                        project_root,
+                        daemon_workspace_path,
+                        pid,
+                        old_profile,
+                    )
+                    .await;
+                }
+            }
+        }
+        if gate.is_shutting_down() {
+            return false;
+        }
+        let new_child = start_daemon_for_profile(
+            project_root,
+            daemon_workspace_path,
+            disable_env_pools,
+            target_profile,
+        );
+        state.write().await.daemon_child = new_child;
+        if gate.is_shutting_down() {
+            let failed_child = { state.write().await.daemon_child.take() };
+            if let Some(child) = failed_child {
+                stop_child_async(child).await;
+            }
+            return false;
+        }
+        let ready = wait_for_daemon_for_profile_async(
+            project_root,
+            daemon_workspace_path,
+            Duration::from_secs(30),
+            target_profile,
+        )
+        .await;
+        if !ready {
+            let failed_child = { state.write().await.daemon_child.take() };
+            if let Some(child) = failed_child {
+                warn!(
+                    "Stopping unready {} daemon (PID {:?}) after startup timeout",
+                    target_profile.as_str(),
+                    child.id()
+                );
+                stop_child_async(child).await;
+            }
+        }
+        ready
+    }
+
+    /// Serialize daemon stop → start → ready transitions across concurrent calls.
+    ///
+    /// Acquires the lifecycle permit before detaching so a caller canceled while
+    /// queued does not restart a healthy daemon or mutate the published build
+    /// profile, while a transition already in progress finishes cleanly using
+    /// its own explicit target profile and is drained by disconnect cleanup.
+    async fn restart_daemon(
+        &self,
+        project_root: PathBuf,
+        daemon_workspace_path: PathBuf,
+        disable_env_pools: bool,
+        requested_profile: Option<BuildProfile>,
+    ) -> bool {
+        let state = self.state.clone();
+        let gate = self.daemon_lifecycle_gate.clone();
+        self.daemon_lifecycle_gate
+            .run_profile_transition(
+                requested_profile,
+                move |old_profile, target_profile| async move {
+                    let ready = Self::stop_and_start_daemon_admitted(
+                        &state,
+                        &gate,
+                        &project_root,
+                        &daemon_workspace_path,
+                        disable_env_pools,
+                        old_profile,
+                        target_profile,
+                    )
+                    .await;
+                    ProfileTransitionOutcome {
+                        value: ready,
+                        publish_profile: ready && target_profile != old_profile,
+                    }
+                },
+            )
+            .await
+            .unwrap_or(false)
     }
 
     /// Get the proxy, returning an error if not yet initialized.
@@ -1022,6 +1500,25 @@ impl Supervisor {
         } else {
             (false, 0)
         };
+        let (project_root, daemon_workspace_path) = {
+            let state = self.state.read().await;
+            (
+                state.project_root.clone(),
+                state.daemon_workspace_path.clone(),
+            )
+        };
+
+        // Query daemon version outside the state lock so slow probes never block peers.
+        let daemon_version = daemon_status_async(&project_root, &daemon_workspace_path)
+            .await
+            .and_then(|info| info.daemon_info)
+            .and_then(|di| di.version);
+        let expected_version = expected_daemon_version_async(&project_root).await;
+        let version_mismatch = match (&daemon_version, &expected_version) {
+            (Some(running), Some(expected)) => running != expected,
+            _ => false,
+        };
+
         let mut state = self.state.write().await;
 
         // Failsafe: warn if the socket path doesn't look like a dev daemon socket.
@@ -1051,16 +1548,6 @@ impl Supervisor {
                 )
             })
             .collect();
-
-        // Query daemon version and detect mismatches
-        let daemon_version = daemon_status(&state.project_root, &state.daemon_workspace_path)
-            .and_then(|info| info.daemon_info)
-            .and_then(|di| di.version);
-        let expected_version = expected_daemon_version(&state.project_root);
-        let version_mismatch = match (&daemon_version, &expected_version) {
-            (Some(running), Some(expected)) => running != expected,
-            _ => false,
-        };
 
         // Check if the daemon_child we're tracking is still our process
         if let Some(ref mut child) = state.daemon_child {
@@ -1351,7 +1838,7 @@ impl Supervisor {
     /// Stop a managed process by name.
     async fn stop_managed(&self, name: &str) -> Result<(), String> {
         // Remove from map under the lock, then kill outside the lock
-        let mut proc = {
+        let proc = {
             let mut state = self.state.write().await;
             state
                 .managed
@@ -1365,8 +1852,7 @@ impl Supervisor {
             name,
             proc.child.id()
         );
-        let _ = proc.child.kill();
-        let _ = proc.child.wait();
+        stop_child_async(proc.child).await;
         Ok(())
     }
 
@@ -1378,13 +1864,14 @@ impl Supervisor {
         };
 
         let skip_maturin = std::env::var("SKIP_MATURIN").unwrap_or_default() == "1";
+        let build_profile = current_build_profile();
 
-        let child_before = binary_fingerprint(&project_root, "runt");
+        let child_before = binary_fingerprint_for_profile(&project_root, build_profile, "runt");
         let mut build_failed = false;
         match kind {
             ChangeKind::AssetsChanged | ChangeKind::RustMcpChanged => {
                 info!("MCP source/assets changed, checking assets and building runt...");
-                if !build_runt_cli(&project_root) {
+                if !build_runt_cli_for_profile_async(&project_root, build_profile).await {
                     let message = "MCP asset preparation or runt build failed; keeping current child. See supervisor logs.";
                     error!("{message}");
                     self.state
@@ -1403,7 +1890,7 @@ impl Supervisor {
                         " + maturin develop"
                     }
                 );
-                if !build_runt_cli(&project_root) {
+                if !build_runt_cli_for_profile_async(&project_root, build_profile).await {
                     let message = "MCP asset preparation or runt build failed; compiled assets remain stale. See supervisor logs.";
                     error!("{message}");
                     self.state
@@ -1416,7 +1903,8 @@ impl Supervisor {
                     // Python is loaded at runtime: a failed compiled-asset
                     // build must not discard the Python edit in this batch.
                     build_failed = true;
-                } else if !skip_maturin && !run_maturin_develop(&project_root).success() {
+                } else if !skip_maturin && !run_maturin_develop_async(&project_root).await.success()
+                {
                     warn!("maturin develop failed (runt mcp will still restart)");
                 }
             }
@@ -1430,7 +1918,10 @@ impl Supervisor {
         }
 
         if matches!(kind, ChangeKind::AssetsChanged | ChangeKind::RustMcpChanged)
-            && !fingerprint_changed(&child_before, &binary_fingerprint(&project_root, "runt"))
+            && !fingerprint_changed(
+                &child_before,
+                &binary_fingerprint_for_profile(&project_root, build_profile, "runt"),
+            )
         {
             info!("Build was a no-op; keeping the current MCP child and catalog");
             return;
@@ -1512,9 +2003,12 @@ impl Supervisor {
                     continue; // our own process — leave it alone
                 }
                 warn!("[supervisor] Zombie process on vite port {port}: pid {pid} — killing");
-                let _ = std::process::Command::new("kill")
-                    .args(["-TERM", &pid.to_string()])
-                    .status();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _ = std::process::Command::new("kill")
+                        .args(["-TERM", &pid.to_string()])
+                        .status();
+                })
+                .await;
                 killed.push(pid);
             }
             // Brief grace period so TIME_WAIT clears before our Vite tries to bind
@@ -1528,10 +2022,10 @@ impl Supervisor {
     /// Bring the dev environment up. Idempotent — safe to call repeatedly.
     ///
     /// Sequence:
-    /// 1. Apply `mode` if provided (flips the RELEASE_MODE flag).
+    /// 1. Validate `mode` if provided (published only inside an admitted daemon transition).
     /// 2. If `rebuild`, rebuild the daemon binary and Python bindings.
     /// 3. Sweep zombie Vite processes on our port.
-    /// 4. Ensure the daemon is running (start if missing; restart on version mismatch).
+    /// 4. Ensure the daemon is running (start if missing; restart on version mismatch or mode change).
     /// 5. If `vite`, start the Vite dev server.
     /// 6. Ensure the child is healthy (restart if not running).
     async fn handle_up(&self, request: &CallToolRequestParams) -> Result<CallToolResult, McpError> {
@@ -1551,31 +2045,21 @@ impl Supervisor {
 
         let mut report = Vec::<String>::new();
 
-        // Step 1: mode switch
-        if let Some(ref mode) = params.mode {
-            let want_release = match mode.as_str() {
-                "release" => true,
-                "debug" => false,
-                other => {
-                    return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                        "up: unknown mode '{other}'. Use 'debug' or 'release'."
-                    ))]));
-                }
-            };
-            let old_release = RELEASE_MODE.load(Ordering::Relaxed);
-            if old_release != want_release {
-                RELEASE_MODE.store(want_release, Ordering::Relaxed);
-                report.push(format!(
-                    "mode: switched to {}",
-                    if want_release { "release" } else { "debug" }
-                ));
-            } else {
-                report.push(format!(
-                    "mode: already {}",
-                    if want_release { "release" } else { "debug" }
-                ));
+        // Step 1: validate requested build profile without publishing or
+        // deciding "already in mode" before taking `daemon_lifecycle_gate`.
+        // The requested mode is kept intact until admission so a concurrent
+        // switch before gate entry cannot cause `up mode=…` to be discarded.
+        let requested_profile = match params.mode.as_deref() {
+            Some("release") => Some(BuildProfile::Release),
+            Some("debug") => Some(BuildProfile::Debug),
+            Some(other) => {
+                return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                    "up: unknown mode '{other}'. Use 'debug' or 'release'."
+                ))]));
             }
-        }
+            None => None,
+        };
+        let build_profile = requested_profile.unwrap_or_else(current_build_profile);
 
         let (project_root, daemon_workspace_path, mode) = {
             let state = self.state.read().await;
@@ -1589,7 +2073,7 @@ impl Supervisor {
         // Step 2: rebuild (cargo + maturin)
         //
         // Snapshot *both* managed binaries before cargo build.
-        // `run_cargo_build_daemon` actually compiles `runtimed` AND
+        // `run_cargo_build_daemon_for_profile` actually compiles `runtimed` AND
         // `runt` (the MCP child host) in one invocation; they can
         // change independently on the same rebuild call — editing
         // `crates/runt-mcp/src/**` relinks runt while leaving
@@ -1599,23 +2083,35 @@ impl Supervisor {
         // needs. Matches the file-watcher's existing rule: changes in
         // crates/runt-mcp trigger child-only restart.
         let (daemon_before, child_before) = if params.rebuild {
-            managed_binary_fingerprints(&project_root)
+            managed_binary_fingerprints_for_profile(&project_root, build_profile)
         } else {
             (None, None)
         };
-        let mut daemon_changed_by_rebuild = false;
-        let mut child_changed_by_rebuild = false;
+        let mut rebuilt_daemon_profile = None;
+        let mut rebuilt_child_profile = None;
         if params.rebuild {
             info!("[supervisor] up: rebuild requested");
-            if !run_cargo_build_daemon(&project_root) {
-                return Ok(CallToolResult::success(vec![ContentBlock::text(
-                    "up: cargo build -p runtimed failed. See the supervisor logs for details.",
-                )]));
+            // `run_cargo_build_daemon_for_profile` also runs `run_xtask_wasm_ensure` and `ensure_mcp_assets`.
+            if !run_cargo_build_daemon_for_profile_async(&project_root, build_profile).await {
+                let message =
+                    "up: cargo build -p runtimed failed. See the supervisor logs for details.";
+                self.state
+                    .write()
+                    .await
+                    .build_failed(true, message.to_string());
+                return Ok(CallToolResult::success(vec![ContentBlock::text(message)]));
             }
             self.state.write().await.build_succeeded(true);
-            let (daemon_after, child_after) = managed_binary_fingerprints(&project_root);
-            daemon_changed_by_rebuild = fingerprint_changed(&daemon_before, &daemon_after);
-            child_changed_by_rebuild = fingerprint_changed(&child_before, &child_after);
+            let (daemon_after, child_after) =
+                managed_binary_fingerprints_for_profile(&project_root, build_profile);
+            let daemon_changed_by_rebuild = fingerprint_changed(&daemon_before, &daemon_after);
+            let child_changed_by_rebuild = fingerprint_changed(&child_before, &child_after);
+            if daemon_changed_by_rebuild {
+                rebuilt_daemon_profile = Some(build_profile);
+            }
+            if child_changed_by_rebuild {
+                rebuilt_child_profile = Some(build_profile);
+            }
             report.push(
                 match (daemon_changed_by_rebuild, child_changed_by_rebuild) {
                     (true, true) => "rebuild: daemon + runt binaries built".into(),
@@ -1626,7 +2122,7 @@ impl Supervisor {
             );
 
             if std::env::var("SKIP_MATURIN").unwrap_or_default() != "1" {
-                match run_maturin_develop(&project_root) {
+                match run_maturin_develop_async(&project_root).await {
                     MaturinDevelopStatus::Built => {
                         report.push("rebuild: python bindings rebuilt".into());
                     }
@@ -1644,18 +2140,6 @@ impl Supervisor {
                 report.push("rebuild: maturin skipped (SKIP_MATURIN=1)".into());
             }
 
-            // runtimed-wasm has to track the daemon's runtime-state schema
-            // exactly: both sides bootstrap their RuntimeStateDoc with the
-            // same well-known schema actor, and any divergence in the
-            // scaffolded ops produces a `(actor, seq)` collision that
-            // automerge rejects on receive. Stale wasm leaves the frontend
-            // stuck on "Initializing" with no surfaced error.
-            if !run_xtask_wasm_ensure(&project_root) {
-                return Ok(CallToolResult::success(vec![ContentBlock::text(
-                    "up: cargo xtask wasm-ensure-runtime failed. Daemon was rebuilt; \
-                     the frontend wasm bundle may be stale. See the supervisor logs.",
-                )]));
-            }
             report.push("rebuild: runtimed-wasm current".into());
         }
 
@@ -1670,84 +2154,152 @@ impl Supervisor {
             ));
         }
 
-        // Step 4: ensure daemon running
+        // Step 4: ensure daemon running under `daemon_lifecycle_gate`.
         //
-        // `rebuild=true` used to imply a daemon restart unconditionally.
-        // That meant every `up rebuild=true` call killed the dev daemon
-        // and collaterally evicted any ephemeral notebook sessions,
-        // even when cargo's rebuild was a no-op (Rust source unchanged).
-        // Now we only restart when the binary actually changed — the
-        // check below reuses the existing "is the running daemon at the
-        // expected version?" path for the not-rebuilt case.
-        let needs_daemon_restart = match daemon_status(&project_root, &daemon_workspace_path) {
-            Some(info) if info.running => {
-                if daemon_changed_by_rebuild {
-                    report.push("daemon: binary changed — restarting".into());
-                    true
-                } else {
-                    // Check for version mismatch with expected. Covers
-                    // both `rebuild=false` and `rebuild=true` where the
-                    // cargo output was Fresh (binary_changed_by_rebuild
-                    // is false).
-                    let running = info.daemon_info.as_ref().and_then(|di| di.version.as_ref());
-                    let expected = expected_daemon_version(&project_root);
-                    match (running, expected) {
-                        (Some(r), Some(e)) if r != &e => {
-                            warn!(
-                                "[supervisor] Daemon version mismatch: running={r}, expected={e}"
-                            );
-                            report.push(format!(
-                                "daemon: version mismatch (running={r}, expected={e}) — restarting"
-                            ));
-                            true
+        // Both mode-change detection and daemon status/version inspection run
+        // inside the admitted transition so an explicit `up mode=…` is never
+        // discarded by a concurrent mode switch before gate entry, and a
+        // mode-less `up` never reverts a concurrent mode switch.
+        struct UpDaemonStepOutcome {
+            ready: bool,
+            restarted: bool,
+            active_profile: BuildProfile,
+            lines: Vec<String>,
+        }
+
+        let daemon_step = {
+            let state = self.state.clone();
+            let gate = self.daemon_lifecycle_gate.clone();
+            let pr = project_root.clone();
+            let wp = daemon_workspace_path.clone();
+            let disable_env_pools = mode.uses_isolated_workspace();
+            self.daemon_lifecycle_gate
+                .run_profile_transition(
+                    requested_profile,
+                    move |old_profile, target_profile| async move {
+                        let (daemon_running, running_version, expected_version) =
+                            if target_profile != old_profile {
+                                (false, None, None)
+                            } else {
+                                match daemon_status_for_profile_async(&pr, &wp, target_profile)
+                                    .await
+                                {
+                                    Some(info) if info.running => {
+                                        let running =
+                                            info.daemon_info.and_then(|di| di.version);
+                                        let expected = if rebuilt_daemon_profile
+                                            == Some(target_profile)
+                                        {
+                                            None
+                                        } else {
+                                            expected_daemon_version_for_profile_async(
+                                                &pr,
+                                                target_profile,
+                                            )
+                                            .await
+                                        };
+                                        (true, running, expected)
+                                    }
+                                    _ => (false, None, None),
+                                }
+                            };
+
+                        match decide_up_daemon_action(
+                            old_profile,
+                            target_profile,
+                            daemon_running,
+                            running_version.as_deref(),
+                            expected_version.as_deref(),
+                            rebuilt_daemon_profile,
+                        ) {
+                            UpDaemonDecision::AlreadyRunning => {
+                                let mut lines = Vec::new();
+                                if let Some(want) = requested_profile {
+                                    lines.push(format!("mode: already {}", want.as_str()));
+                                }
+                                lines.push("daemon: already running".into());
+                                ProfileTransitionOutcome {
+                                    value: UpDaemonStepOutcome {
+                                        ready: true,
+                                        restarted: false,
+                                        active_profile: target_profile,
+                                        lines,
+                                    },
+                                    publish_profile: false,
+                                }
+                            }
+                            UpDaemonDecision::Restart {
+                                reason,
+                                mode_switch,
+                            } => {
+                                if !mode_switch {
+                                    if let (Some(r), Some(e)) =
+                                        (running_version.as_deref(), expected_version.as_deref())
+                                    {
+                                        if r != e {
+                                            warn!(
+                                                "[supervisor] Daemon version mismatch: running={r}, expected={e}"
+                                            );
+                                        }
+                                    }
+                                }
+                                let mut lines = vec![reason];
+                                let ready = Self::stop_and_start_daemon_admitted(
+                                    &state,
+                                    &gate,
+                                    &pr,
+                                    &wp,
+                                    disable_env_pools,
+                                    old_profile,
+                                    target_profile,
+                                )
+                                .await;
+                                if ready {
+                                    if mode_switch {
+                                        lines.push(format!(
+                                            "mode: switched to {}",
+                                            target_profile.as_str()
+                                        ));
+                                    } else if let Some(want) = requested_profile {
+                                        lines.push(format!("mode: already {}", want.as_str()));
+                                    }
+                                    lines.push("daemon: ready".into());
+                                }
+                                ProfileTransitionOutcome {
+                                    value: UpDaemonStepOutcome {
+                                        ready,
+                                        restarted: true,
+                                        active_profile: if ready {
+                                            target_profile
+                                        } else {
+                                            old_profile
+                                        },
+                                        lines,
+                                    },
+                                    publish_profile: ready && mode_switch,
+                                }
+                            }
                         }
-                        _ => {
-                            report.push("daemon: already running".into());
-                            false
-                        }
-                    }
-                }
-            }
-            _ => {
-                report.push("daemon: not running — starting".into());
-                true
-            }
+                    },
+                )
+                .await
+                .unwrap_or_else(|| UpDaemonStepOutcome {
+                    ready: false,
+                    restarted: false,
+                    active_profile: current_build_profile(),
+                    lines: vec!["daemon: supervisor shutting down".into()],
+                })
         };
 
-        if needs_daemon_restart {
-            let mut state = self.state.write().await;
-            if let Some(ref mut child) = state.daemon_child {
-                let _ = child.kill();
-                let _ = child.wait();
-                state.daemon_child = None;
-            }
-            // Also stop any unmanaged daemon on the socket
-            if let Some(info) = daemon_status(&project_root, &daemon_workspace_path) {
-                if info.running {
-                    if let Some(pid) = info.daemon_info.and_then(|di| di.pid) {
-                        stop_daemon_by_pid(&project_root, &daemon_workspace_path, pid);
-                    }
-                }
-            }
-            state.daemon_child = start_daemon(
-                &project_root,
-                &daemon_workspace_path,
-                mode.uses_isolated_workspace(),
-            );
-            drop(state);
-
-            if !wait_for_daemon(
-                &project_root,
-                &daemon_workspace_path,
-                Duration::from_secs(30),
-            ) {
-                return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                    "up: daemon did not become ready within 30s.\n\n{}",
-                    report.join("\n")
-                ))]));
-            }
-            report.push("daemon: ready".into());
+        report.extend(daemon_step.lines);
+        if !daemon_step.ready {
+            return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                "up: daemon did not become ready within 30s.\n\n{}",
+                report.join("\n")
+            ))]));
         }
+        let needs_daemon_restart = daemon_step.restarted;
+        let child_changed_by_rebuild = rebuilt_child_profile == Some(daemon_step.active_profile);
 
         // Step 5: optionally start vite
         if params.vite {
@@ -1830,20 +2382,45 @@ impl Supervisor {
                     state.daemon_workspace_path.clone(),
                 )
             };
-            let mut state = self.state.write().await;
-            if let Some(ref mut child) = state.daemon_child {
-                let _ = child.kill();
-                let _ = child.wait();
-                state.daemon_child = None;
-                report.push("daemon: managed child stopped".into());
-            }
-            if let Some(info) = daemon_status(&project_root, &daemon_workspace_path) {
-                if info.running {
-                    if let Some(pid) = info.daemon_info.and_then(|di| di.pid) {
-                        stop_daemon_by_pid(&project_root, &daemon_workspace_path, pid);
-                        report.push(format!("daemon: unmanaged process pid {pid} stopped"));
+            let state = self.state.clone();
+            if let Some(stopped) = self
+                .daemon_lifecycle_gate
+                .run_transition(move || async move {
+                    let mut messages = Vec::new();
+                    let old_child = { state.write().await.daemon_child.take() };
+                    if let Some(child) = old_child {
+                        stop_child_async(child).await;
+                        messages.push("daemon: managed child stopped".into());
                     }
-                }
+                    let profile = current_build_profile();
+                    if let Some(info) = daemon_status_for_profile_async(
+                        &project_root,
+                        &daemon_workspace_path,
+                        profile,
+                    )
+                    .await
+                    {
+                        if info.running {
+                            if let Some(pid) = info.daemon_info.and_then(|di| di.pid) {
+                                stop_daemon_by_pid_for_profile_async(
+                                    &project_root,
+                                    &daemon_workspace_path,
+                                    pid,
+                                    profile,
+                                )
+                                .await;
+                                messages
+                                    .push(format!("daemon: unmanaged process pid {pid} stopped"));
+                            }
+                        }
+                    }
+                    messages
+                })
+                .await
+            {
+                report.extend(stopped);
+            } else {
+                report.push("daemon: supervisor shutting down".into());
             }
         } else {
             report.push("daemon: left running (pass daemon=true to stop)".into());
@@ -2361,43 +2938,24 @@ impl Supervisor {
                         // Restart daemon, then child.
                         // Stop whatever daemon is on the socket — whether we
                         // started it or launchd did.
-                        let mut state = self.state.write().await;
-                        let project_root = state.project_root.clone();
-                        let daemon_workspace_path = state.daemon_workspace_path.clone();
-                        let disable_env_pools = state.mode.uses_isolated_workspace();
+                        let (project_root, daemon_workspace_path, disable_env_pools) = {
+                            let state = self.state.read().await;
+                            (
+                                state.project_root.clone(),
+                                state.daemon_workspace_path.clone(),
+                                state.mode.uses_isolated_workspace(),
+                            )
+                        };
 
-                        if let Some(ref mut child) = state.daemon_child {
-                            info!("Stopping managed daemon (PID {:?})...", child.id());
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            state.daemon_child = None;
-                        }
-
-                        // Also stop any unmanaged daemon on the socket
-                        if let Some(info) = daemon_status(&project_root, &daemon_workspace_path) {
-                            if info.running {
-                                if let Some(di) = &info.daemon_info {
-                                    if let Some(pid) = di.pid {
-                                        info!("Stopping unmanaged daemon (PID {pid})...");
-                                        stop_daemon_by_pid(
-                                            &project_root,
-                                            &daemon_workspace_path,
-                                            pid,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-
-                        state.daemon_child =
-                            start_daemon(&project_root, &daemon_workspace_path, disable_env_pools);
-                        drop(state);
-
-                        if !wait_for_daemon(
-                            &project_root,
-                            &daemon_workspace_path,
-                            Duration::from_secs(30),
-                        ) {
+                        if !self
+                            .restart_daemon(
+                                project_root,
+                                daemon_workspace_path,
+                                disable_env_pools,
+                                None,
+                            )
+                            .await
+                        {
                             return Ok(CallToolResult::success(vec![ContentBlock::text(
                                 "Daemon restart failed — daemon did not become ready within 30s",
                             )]));
@@ -2453,7 +3011,7 @@ impl Supervisor {
                         // Vite is available via the supervisor
                         let mut result = self.forward_tool_call(request).await?;
                         result.content.push(ContentBlock::text(
-                            "\n\nTip: Use supervisor_start_vite to start a Vite \
+                            "\n\nTip: Use `up` with `vite: true` to start a Vite \
                              dev server for hot-reload, then show_notebook will \
                              launch with live frontend changes."
                                 .to_string(),
@@ -2511,18 +3069,24 @@ impl Supervisor {
                     )
                 };
 
-                // 1. Rebuild daemon binary and CLI (cargo build -p runtimed -p runt)
-                if !run_cargo_build_daemon(&project_root) {
-                    return Ok(CallToolResult::success(vec![ContentBlock::text(
-                        "cargo build -p runtimed failed — check the supervisor logs for details",
-                    )]));
+                let build_profile = current_build_profile();
+
+                // 1. Rebuild daemon binary, CLI, WASM runtime, and MCP assets
+                if !run_cargo_build_daemon_for_profile_async(&project_root, build_profile).await {
+                    let message =
+                        "cargo build -p runtimed failed — check the supervisor logs for details";
+                    self.state
+                        .write()
+                        .await
+                        .build_failed(true, message.to_string());
+                    return Ok(CallToolResult::success(vec![ContentBlock::text(message)]));
                 }
                 self.state.write().await.build_succeeded(true);
 
                 // 2. Rebuild Python bindings (maturin develop) — skip if
                 // SKIP_MATURIN=1 is set (speeds up Rust-only iteration).
                 if std::env::var("SKIP_MATURIN").unwrap_or_default() != "1" {
-                    if !run_maturin_develop(&project_root).success() {
+                    if !run_maturin_develop_async(&project_root).await.success() {
                         return Ok(CallToolResult::success(vec![ContentBlock::text(
                             "maturin develop failed — check the supervisor logs for details\n\
                              (daemon binary was rebuilt successfully)",
@@ -2532,62 +3096,35 @@ impl Supervisor {
                     info!("Skipping maturin develop (SKIP_MATURIN=1)");
                 }
 
-                // 3. Ensure runtimed-wasm stays in lockstep with the daemon's
-                // runtime-state schema. See `run_xtask_wasm_ensure` for why a
-                // stale wasm here ends in stuck "Initializing" via
-                // duplicate-seq-1.
-                if !run_xtask_wasm_ensure(&project_root) {
-                    return Ok(CallToolResult::success(vec![ContentBlock::text(
-                        "cargo xtask wasm-ensure-runtime failed — check the supervisor logs for details\n\
-                         (daemon binary was rebuilt successfully; the frontend wasm bundle may be stale)",
-                    )]));
-                }
-
-                // 4. Stop whatever daemon is running (managed or not) and start fresh
+                // 3. Stop whatever daemon is running (managed or not) and start fresh
+                // Pass `None` so an explicit `supervisor_set_mode` admitted during
+                // the build is not reverted by the pre-build profile snapshot.
+                if !self
+                    .restart_daemon(
+                        project_root.clone(),
+                        daemon_workspace_path.clone(),
+                        disable_env_pools,
+                        None,
+                    )
+                    .await
                 {
-                    let mut state = self.state.write().await;
-                    if let Some(ref mut child) = state.daemon_child {
-                        info!(
-                            "Stopping managed daemon (PID {:?}) for rebuild...",
-                            child.id()
-                        );
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        state.daemon_child = None;
-                    }
-
-                    // Also stop any unmanaged daemon on the socket (e.g. launchd)
-                    if let Some(info) = daemon_status(&project_root, &daemon_workspace_path) {
-                        if info.running {
-                            if let Some(di) = &info.daemon_info {
-                                if let Some(pid) = di.pid {
-                                    info!("Stopping unmanaged daemon (PID {pid}) for rebuild...");
-                                    stop_daemon_by_pid(&project_root, &daemon_workspace_path, pid);
-                                }
-                            }
-                        }
-                    }
-
-                    state.daemon_child =
-                        start_daemon(&project_root, &daemon_workspace_path, disable_env_pools);
-                }
-
-                if !wait_for_daemon(
-                    &project_root,
-                    &daemon_workspace_path,
-                    Duration::from_secs(30),
-                ) {
                     return Ok(CallToolResult::success(vec![ContentBlock::text(
                         "Rebuild succeeded but daemon did not become ready within 30s",
                     )]));
                 }
 
-                // Verify the running daemon matches the just-built binary
+                // Verify the running daemon matches the active profile's binary
+                let active_profile = current_build_profile();
                 let version_ok = match (
-                    daemon_status(&project_root, &daemon_workspace_path)
-                        .and_then(|i| i.daemon_info)
-                        .and_then(|di| di.version),
-                    expected_daemon_version(&project_root),
+                    daemon_status_for_profile_async(
+                        &project_root,
+                        &daemon_workspace_path,
+                        active_profile,
+                    )
+                    .await
+                    .and_then(|i| i.daemon_info)
+                    .and_then(|di| di.version),
+                    expected_daemon_version_for_profile_async(&project_root, active_profile).await,
                 ) {
                     (Some(running), Some(expected)) if running != expected => {
                         warn!(
@@ -2633,7 +3170,7 @@ impl Supervisor {
                         Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
                     }
                     _ => Ok(CallToolResult::success(vec![ContentBlock::text(
-                        "No Vite log found. Start Vite first with supervisor_start_vite.",
+                        "No Vite log found. Start Vite first with `up` (`vite: true`).",
                     )])),
                 }
             }
@@ -2677,27 +3214,15 @@ impl Supervisor {
                     .and_then(Value::as_str)
                     .unwrap_or("");
 
-                let new_release = match mode {
-                    "release" => true,
-                    "debug" => false,
+                let target_profile = match mode {
+                    "release" => BuildProfile::Release,
+                    "debug" => BuildProfile::Debug,
                     other => {
                         return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                             "Unknown mode '{other}'. Use 'debug' or 'release'."
                         ))]));
                     }
                 };
-
-                let old_release = RELEASE_MODE.load(Ordering::Relaxed);
-                if old_release == new_release {
-                    return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                        "Already in {mode} mode, no change needed."
-                    ))]));
-                }
-
-                info!(
-                    "Switching daemon mode: {} → {mode}",
-                    if old_release { "release" } else { "debug" }
-                );
 
                 let (project_root, daemon_workspace_path, disable_env_pools) = {
                     let state = self.state.read().await;
@@ -2708,15 +3233,18 @@ impl Supervisor {
                     )
                 };
 
-                // Validate both target binaries exist before stopping anything.
-                // wait_for_daemon uses `runt` to probe status, so both are needed.
-                RELEASE_MODE.store(new_release, Ordering::Relaxed);
-                let target_runtimed = cargo_binary(&project_root, "runtimed");
-                let target_runt = cargo_binary(&project_root, "runt");
-                let profile_flag = if new_release { "--release " } else { "" };
+                // Validate both target binaries exist using explicit profile resolution
+                // without mutating `RELEASE_MODE` prior to lifecycle admission.
+                let target_runtimed =
+                    cargo_binary_for_profile(&project_root, target_profile, "runtimed");
+                let target_runt = cargo_binary_for_profile(&project_root, target_profile, "runt");
+                let profile_flag = if target_profile.is_release() {
+                    "--release "
+                } else {
+                    ""
+                };
 
                 if !target_runtimed.exists() || !target_runt.exists() {
-                    RELEASE_MODE.store(old_release, Ordering::Relaxed);
                     let mut missing = Vec::new();
                     if !target_runtimed.exists() {
                         missing.push(format!("runtimed: {}", target_runtimed.display()));
@@ -2732,55 +3260,81 @@ impl Supervisor {
                     ))]));
                 }
 
-                // Stop the current daemon. If we manage it, kill the child directly.
-                // If it was already running (unmanaged), stop it via `runt daemon stop`
-                // using the OLD mode's binary so the CLI matches the running daemon.
-                {
-                    let mut state = self.state.write().await;
-                    if let Some(ref mut child) = state.daemon_child {
-                        info!("Stopping managed daemon for mode switch...");
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        state.daemon_child = None;
-                    } else {
-                        // Unmanaged daemon — stop via runt CLI (old mode binary)
-                        RELEASE_MODE.store(old_release, Ordering::Relaxed);
-                        let old_runt = cargo_binary(&project_root, "runt");
-                        RELEASE_MODE.store(new_release, Ordering::Relaxed);
-                        if old_runt.exists() {
-                            info!("Stopping unmanaged daemon via runt CLI...");
-                            let mut stop_cmd = std::process::Command::new(&old_runt);
-                            stop_cmd
-                                .args(["daemon", "stop"])
-                                .env("RUNTIMED_DEV", "1")
-                                // Always target this worktree's daemon — never the system daemon.
-                                .env("RUNTIMED_WORKSPACE_PATH", &daemon_workspace_path);
-                            let _ = stop_cmd.status();
-                            // Give it a moment to release the socket
-                            std::thread::sleep(Duration::from_secs(2));
-                        }
+                // Stop the current daemon and start the target profile inside an
+                // admitted lifecycle transition. `RELEASE_MODE` is published only
+                // after the target daemon becomes ready so queued or canceled
+                // profile switches cannot skew an in-flight restart's binary path.
+                enum ModeSwitchOutcome {
+                    AlreadyInMode,
+                    Switched,
+                    Failed { previous: BuildProfile },
+                }
+
+                let outcome = {
+                    let state = self.state.clone();
+                    let gate = self.daemon_lifecycle_gate.clone();
+                    let pr = project_root.clone();
+                    let wp = daemon_workspace_path.clone();
+                    self.daemon_lifecycle_gate
+                        .run_profile_transition(
+                            Some(target_profile),
+                            move |old_profile, target_profile| async move {
+                                if old_profile == target_profile {
+                                    return ProfileTransitionOutcome {
+                                        value: ModeSwitchOutcome::AlreadyInMode,
+                                        publish_profile: false,
+                                    };
+                                }
+                                info!(
+                                    "Switching daemon mode: {} → {}",
+                                    old_profile.as_str(),
+                                    target_profile.as_str()
+                                );
+                                let ready = Self::stop_and_start_daemon_admitted(
+                                    &state,
+                                    &gate,
+                                    &pr,
+                                    &wp,
+                                    disable_env_pools,
+                                    old_profile,
+                                    target_profile,
+                                )
+                                .await;
+                                if ready {
+                                    ProfileTransitionOutcome {
+                                        value: ModeSwitchOutcome::Switched,
+                                        publish_profile: true,
+                                    }
+                                } else {
+                                    ProfileTransitionOutcome {
+                                        value: ModeSwitchOutcome::Failed {
+                                            previous: old_profile,
+                                        },
+                                        publish_profile: false,
+                                    }
+                                }
+                            },
+                        )
+                        .await
+                        .unwrap_or_else(|| ModeSwitchOutcome::Failed {
+                            previous: current_build_profile(),
+                        })
+                };
+
+                match outcome {
+                    ModeSwitchOutcome::AlreadyInMode => {
+                        return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                            "Already in {mode} mode, no change needed."
+                        ))]));
                     }
-                }
-
-                // Start the new daemon (now using the new mode's binary)
-                {
-                    let mut state = self.state.write().await;
-                    state.daemon_child =
-                        start_daemon(&project_root, &daemon_workspace_path, disable_env_pools);
-                }
-
-                if !wait_for_daemon(
-                    &project_root,
-                    &daemon_workspace_path,
-                    Duration::from_secs(30),
-                ) {
-                    // Roll back on failure
-                    RELEASE_MODE.store(old_release, Ordering::Relaxed);
-                    return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
-                        "Failed to switch to {mode} mode — daemon did not become ready within 30s. \
-                         Rolled back to {} mode.",
-                        if old_release { "release" } else { "debug" }
-                    ))]));
+                    ModeSwitchOutcome::Failed { previous } => {
+                        return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                            "Failed to switch to {mode} mode — daemon did not become ready within 30s \
+                             (stopped the failed launch; previous daemon was stopped and profile remains {}).",
+                            previous.as_str()
+                        ))]));
+                    }
+                    ModeSwitchOutcome::Switched => {}
                 }
 
                 // Restart the MCP child so it reconnects to the new daemon
@@ -3347,6 +3901,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state_for_init = server.service().state.clone();
     let state_for_watcher = state_for_init.clone();
     let state_for_cleanup = state_for_init.clone();
+    let daemon_lifecycle_gate_for_init = server.service().daemon_lifecycle_gate.clone();
+    let daemon_lifecycle_gate_for_watcher = server.service().daemon_lifecycle_gate.clone();
+    let daemon_lifecycle_gate_for_cleanup = server.service().daemon_lifecycle_gate.clone();
     let child_ready = server.service().child_ready.clone();
 
     // Step 2: Spawn background task to do the heavy setup (daemon, build,
@@ -3359,18 +3916,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let project_root = init_project_root;
         let daemon_workspace_path = init_daemon_workspace_path;
         let mode = init_mode;
+        let startup_profile = daemon_lifecycle_gate_for_init.current_profile();
 
         // 2a: Ensure daemon is running
-        let mut daemon_child = None;
         {
             info!("Checking MCP assets and child freshness...");
             let pr = project_root.clone();
-            let builds_daemon = use_release_binaries() && mode != DevMode::Attach;
+            let builds_daemon = startup_profile.is_release() && mode != DevMode::Attach;
             let build_ok = tokio::task::spawn_blocking(move || {
                 if builds_daemon {
-                    run_cargo_build_daemon(&pr)
+                    run_cargo_build_daemon_for_profile(&pr, startup_profile)
                 } else {
-                    build_runt_cli(&pr)
+                    build_runt_cli_for_profile(&pr, startup_profile)
                 }
             })
             .await
@@ -3396,10 +3953,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        let socket_path = match daemon_status(&project_root, &daemon_workspace_path) {
+        let socket_path = match daemon_status_for_profile_async(
+            &project_root,
+            &daemon_workspace_path,
+            startup_profile,
+        )
+        .await
+        {
             Some(info) if info.running => {
                 info!("Dev daemon already running at {}", info.socket_path);
-                if let Some(expected) = expected_daemon_version(&project_root) {
+                if let Some(expected) =
+                    expected_daemon_version_for_profile_async(&project_root, startup_profile).await
+                {
                     let running = info
                         .daemon_info
                         .as_ref()
@@ -3438,78 +4003,90 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 child_ready.notify_waiters();
                 return;
             }
-            Some(_info) => {
-                info!("Daemon not running, starting it...");
-                if !cargo_binary(&project_root, "runtimed").exists() {
-                    if !run_cargo_build_daemon(&project_root) {
-                        error!("Failed to build runtimed daemon");
+            initial_status => {
+                let needs_build = match initial_status {
+                    None => true,
+                    Some(_) => {
+                        !cargo_binary_for_profile(&project_root, startup_profile, "runtimed")
+                            .exists()
+                    }
+                };
+                if needs_build {
+                    if !run_cargo_build_daemon_for_profile_async(&project_root, startup_profile)
+                        .await
+                    {
+                        error!("Failed to build daemon binaries");
                         child_ready.notify_waiters();
                         return;
                     }
                     state_for_init.write().await.build_succeeded(true);
                 }
-                daemon_child = start_daemon(
-                    &project_root,
-                    &daemon_workspace_path,
-                    mode.uses_isolated_workspace(),
-                );
-                if !wait_for_daemon(
-                    &project_root,
-                    &daemon_workspace_path,
-                    Duration::from_secs(30),
-                ) {
-                    error!("Daemon failed to start within 30s");
-                    child_ready.notify_waiters();
-                    return;
-                }
-                match daemon_status(&project_root, &daemon_workspace_path) {
-                    Some(info) if info.running => info.socket_path,
-                    _ => {
-                        error!("Daemon started but status query failed");
-                        child_ready.notify_waiters();
-                        return;
-                    }
-                }
-            }
-            None => {
-                if !run_cargo_build_daemon(&project_root) {
-                    error!("Failed to build daemon binaries");
-                    child_ready.notify_waiters();
-                    return;
-                }
-                state_for_init.write().await.build_succeeded(true);
 
-                match daemon_status(&project_root, &daemon_workspace_path) {
-                    Some(info) => {
-                        if !info.running {
-                            daemon_child = start_daemon(
-                                &project_root,
-                                &daemon_workspace_path,
-                                mode.uses_isolated_workspace(),
-                            );
-                            if !wait_for_daemon(
-                                &project_root,
-                                &daemon_workspace_path,
-                                Duration::from_secs(30),
-                            ) {
-                                error!("Daemon failed to start within 30s");
-                                child_ready.notify_waiters();
-                                return;
+                // Serialize startup daemon bring-up and `daemon_child` storage under
+                // `daemon_lifecycle_gate` so a concurrent tool transition or disconnect
+                // cannot race with or get clobbered by background startup.
+                let init_state = state_for_init.clone();
+                let init_gate = daemon_lifecycle_gate_for_init.clone();
+                let init_pr = project_root.clone();
+                let init_wp = daemon_workspace_path.clone();
+                let disable_env_pools = mode.uses_isolated_workspace();
+                let started_socket = daemon_lifecycle_gate_for_init
+                    .run_transition(move || async move {
+                        let profile = init_gate.current_profile();
+                        if let Some(info) =
+                            daemon_status_for_profile_async(&init_pr, &init_wp, profile).await
+                        {
+                            if info.running {
+                                return Some(info.socket_path);
                             }
-                            match daemon_status(&project_root, &daemon_workspace_path) {
-                                Some(fresh) if fresh.running => fresh.socket_path,
-                                _ => {
-                                    error!("Daemon started but status query failed");
-                                    child_ready.notify_waiters();
-                                    return;
-                                }
-                            }
-                        } else {
-                            info.socket_path
                         }
-                    }
+                        if init_gate.is_shutting_down() {
+                            return None;
+                        }
+                        info!("Daemon not running, starting it...");
+                        let new_child = start_daemon_for_profile(
+                            &init_pr,
+                            &init_wp,
+                            disable_env_pools,
+                            profile,
+                        );
+                        init_state.write().await.daemon_child = new_child;
+                        if init_gate.is_shutting_down() {
+                            let failed_child = { init_state.write().await.daemon_child.take() };
+                            if let Some(child) = failed_child {
+                                stop_child_async(child).await;
+                            }
+                            return None;
+                        }
+                        if !wait_for_daemon_for_profile_async(
+                            &init_pr,
+                            &init_wp,
+                            Duration::from_secs(30),
+                            profile,
+                        )
+                        .await
+                        {
+                            let failed_child = { init_state.write().await.daemon_child.take() };
+                            if let Some(child) = failed_child {
+                                stop_child_async(child).await;
+                            }
+                            error!("Daemon failed to start within 30s");
+                            return None;
+                        }
+                        match daemon_status_for_profile_async(&init_pr, &init_wp, profile).await {
+                            Some(fresh) if fresh.running => Some(fresh.socket_path),
+                            _ => {
+                                error!("Daemon started but status query failed");
+                                None
+                            }
+                        }
+                    })
+                    .await
+                    .flatten();
+
+                match started_socket {
+                    Some(path) => path,
                     None => {
-                        error!("Cannot determine daemon socket path");
                         child_ready.notify_waiters();
                         return;
                     }
@@ -3577,7 +4154,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 error!("Failed to initialize MCP proxy child: {e}");
                 let mut state = state_for_init.write().await;
                 state.socket_path = socket_path;
-                state.daemon_child = daemon_child;
                 state.last_error = Some(e);
                 state.proxy = Some(proxy);
                 child_ready.notify_waiters();
@@ -3585,12 +4161,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // 2d: Store proxy, socket, daemon in supervisor state
+        // 2d: Store proxy and socket in supervisor state (`daemon_child` is
+        // already published inside `daemon_lifecycle_gate` above).
         {
             let mut state = state_for_init.write().await;
             state.proxy = Some(proxy);
             state.socket_path = socket_path;
-            state.daemon_child = daemon_child;
         }
         // Unblock any call_tool waiting for the child
         child_ready.notify_waiters();
@@ -3609,6 +4185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let watcher_supervisor = Supervisor {
                 state: state_for_watcher,
+                daemon_lifecycle_gate: daemon_lifecycle_gate_for_watcher,
                 child_ready: Arc::new(Notify::new()),
             };
             while let Some(change_kind) = file_change_rx.recv().await {
@@ -3630,17 +4207,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let reason = server.waiting().await?;
     info!("Supervisor shutting down: {reason:?}");
 
-    // Cleanup: stop daemon if we started it
-    {
+    // Cleanup: stop admitting new daemon transitions and drain any in-flight
+    // transition before taking the last managed child and tearing down.
+    daemon_lifecycle_gate_for_cleanup.drain_for_shutdown().await;
+    let (daemon_child, isolated_context) = {
         let mut state = state_for_cleanup.write().await;
-        if let Some(ref mut child) = state.daemon_child {
-            info!("Stopping managed daemon (PID {:?})...", child.id());
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        if let Some(context) = state.isolated_context.clone() {
-            cleanup_isolated_context(&context);
-        }
+        (state.daemon_child.take(), state.isolated_context.clone())
+    };
+    if let Some(child) = daemon_child {
+        info!("Stopping managed daemon (PID {:?})...", child.id());
+        stop_child_async(child).await;
+    }
+    if let Some(context) = isolated_context {
+        cleanup_isolated_context(&context);
     }
 
     Ok(())
@@ -4880,5 +5459,420 @@ mod tests {
         let (d_after, c_after) = managed_binary_fingerprints(dir.path());
         assert_eq!(d_before, d_after, "runtimed untouched");
         assert_ne!(c_before, c_after, "runt changed");
+    }
+
+    #[tokio::test]
+    async fn daemon_lifecycle_gate_drains_active_restart_before_disconnect_cleanup() {
+        let gate = DaemonLifecycleGate::new();
+        let active_child = Arc::new(RwLock::new(Some(1u32)));
+        let events = Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+
+        let taken_old_child = Arc::new(tokio::sync::Barrier::new(2));
+        let release_publish = Arc::new(tokio::sync::Barrier::new(2));
+
+        // 1. Start an active restart that takes child 1 and pauses before publishing child 2.
+        let restart_gate = gate.clone();
+        let restart_child = active_child.clone();
+        let restart_events = events.clone();
+        let taken_barrier = taken_old_child.clone();
+        let publish_barrier = release_publish.clone();
+        let restart_task = tokio::spawn(async move {
+            restart_gate
+                .run_transition(move || async move {
+                    let old = restart_child.write().await.take();
+                    assert_eq!(old, Some(1));
+                    restart_events.lock().unwrap().push("took_old");
+                    taken_barrier.wait().await;
+                    publish_barrier.wait().await;
+                    *restart_child.write().await = Some(2);
+                    restart_events.lock().unwrap().push("published_new");
+                })
+                .await
+        });
+
+        // Wait until the active restart has taken child 1 and is mid-transition.
+        taken_old_child.wait().await;
+
+        // 2. Queue a second restart behind the active one; shutdown must reject it.
+        let queued_ran = Arc::new(AtomicBool::new(false));
+        let queued_gate = gate.clone();
+        let queued_ran_flag = queued_ran.clone();
+        let queued_task = tokio::spawn(async move {
+            queued_gate
+                .run_transition(move || async move {
+                    queued_ran_flag.store(true, Ordering::SeqCst);
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+
+        // 3. Begin disconnect cleanup while the active restart is paused.
+        let cleanup_gate = gate.clone();
+        let cleanup_child = active_child.clone();
+        let cleanup_events = events.clone();
+        let cleanup_done = Arc::new(AtomicBool::new(false));
+        let cleanup_done_flag = cleanup_done.clone();
+        let cleanup_task = tokio::spawn(async move {
+            cleanup_gate.drain_for_shutdown().await;
+            let final_child = cleanup_child.write().await.take();
+            assert_eq!(
+                final_child,
+                Some(2),
+                "cleanup must observe replacement child"
+            );
+            cleanup_events.lock().unwrap().push("cleanup_stopped_new");
+            cleanup_done_flag.store(true, Ordering::SeqCst);
+        });
+
+        // Yield several times: cleanup must NOT proceed before the active restart finishes.
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !cleanup_done.load(Ordering::SeqCst),
+            "disconnect cleanup proceeded before active restart drained"
+        );
+
+        // 4. Release the active restart to publish child 2 and exit.
+        release_publish.wait().await;
+        assert!(restart_task.await.unwrap().is_some());
+        assert!(
+            queued_task.await.unwrap().is_none(),
+            "queued transition must be rejected once shutdown starts"
+        );
+        cleanup_task.await.unwrap();
+
+        assert!(!queued_ran.load(Ordering::SeqCst));
+        assert!(cleanup_done.load(Ordering::SeqCst));
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["took_old", "published_new", "cleanup_stopped_new"]
+        );
+        // Post-shutdown transitions must also be refused immediately.
+        let post_shutdown = gate.run_transition(|| async { 42 }).await;
+        assert_eq!(post_shutdown, None);
+    }
+
+    #[tokio::test]
+    async fn daemon_lifecycle_gate_drops_queued_caller_on_cancellation_without_running() {
+        let gate = DaemonLifecycleGate::new();
+        let entered_first = Arc::new(tokio::sync::Barrier::new(2));
+        let release_first = Arc::new(tokio::sync::Barrier::new(2));
+
+        // 1. Hold the gate with an active transition.
+        let first_gate = gate.clone();
+        let entered = entered_first.clone();
+        let release = release_first.clone();
+        let first_task = tokio::spawn(async move {
+            first_gate
+                .run_transition(move || async move {
+                    entered.wait().await;
+                    release.wait().await;
+                    1u32
+                })
+                .await
+        });
+        entered_first.wait().await;
+
+        // 2. Start a second caller that blocks waiting for the permit, then cancel it.
+        let second_ran = Arc::new(AtomicBool::new(false));
+        let second_gate = gate.clone();
+        let second_ran_flag = second_ran.clone();
+        let second_task = tokio::spawn(async move {
+            second_gate
+                .run_transition(move || async move {
+                    second_ran_flag.store(true, Ordering::SeqCst);
+                })
+                .await
+        });
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        second_task.abort();
+        let _ = second_task.await;
+
+        // 3. Release the first transition and verify the canceled caller never ran.
+        release_first.wait().await;
+        assert_eq!(first_task.await.unwrap(), Some(1));
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !second_ran.load(Ordering::SeqCst),
+            "caller canceled while queued must never execute its transition"
+        );
+
+        // 4. Subsequent callers can still acquire the gate cleanly.
+        assert_eq!(gate.run_transition(|| async { 3u32 }).await, Some(3));
+    }
+
+    #[tokio::test]
+    async fn daemon_lifecycle_gate_finishes_started_transition_when_caller_cancels() {
+        let gate = DaemonLifecycleGate::new();
+        let published = Arc::new(AtomicBool::new(false));
+        let entered = Arc::new(tokio::sync::Barrier::new(2));
+        let release = Arc::new(tokio::sync::Barrier::new(2));
+
+        let t_gate = gate.clone();
+        let t_published = published.clone();
+        let t_entered = entered.clone();
+        let t_release = release.clone();
+        let caller = tokio::spawn(async move {
+            t_gate
+                .run_transition(move || async move {
+                    t_entered.wait().await;
+                    t_release.wait().await;
+                    t_published.store(true, Ordering::SeqCst);
+                })
+                .await
+        });
+
+        // Wait until the transition has acquired the permit and detached.
+        entered.wait().await;
+        // Cancel the caller while the transition is in flight.
+        caller.abort();
+        let _ = caller.await;
+        assert!(!published.load(Ordering::SeqCst));
+
+        // Unblock the detached transition and ensure shutdown drains it completely.
+        release.wait().await;
+        gate.drain_for_shutdown().await;
+        assert!(
+            published.load(Ordering::SeqCst),
+            "started transition must finish publishing even if its caller cancels"
+        );
+    }
+    #[tokio::test]
+    async fn daemon_lifecycle_gate_canceled_queued_profile_switch_preserves_running_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let gate = DaemonLifecycleGate::new_isolated(BuildProfile::Debug);
+        let entered_restart = Arc::new(tokio::sync::Barrier::new(2));
+        let release_restart = Arc::new(tokio::sync::Barrier::new(2));
+
+        // 1. Active unprofiled restart (`None`) is admitted in Debug mode via
+        // `DaemonLifecycleGate::run_profile_transition` and pauses BEFORE resolving its binary.
+        let r_gate = gate.clone();
+        let r_root = root.clone();
+        let r_entered = entered_restart.clone();
+        let r_release = release_restart.clone();
+        let active_restart = tokio::spawn(async move {
+            r_gate
+                .run_profile_transition(None, move |old_profile, target_profile| async move {
+                    assert_eq!(old_profile, BuildProfile::Debug);
+                    assert_eq!(target_profile, BuildProfile::Debug);
+                    r_entered.wait().await;
+                    r_release.wait().await;
+                    let bin = cargo_binary_for_profile(&r_root, target_profile, "runtimed");
+                    ProfileTransitionOutcome {
+                        value: bin,
+                        publish_profile: false,
+                    }
+                })
+                .await
+        });
+        entered_restart.wait().await;
+
+        // 2. Queue a profile switch (`Some(Release)`) behind the active restart.
+        let switch_ran = Arc::new(AtomicBool::new(false));
+        let s_gate = gate.clone();
+        let s_root = root.clone();
+        let s_ran = switch_ran.clone();
+        let queued_switch = tokio::spawn(async move {
+            s_gate
+                .run_profile_transition(
+                    Some(BuildProfile::Release),
+                    move |_old_profile, target_profile| async move {
+                        s_ran.store(true, Ordering::SeqCst);
+                        let bin = cargo_binary_for_profile(&s_root, target_profile, "runtimed");
+                        ProfileTransitionOutcome {
+                            value: bin,
+                            publish_profile: true,
+                        }
+                    },
+                )
+                .await
+        });
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            gate.current_profile(),
+            BuildProfile::Debug,
+            "queued profile switch must not publish Release before admission"
+        );
+
+        // 3. Cancel the queued profile switch before admission, then let the active restart finish.
+        queued_switch.abort();
+        let _ = queued_switch.await;
+        release_restart.wait().await;
+
+        let active_binary = active_restart.await.unwrap().unwrap();
+        assert_eq!(
+            active_binary,
+            cargo_binary_for_profile(&root, BuildProfile::Debug, "runtimed"),
+            "active restart must still resolve the Debug binary"
+        );
+        assert_eq!(
+            gate.current_profile(),
+            BuildProfile::Debug,
+            "canceled queued switch must leave the published profile in Debug"
+        );
+        assert!(!switch_ran.load(Ordering::SeqCst));
+
+        // 4. A failed admitted switch (`publish_profile: false`) must NOT publish Release.
+        let failed = gate
+            .run_profile_transition(
+                Some(BuildProfile::Release),
+                |old_profile, target_profile| async move {
+                    assert_eq!(old_profile, BuildProfile::Debug);
+                    assert_eq!(target_profile, BuildProfile::Release);
+                    ProfileTransitionOutcome {
+                        value: false,
+                        publish_profile: false,
+                    }
+                },
+            )
+            .await;
+        assert_eq!(failed, Some(false));
+        assert_eq!(gate.current_profile(), BuildProfile::Debug);
+
+        // 5. A succeeded admitted switch (`publish_profile: true`) resolves Release and publishes it.
+        let a_root = root.clone();
+        let switched_binary = gate
+            .run_profile_transition(
+                Some(BuildProfile::Release),
+                move |old_profile, target_profile| async move {
+                    assert_eq!(old_profile, BuildProfile::Debug);
+                    assert_eq!(target_profile, BuildProfile::Release);
+                    let bin = cargo_binary_for_profile(&a_root, target_profile, "runtimed");
+                    ProfileTransitionOutcome {
+                        value: bin,
+                        publish_profile: true,
+                    }
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            switched_binary,
+            cargo_binary_for_profile(&root, BuildProfile::Release, "runtimed")
+        );
+        assert_eq!(gate.current_profile(), BuildProfile::Release);
+    }
+
+    #[tokio::test]
+    async fn up_explicit_mode_decides_under_gate_after_concurrent_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let gate = DaemonLifecycleGate::new_isolated(BuildProfile::Debug);
+        let initial_read_done = Arc::new(tokio::sync::Barrier::new(2));
+        let concurrent_switch_done = Arc::new(tokio::sync::Barrier::new(2));
+
+        // 1. `up mode=debug` starts when the initial published profile is Debug,
+        // then pauses before entering `daemon_lifecycle_gate`.
+        let up_gate = gate.clone();
+        let up_root = root.clone();
+        let up_read_done = initial_read_done.clone();
+        let up_after_switch = concurrent_switch_done.clone();
+        let up_task = tokio::spawn(async move {
+            let requested_profile = Some(BuildProfile::Debug);
+            let initial_profile = up_gate.current_profile();
+            assert_eq!(initial_profile, BuildProfile::Debug);
+            up_read_done.wait().await;
+            up_after_switch.wait().await;
+
+            // Keep `requested_profile` intact and decide whether to restart under the gate.
+            up_gate
+                .run_profile_transition(
+                    requested_profile,
+                    move |old_profile, target_profile| async move {
+                        let decision = decide_up_daemon_action(
+                            old_profile,
+                            target_profile,
+                            true,
+                            Some("1.0"),
+                            Some("1.0"),
+                            None,
+                        );
+                        let bin = cargo_binary_for_profile(&up_root, target_profile, "runtimed");
+                        let mode_switch = matches!(
+                            decision,
+                            UpDaemonDecision::Restart {
+                                mode_switch: true,
+                                ..
+                            }
+                        );
+                        ProfileTransitionOutcome {
+                            value: (old_profile, target_profile, decision, bin),
+                            publish_profile: mode_switch,
+                        }
+                    },
+                )
+                .await
+                .unwrap()
+        });
+
+        // 2. Between `up`'s initial read and gate entry, another request switches to Release.
+        initial_read_done.wait().await;
+        gate.run_profile_transition(
+            Some(BuildProfile::Release),
+            |old_profile, target_profile| async move {
+                assert_eq!(old_profile, BuildProfile::Debug);
+                assert_eq!(target_profile, BuildProfile::Release);
+                ProfileTransitionOutcome {
+                    value: (),
+                    publish_profile: true,
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(gate.current_profile(), BuildProfile::Release);
+        concurrent_switch_done.wait().await;
+
+        // 3. `up mode=debug` must observe Release at admission, restart into Debug,
+        // resolve the Debug binary, and publish Debug (not skip as "already debug"
+        // or restart in Release).
+        let (old_profile, target_profile, decision, bin) = up_task.await.unwrap();
+        assert_eq!(old_profile, BuildProfile::Release);
+        assert_eq!(target_profile, BuildProfile::Debug);
+        assert!(matches!(
+            decision,
+            UpDaemonDecision::Restart {
+                mode_switch: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            bin,
+            cargo_binary_for_profile(&root, BuildProfile::Debug, "runtimed")
+        );
+        assert_eq!(gate.current_profile(), BuildProfile::Debug);
+
+        // 4. Mode-less `up rebuild=true` whose pre-gate build ran in Debug does not
+        // restart or revert if a concurrent switch moved the gate to Release before admission.
+        gate.publish_profile(BuildProfile::Release);
+        let decision = gate
+            .run_profile_transition(None, |old_profile, target_profile| async move {
+                assert_eq!(old_profile, BuildProfile::Release);
+                assert_eq!(target_profile, BuildProfile::Release);
+                let decision = decide_up_daemon_action(
+                    old_profile,
+                    target_profile,
+                    true,
+                    Some("1.0"),
+                    Some("1.0"),
+                    Some(BuildProfile::Debug),
+                );
+                ProfileTransitionOutcome {
+                    value: decision,
+                    publish_profile: false,
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(decision, UpDaemonDecision::AlreadyRunning);
+        assert_eq!(gate.current_profile(), BuildProfile::Release);
     }
 }

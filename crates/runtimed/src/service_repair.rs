@@ -673,13 +673,32 @@ fn process_exists(pid: u32) -> bool {
     result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// True if parsed `tasklist /FO CSV /NH` output has `pid` in the PID column.
+#[cfg(any(target_os = "windows", test))]
+fn tasklist_csv_contains_pid(stdout: &str, pid: u32) -> bool {
+    let target = pid.to_string();
+    stdout.lines().any(|line| {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix('"') else {
+            return false;
+        };
+        let Some(after_image) = rest.split_once("\",\"") else {
+            return false;
+        };
+        after_image
+            .1
+            .split_once('"')
+            .is_some_and(|(pid_field, _)| pid_field == target)
+    })
+}
+
 #[cfg(target_os = "windows")]
 fn process_exists(pid: u32) -> bool {
     let filter = format!("PID eq {pid}");
     std::process::Command::new("tasklist")
-        .args(["/FI", &filter, "/NH"])
+        .args(["/FI", &filter, "/FO", "CSV", "/NH"])
         .output()
-        .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
+        .map(|output| tasklist_csv_contains_pid(&String::from_utf8_lossy(&output.stdout), pid))
         .unwrap_or(false)
 }
 
@@ -1447,5 +1466,18 @@ mod tests {
         assert!(events.contains(&"migrate_takeover"));
         assert!(events.contains(&"verify_fallback"));
         assert!(!events.contains(&"upgrade_start"));
+    }
+
+    #[test]
+    fn tasklist_csv_matches_exact_pid_column() {
+        let out = "\"runtimed.exe\",\"1234\",\"Console\",\"1\",\"42,000 K\"\r\n";
+        assert!(tasklist_csv_contains_pid(out, 1234));
+        assert!(!tasklist_csv_contains_pid(out, 123));
+        assert!(!tasklist_csv_contains_pid(out, 42));
+        let with_comma = "\"my,app.exe\",\"99\",\"Console\",\"1\",\"1,000 K\"\r\n";
+        assert!(tasklist_csv_contains_pid(with_comma, 99));
+        assert!(!tasklist_csv_contains_pid(with_comma, 9));
+        let no_tasks = "INFO: No tasks are running which match the specified criteria.\r\n";
+        assert!(!tasklist_csv_contains_pid(no_tasks, 1234));
     }
 }

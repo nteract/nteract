@@ -2049,30 +2049,18 @@ pub async fn open_notebook(
     if crate::targets::explicit_attachment_mode() {
         return open_explicit_attachment(server, target, canonical_target).await;
     }
-    if !crate::targets::explicit_attachment_mode() {
-        if let Some(result) = reuse_active_session(server, &canonical_target).await {
-            return Ok(result);
-        }
+    if let Some(result) = reuse_active_session(server, &canonical_target).await {
+        return Ok(result);
     }
-    let activation = if crate::targets::explicit_attachment_mode() {
-        std::sync::Arc::new(crate::session_activation::SessionActivation::default())
-    } else {
-        server.session_activation.clone()
-    };
+    let activation = server.session_activation.clone();
     let mut lease = match activation.begin(canonical_target) {
         ActivationTicket::Follower(follower) => return Ok(follower.wait().await),
         ActivationTicket::Leader(lease) => lease,
     };
-    let prev = if crate::targets::explicit_attachment_mode() {
-        None
-    } else {
-        previous_notebook_id(server).await
-    };
-    if !crate::targets::explicit_attachment_mode() {
-        if let Some(result) = reuse_retained_legacy_session(server, &lease).await {
-            lease.complete(&result);
-            return Ok(result);
-        }
+    let prev = previous_notebook_id(server).await;
+    if let Some(result) = reuse_retained_legacy_session(server, &lease).await {
+        lease.complete(&result);
+        return Ok(result);
     }
     let outcome = match target {
         NotebookTarget::LocalPath(path) => {
