@@ -157,7 +157,7 @@ Embedding partners must:
 Many crates are **not published to crates.io** (`publish = false`), including
 `runt`, `runtimed-py`, `mcp-supervisor`, `runt-mcp`, `runt-mcp-proxy`,
 `nteract-mcp`, `runtimed-node`, `runt-publish`, `nteract-markdown-engine`,
-`nteract-markdown-wasm`, `sift-wasm`, `sift-csv-wasm`, and `xtask`. Check
+`sift-wasm`, `sift-csv-wasm`, and `xtask`. Check
 `Cargo.toml` for the current list.
 
 ## Published Bindings

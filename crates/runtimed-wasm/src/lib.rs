@@ -124,7 +124,7 @@ fn comments_sync_target_ref(comments_doc_id: &str) -> NotebookCommentRef {
 /// owns notebook materialization. Rendering policy still lives in the app.
 #[wasm_bindgen]
 pub fn project_markdown_json(source: &str) -> String {
-    nteract_markdown_wasm::project_to_json(source)
+    nteract_markdown_engine::project_to_json(source)
 }
 
 /// A text attribution range produced when a sync message modifies cell source.

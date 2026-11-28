@@ -23,7 +23,7 @@ runtimed-outputs = { path = "../runtimed-outputs" }
 runtimed-service = { path = "../runtimed-service" }
 runtimed-settings-sync = { path = "../runtimed-settings-sync" }
 nteract-telemetry = { path = "../nteract-telemetry" }
-nteract-markdown-wasm = { path = "../nteract-markdown-wasm" }
+nteract-markdown-engine = { path = "../nteract-markdown-engine" }
 notebook-protocol = { path = "../notebook-protocol" }
 notebook-wire = { path = "../notebook-wire" }
 notebook-cloud-transport = { path = "../notebook-cloud-transport", features = ["registry"] }
@@ -57,7 +57,6 @@ rattler_cache = { workspace = true }
 rattler_conda_types = { workspace = true }
 rattler_solve = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
-reqwest-middleware = { workspace = true }
 tokio-tungstenite = { workspace = true, features = ["native-tls"] }
 
 # Content-addressed blob store

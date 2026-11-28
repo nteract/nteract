@@ -5418,13 +5418,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nteract-markdown-wasm"
-version = "0.7.0"
-dependencies = [
- "nteract-markdown-engine",
-]
-
-[[package]]
 name = "nteract-mcp"
 version = "0.9.0"
 dependencies = [
@@ -8160,7 +8153,6 @@ dependencies = [
  "aho-corasick",
  "alacritty_terminal",
  "anyhow",
- "astral-reqwest-middleware",
  "async-rust-lsp",
  "automerge 0.12.0",
  "automerge-recovery",
@@ -8194,7 +8186,7 @@ dependencies = [
  "notify",
  "notify-debouncer-mini",
  "nteract-identity",
- "nteract-markdown-wasm",
+ "nteract-markdown-engine",
  "nteract-telemetry",
  "petname",
  "proptest",
@@ -8361,7 +8353,7 @@ dependencies = [
  "notebook-room-host",
  "notebook-wire",
  "nteract-identity",
- "nteract-markdown-wasm",
+ "nteract-markdown-engine",
  "runtime-doc",
  "serde",
  "serde-wasm-bindgen",

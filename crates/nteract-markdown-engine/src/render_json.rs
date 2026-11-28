@@ -1484,13 +1484,7 @@ fn push_json_string(output: &mut String, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn project_to_json(source: &str) -> String {
-        match crate::project_markdown(source) {
-            Ok(plan) => render_plan_json(&plan, source, "rust-wasm"),
-            Err(error) => error_to_json(&error.to_string(), "rust-wasm"),
-        }
-    }
+    use crate::project_to_json;
 
     #[test]
     fn emits_constant_schema_version_without_markdown_mode() {

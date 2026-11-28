@@ -921,6 +921,7 @@ fn checkpoint_blocked_reason(
     use notebook_protocol::protocol::SaveBlockedReason as ProtocolReason;
 
     match reason {
+        #[cfg(test)]
         CheckpointReason::SequenceExhausted => ProtocolReason::SequenceExhausted,
         CheckpointReason::Superseded { latest_sequence } => {
             ProtocolReason::Superseded { latest_sequence }

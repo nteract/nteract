@@ -34,7 +34,6 @@ members = [
     "crates/mcp-transport",
     "crates/mcp-supervisor",
     "crates/nteract-markdown-engine",
-    "crates/nteract-markdown-wasm",
     "crates/runt-mcp",
     "crates/runt-mcp-proxy",
     "crates/nteract-mcp",

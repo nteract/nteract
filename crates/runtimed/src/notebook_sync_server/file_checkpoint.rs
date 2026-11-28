@@ -93,6 +93,7 @@ pub(crate) enum SaveIoStage {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SaveBlockedReason {
+    #[cfg(test)]
     SequenceExhausted,
     ContentFingerprintMismatch {
         declared: SourceFingerprint,
@@ -163,6 +164,7 @@ pub(crate) struct SaveClaim {
     already_current: Option<FileCheckpoint>,
 }
 
+#[cfg(test)]
 impl SaveClaim {
     pub(crate) fn sequence(&self) -> u64 {
         self.sequence
@@ -248,6 +250,7 @@ impl FileCheckpointCoordinator {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn checkpoint(&self) -> Option<FileCheckpoint> {
         self.lock_state().checkpoint.clone()
     }
@@ -268,6 +271,7 @@ impl FileCheckpointCoordinator {
         state.checkpoint = Some(checkpoint);
     }
 
+    #[cfg(test)]
     pub(crate) fn latest_claimed_sequence(&self) -> u64 {
         self.lock_state().latest_reserved_sequence
     }
