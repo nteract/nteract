@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import { VirtualTimeScheduler } from "rxjs";
-import { checkAnywidgetSpec, widgetState } from "../../../packages/output-frame/src/schema.mjs";
-import { preparePayload } from "../../../packages/output-frame/src/payload.mjs";
+import { checkAnywidgetSpec, widgetState } from "@nteract/output-frame/schema";
+import { preparePayload } from "@nteract/output-frame/payload";
 // Resolve the installed package, whose dependencies belong to the Pages install.
 // A direct checkout import accidentally relies on root-level node_modules.
 const {

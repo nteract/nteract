@@ -10,7 +10,7 @@ import { exposeFile, receiveFile } from "@nteract/output-frame/byte-source";
 import { createFrameData, receiveDataChange } from "@nteract/output-frame/data";
 import { fileObject } from "@nteract/output-frame/file-object";
 import { NO_WHOLE_FILES, wholeFileTransition } from "@nteract/output-frame/whole-file-total";
-import { preparePayload } from "../../../packages/output-frame/src/payload.mjs";
+import { preparePayload } from "@nteract/output-frame/payload";
 import { parquetFixture } from "./parquet-fixture.mjs";
 import { parquetColumns } from "../viewer/parquet-columns.mjs";
 import { csvArrow } from "../viewer/csv-arrow.mjs";
