@@ -2467,7 +2467,7 @@ async fn acquire_pool_env_for_source(
     use notebook_protocol::connection::{EnvSource, PackageManager};
     let parsed = EnvSource::parse(env_source);
     // Route to appropriate pool based on the resolved manager family.
-    if matches!(parsed, EnvSource::Prewarmed(PackageManager::Pixi)) {
+    if parsed.package_manager() == Some(PackageManager::Pixi) {
         return match daemon.take_pixi_env().await {
             Some((env, guard)) => {
                 info!(
@@ -2715,7 +2715,7 @@ pub(crate) fn publish_environment_launch_error(
     }
 }
 
-async fn trust_allows_auto_launch_error_publish(room: &NotebookRoom) -> bool {
+pub(crate) async fn trust_allows_auto_launch_error_publish(room: &NotebookRoom) -> bool {
     check_and_update_trust_state(room).await;
     let trust = room.trust_state.read().await;
     matches!(
@@ -2724,7 +2724,7 @@ async fn trust_allows_auto_launch_error_publish(room: &NotebookRoom) -> bool {
     )
 }
 
-async fn reset_and_publish_environment_launch_error(
+pub(crate) async fn reset_and_publish_environment_launch_error(
     room: &NotebookRoom,
     env_source: &str,
     reason: Option<KernelErrorReason>,
@@ -2759,22 +2759,6 @@ async fn reset_auto_launch_error_with_trust_check(
         );
         reset_starting_state(room, expected_runtime_agent_id).await;
     }
-}
-
-async fn reset_and_publish_prewarmed_acquire_error(
-    room: &NotebookRoom,
-    env_source: &str,
-    error: &crate::daemon::EnvAcquireError,
-) {
-    let details = prewarmed_acquire_error_details(env_source, error);
-    error!("[notebook-sync] {}", details);
-    reset_and_publish_environment_launch_error(
-        room,
-        env_source,
-        Some(KernelErrorReason::EnvironmentPrepareFailed),
-        &details,
-    )
-    .await;
 }
 
 /// User-facing text for a failed prewarmed-env acquisition.
@@ -3630,36 +3614,63 @@ async fn auto_launch_kernel_attempt(
 
     // Determine kernel type and environment
     use notebook_protocol::connection::{EnvSource, PackageManager};
-    let (kernel_type, env_source, pooled_env): (&str, EnvSource, Option<crate::PooledEnv>) =
-        match notebook_kernel_type.as_deref() {
-            Some("deno") => {
-                // Notebook is a Deno notebook (per its kernelspec)
-                info!("[notebook-sync] Auto-launch: Deno kernel (notebook kernelspec)");
-                ("deno", EnvSource::Deno, None)
-            }
-            Some("python") => {
-                // Notebook is a Python notebook - resolve environment.
-                // Auto keeps the legacy project-first policy. `notebook` is
-                // the explicit opt-out and suppresses project_source above.
-                let inline_source = inline_source.as_ref().filter(|source| {
-                    // Skip Deno inline source for Python notebooks (kernelspec takes priority).
-                    !matches!(source, EnvSource::Deno)
-                });
-                // Check if the metadata has an explicit manager section
-                // (e.g. create_notebook(package_manager="conda") with empty deps).
-                // Use that to pick the pool type instead of default_python_env.
-                let manager = metadata_snapshot
-                    .as_ref()
-                    .and_then(detect_manager_from_metadata)
-                    .and_then(|pm| match pm {
-                        PackageManager::Unknown(_) => None,
-                        canonical => Some(canonical),
-                    })
-                    .unwrap_or_else(|| default_prewarmed_manager(default_python_env.clone()));
-                let fallback = EnvSource::Prewarmed(manager);
+    let (kernel_type, env_source): (&str, EnvSource) = match notebook_kernel_type.as_deref() {
+        Some("deno") => {
+            // Notebook is a Deno notebook (per its kernelspec)
+            info!("[notebook-sync] Auto-launch: Deno kernel (notebook kernelspec)");
+            ("deno", EnvSource::Deno)
+        }
+        Some("python") => {
+            // Notebook is a Python notebook - resolve environment.
+            // Auto keeps the legacy project-first policy. `notebook` is
+            // the explicit opt-out and suppresses project_source above.
+            let inline_source = inline_source.as_ref().filter(|source| {
+                // Skip Deno inline source for Python notebooks (kernelspec takes priority).
+                !matches!(source, EnvSource::Deno)
+            });
+            // Check if the metadata has an explicit manager section
+            // (e.g. create_notebook(package_manager="conda") with empty deps).
+            // Use that to pick the pool type instead of default_python_env.
+            let manager = metadata_snapshot
+                .as_ref()
+                .and_then(detect_manager_from_metadata)
+                .and_then(|pm| match pm {
+                    PackageManager::Unknown(_) => None,
+                    canonical => Some(canonical),
+                })
+                .unwrap_or_else(|| default_prewarmed_manager(default_python_env.clone()));
+            let fallback = EnvSource::Prewarmed(manager);
+            let env_source = select_auto_python_env_source(
+                environment_mode,
+                inline_source.cloned(),
+                project_source.clone(),
+                fallback,
+            );
+            info!(
+                "[notebook-sync] Auto-launch: resolved env_source -> {}",
+                env_source.as_str()
+            );
+            ("python", env_source)
+        }
+        None => {
+            // New notebook or unknown kernelspec - use default_runtime
+            if matches!(inline_source, Some(EnvSource::Deno)) {
+                // runt.deno config present
+                info!("[notebook-sync] Auto-launch: Deno kernel (runt.deno config)");
+                ("deno", EnvSource::Deno)
+            } else if matches!(default_runtime, crate::runtime::Runtime::Deno) {
+                // User's default is Deno
+                info!("[notebook-sync] Auto-launch: Deno kernel (default runtime)");
+                ("deno", EnvSource::Deno)
+            } else {
+                // Default to Python. Auto keeps the legacy project-first
+                // policy. `notebook` is the explicit opt-out and
+                // suppresses project_source above.
+                let fallback =
+                    EnvSource::Prewarmed(default_prewarmed_manager(default_python_env.clone()));
                 let env_source = select_auto_python_env_source(
                     environment_mode,
-                    inline_source.cloned(),
+                    inline_source.clone(),
                     project_source.clone(),
                     fallback,
                 );
@@ -3667,140 +3678,20 @@ async fn auto_launch_kernel_attempt(
                     "[notebook-sync] Auto-launch: resolved env_source -> {}",
                     env_source.as_str()
                 );
-                let pooled_env = if env_source.prepares_own_env() {
-                    info!(
-                        "[notebook-sync] Auto-launch: {} prepares its own env, no pool env needed",
-                        env_source.as_str()
-                    );
-                    None
-                } else {
-                    match acquire_prewarmed_env_with_capture(
-                        env_source.as_str(),
-                        &daemon,
-                        room,
-                        metadata_snapshot.as_ref(),
-                    )
-                    .await
-                    {
-                        Ok(Some(env)) => {
-                            // Set the active runtime owner now so the env
-                            // is protected by `runtime_agent_env_path`
-                            // through the rest of the auto-launch flow.
-                            // (`acquire_prewarmed_env_with_capture` already
-                            // released the pool lease internally.)
-                            let mut ep = room.runtime_agent_env_path.write().await;
-                            *ep = Some(env.venv_path.clone());
-                            drop(ep);
-                            Some(env)
-                        }
-                        Ok(None) => None,
-                        Err(error) => {
-                            reset_and_publish_prewarmed_acquire_error(
-                                room,
-                                env_source.as_str(),
-                                &error,
-                            )
-                            .await;
-                            return None;
-                        }
-                    }
-                };
-                ("python", env_source, pooled_env)
+                ("python", env_source)
             }
-            None => {
-                // New notebook or unknown kernelspec - use default_runtime
-                if matches!(inline_source, Some(EnvSource::Deno)) {
-                    // runt.deno config present
-                    info!("[notebook-sync] Auto-launch: Deno kernel (runt.deno config)");
-                    ("deno", EnvSource::Deno, None)
-                } else if matches!(default_runtime, crate::runtime::Runtime::Deno) {
-                    // User's default is Deno
-                    info!("[notebook-sync] Auto-launch: Deno kernel (default runtime)");
-                    ("deno", EnvSource::Deno, None)
-                } else {
-                    // Default to Python. Auto keeps the legacy project-first
-                    // policy. `notebook` is the explicit opt-out and
-                    // suppresses project_source above.
-                    let fallback =
-                        EnvSource::Prewarmed(default_prewarmed_manager(default_python_env.clone()));
-                    let env_source = select_auto_python_env_source(
-                        environment_mode,
-                        inline_source.clone(),
-                        project_source.clone(),
-                        fallback,
-                    );
-                    info!(
-                        "[notebook-sync] Auto-launch: resolved env_source -> {}",
-                        env_source.as_str()
-                    );
-                    let pooled_env = if env_source.prepares_own_env() {
-                        info!(
-                            "[notebook-sync] Auto-launch: {} prepares its own env, no pool env needed",
-                            env_source.as_str()
-                        );
-                        None
-                    } else {
-                        match acquire_prewarmed_env_with_capture(
-                            env_source.as_str(),
-                            &daemon,
-                            room,
-                            metadata_snapshot.as_ref(),
-                        )
-                        .await
-                        {
-                            Ok(Some(env)) => {
-                                let mut ep = room.runtime_agent_env_path.write().await;
-                                *ep = Some(env.venv_path.clone());
-                                drop(ep);
-                                Some(env)
-                            }
-                            Ok(None) => None,
-                            Err(error) => {
-                                reset_and_publish_prewarmed_acquire_error(
-                                    room,
-                                    env_source.as_str(),
-                                    &error,
-                                )
-                                .await;
-                                return None;
-                            }
-                        }
-                    };
-                    ("python", env_source, pooled_env)
-                }
-            }
-            Some(other) => {
-                // Unknown kernel type - default to Python
-                warn!(
-                    "[notebook-sync] Unknown kernel type '{}', defaulting to Python",
-                    other
-                );
-                let prewarmed =
-                    EnvSource::Prewarmed(default_prewarmed_manager(default_python_env.clone()));
-                let pooled_env = match acquire_prewarmed_env_with_capture(
-                    prewarmed.as_str(),
-                    &daemon,
-                    room,
-                    metadata_snapshot.as_ref(),
-                )
-                .await
-                {
-                    Ok(Some(env)) => {
-                        let mut ep = room.runtime_agent_env_path.write().await;
-                        *ep = Some(env.venv_path.clone());
-                        drop(ep);
-                        Some(env)
-                    }
-                    Ok(None) => None,
-                    Err(error) => {
-                        reset_and_publish_prewarmed_acquire_error(room, prewarmed.as_str(), &error)
-                            .await;
-                        return None;
-                    }
-                };
-                ("python", prewarmed, pooled_env)
-            }
-        };
+        }
+        Some(other) => {
+            // Unknown kernel type - default to Python
+            warn!(
+                "[notebook-sync] Unknown kernel type '{}', defaulting to Python",
+                other
+            );
+            let prewarmed =
+                EnvSource::Prewarmed(default_prewarmed_manager(default_python_env.clone()));
+            ("python", prewarmed)
+        }
+    };
 
     // Project trust gate. The env source is final here; a project-backed
     // source needs a trusted directory before uv, pixi, or conda sees the
@@ -3851,825 +3742,54 @@ async fn auto_launch_kernel_attempt(
             | crate::project_trust::RoomProjectGate::WriteFailed(_) => return None,
         };
 
-    // For pixi:toml, verify ipykernel is in pixi.toml before launching.
-    // Unlike uv (`uv run --with ipykernel`) and conda:env_yml (daemon
-    // appends ipykernel into the dep set pre-sync), pixi does not
-    // auto-inject — the project file is the sole source of truth, so
-    // launching without ipykernel would spawn a Python process that
-    // fails on `ipykernel_launcher` import.
-    if matches!(env_source, EnvSource::PixiToml) {
-        if let Some(detected) = trusted_project.as_ref().map(|t| t.detected()) {
-            let has_ipykernel = match kernel_launch::tools::pixi_info(&detected.path).await {
-                Ok(info) => info.has_ipykernel(),
-                Err(e) => {
-                    warn!(
-                        "[notebook-sync] pixi info failed, falling back to line scan: {}",
-                        e
-                    );
-                    crate::project_file::pixi_toml_has_ipykernel(&detected.path)
-                }
-            };
-            if !has_ipykernel {
-                warn!(
-                    "[notebook-sync] pixi.toml at {:?} does not declare ipykernel — cannot launch kernel",
-                    detected.path
-                );
-                if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
-                    room.state.with_doc(|sd| {
-                        sd.set_lifecycle_with_error(
-                            &RuntimeLifecycle::Error,
-                            Some(KernelErrorReason::MissingIpykernel),
-                        )?;
-                        sd.set_kernel_info("python", "python", env_source.as_str())?;
-                        Ok(())
-                    })
-                }) {
-                    warn!("[runtime-state] {}", e);
-                }
-                return None;
-            }
-        }
+    // Pre-flight check: pixi.toml must declare ipykernel.
+    if crate::kernel_launch_pipeline::verify_pixi_toml_ipykernel(
+        crate::kernel_launch_pipeline::LaunchTrigger::Auto,
+        room,
+        &env_source,
+        trusted_project.as_ref(),
+    )
+    .await
+    .is_err()
+    {
+        return None;
     }
 
-    // Transition to PreparingEnv now that runtime/env has been resolved.
-    if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
-        room.state
-            .with_doc(|sd| sd.set_lifecycle(&RuntimeLifecycle::PreparingEnv))
-    }) {
-        warn!("[runtime-state] {}", e);
-    }
-
-    // For inline deps, prepare a cached environment with rich progress
-    let progress_handler: std::sync::Arc<dyn kernel_env::ProgressHandler> = std::sync::Arc::new(
-        crate::inline_env::RuntimeDocProgressHandler::new_for_launch(
-            room.state.clone(),
-            room.current_launch_cancellation_receiver(),
-        ),
-    );
-
-    // Fetch feature flags now so inline cache hits can refresh vendored
-    // launcher files when bootstrap_dx is active.
-    let feature_flags_for_inline = daemon.feature_flags().await;
-    let bootstrap_dx = feature_flags_for_inline.bootstrap_dx;
-
-    let (pooled_env, inline_deps) = if matches!(env_source, EnvSource::Pep723(PackageManager::Uv)) {
-        // PEP 723 deps were extracted from cell source in step 2b
-        if let Some(ref deps) = pep723_deps {
-            if crate::requests::guarded::ensure_trusted_pep723(room, deps)
-                .await
-                .is_err()
-            {
-                reset_starting_state(room, None).await;
-                return None;
-            }
-            info!(
-                "[notebook-sync] Preparing cached UV env for PEP 723 deps: {:?}",
-                deps
-            );
-            match crate::inline_env::prepare_uv_inline_env(
-                deps,
-                None,
-                None,
-                progress_handler.clone(),
-            )
-            .await
-            {
-                Ok(prepared) => {
-                    info!(
-                        "[notebook-sync] Using cached PEP 723 env at {:?}",
-                        prepared.python_path
-                    );
-                    let env = Some(crate::PooledEnv {
-                        env_type: crate::EnvType::Uv,
-                        venv_path: prepared.env_path,
-                        python_path: prepared.python_path,
-                        prewarmed_packages: vec![],
-                    });
-                    (env, Some(deps.clone()))
-                }
-                Err(e) => {
-                    let details = format!("Failed to prepare PEP 723 environment: {}", e);
-                    error!("[notebook-sync] {}", details);
-                    reset_starting_state(room, None).await;
-                    publish_environment_launch_error(
-                        room,
-                        env_source.as_str(),
-                        Some(KernelErrorReason::EnvironmentPrepareFailed),
-                        &details,
-                    );
-                    return None;
-                }
-            }
-        } else {
-            (None, None)
-        }
-    } else if matches!(env_source, EnvSource::Inline(PackageManager::Uv)) {
-        if let Some(deps) = metadata_snapshot.as_ref().and_then(get_inline_uv_deps) {
-            let prerelease = metadata_snapshot
-                .as_ref()
-                .and_then(get_inline_uv_prerelease);
-            let requires_python = metadata_snapshot
-                .as_ref()
-                .and_then(get_inline_uv_requires_python);
-
-            // Fast path: check inline env cache first (instant on hit).
-            // `check_uv_inline_cache` re-vendors the launcher on hit when
-            // bootstrap_dx is on, so a stale pre-0.2.0 cache entry is
-            // brought up to today's layout before the kernel boots.
-            if let Some(cached) = crate::inline_env::check_uv_inline_cache(
-                &deps,
-                requires_python.as_deref(),
-                prerelease.as_deref(),
-                bootstrap_dx,
-            )
-            .await
-            {
-                info!(
-                    "[notebook-sync] UV inline cache hit at {:?}",
-                    cached.python_path
-                );
-                let env = Some(crate::PooledEnv {
-                    env_type: crate::EnvType::Uv,
-                    venv_path: cached.env_path,
-                    python_path: cached.python_path,
-                    prewarmed_packages: vec![],
-                });
-                (env, Some(deps))
-            } else if prerelease.is_none() {
-                // Try pool reuse for bare deps without prerelease
-                match try_uv_pool_for_inline_deps(
-                    &deps,
-                    requires_python.as_deref(),
-                    &daemon,
-                    room,
-                    progress_handler.clone(),
-                )
-                .await
-                {
-                    Ok((env, pool_pkgs)) => {
-                        let mut pooled = env;
-                        pooled.prewarmed_packages = pool_pkgs;
-                        (Some(pooled), Some(deps))
-                    }
-                    Err(_) => {
-                        // Pool path failed, fall back to full build
-                        info!(
-                            "[notebook-sync] Preparing cached UV env for inline deps: {:?}",
-                            deps
-                        );
-                        match crate::inline_env::prepare_uv_inline_env(
-                            &deps,
-                            requires_python.as_deref(),
-                            prerelease.as_deref(),
-                            progress_handler.clone(),
-                        )
-                        .await
-                        {
-                            Ok(prepared) => {
-                                info!(
-                                    "[notebook-sync] Using cached inline env at {:?}",
-                                    prepared.python_path
-                                );
-                                let env = Some(crate::PooledEnv {
-                                    env_type: crate::EnvType::Uv,
-                                    venv_path: prepared.env_path,
-                                    python_path: prepared.python_path,
-                                    prewarmed_packages: vec![],
-                                });
-                                (env, Some(deps))
-                            }
-                            Err(e) => {
-                                let details =
-                                    format!("Failed to prepare inline environment: {}", e);
-                                error!("[notebook-sync] {}", details);
-                                reset_starting_state(room, None).await;
-                                publish_environment_launch_error(
-                                    room,
-                                    env_source.as_str(),
-                                    Some(KernelErrorReason::EnvironmentPrepareFailed),
-                                    &details,
-                                );
-                                return None;
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Has prerelease — can't use pool, go straight to full build
-                info!(
-                    "[notebook-sync] Preparing cached UV env for inline deps: {:?} (prerelease: {:?})",
-                    deps, prerelease
-                );
-                match crate::inline_env::prepare_uv_inline_env(
-                    &deps,
-                    requires_python.as_deref(),
-                    prerelease.as_deref(),
-                    progress_handler.clone(),
-                )
-                .await
-                {
-                    Ok(prepared) => {
-                        info!(
-                            "[notebook-sync] Using cached inline env at {:?}",
-                            prepared.python_path
-                        );
-                        let env = Some(crate::PooledEnv {
-                            env_type: crate::EnvType::Uv,
-                            venv_path: prepared.env_path,
-                            python_path: prepared.python_path,
-                            prewarmed_packages: vec![],
-                        });
-                        (env, Some(deps))
-                    }
-                    Err(e) => {
-                        let details = format!("Failed to prepare inline environment: {}", e);
-                        error!("[notebook-sync] {}", details);
-                        reset_starting_state(room, None).await;
-                        publish_environment_launch_error(
-                            room,
-                            env_source.as_str(),
-                            Some(KernelErrorReason::EnvironmentPrepareFailed),
-                            &details,
-                        );
-                        return None;
-                    }
-                }
-            }
-        } else {
-            (pooled_env, None)
-        }
-    } else if matches!(env_source, EnvSource::Inline(PackageManager::Conda)) {
-        if let Some(deps) = metadata_snapshot.as_ref().and_then(get_inline_conda_deps) {
-            let channels = metadata_snapshot
-                .as_ref()
-                .map(get_inline_conda_channels)
-                .unwrap_or_else(|| vec!["conda-forge".to_string()]);
-            let python = metadata_snapshot.as_ref().and_then(get_inline_conda_python);
-            let python = python.as_deref();
-
-            // Fast path: check inline env cache first (instant on hit)
-            if let Some(cached) =
-                crate::inline_env::check_conda_inline_cache(&deps, &channels, python)
-            {
-                info!(
-                    "[notebook-sync] Conda inline cache hit at {:?}",
-                    cached.python_path
-                );
-                let env = Some(crate::PooledEnv {
-                    env_type: crate::EnvType::Conda,
-                    venv_path: cached.env_path,
-                    python_path: cached.python_path,
-                    prewarmed_packages: vec![],
-                });
-                (env, Some(deps))
-            } else {
-                // Try pool reuse (only for default conda-forge channel)
-                match try_conda_pool_for_inline_deps(
-                    &deps,
-                    &channels,
-                    python,
-                    &daemon,
-                    room,
-                    progress_handler.clone(),
-                )
-                .await
-                {
-                    Ok((env, pool_pkgs)) => {
-                        let mut pooled = env;
-                        pooled.prewarmed_packages = pool_pkgs;
-                        (Some(pooled), Some(deps))
-                    }
-                    Err(_) => {
-                        // Pool path failed, fall back to full build
-                        info!(
-                            "[notebook-sync] Preparing cached Conda env for inline deps: {:?} (channels: {:?})",
-                            deps, channels
-                        );
-                        match crate::inline_env::prepare_conda_inline_env(
-                            &deps,
-                            &channels,
-                            python,
-                            progress_handler.clone(),
-                        )
-                        .await
-                        {
-                            Ok(prepared) => {
-                                info!(
-                                    "[notebook-sync] Using cached conda inline env at {:?}",
-                                    prepared.python_path
-                                );
-                                let env = Some(crate::PooledEnv {
-                                    env_type: crate::EnvType::Conda,
-                                    venv_path: prepared.env_path,
-                                    python_path: prepared.python_path,
-                                    prewarmed_packages: vec![],
-                                });
-                                (env, Some(deps))
-                            }
-                            Err(e) => {
-                                let details =
-                                    format!("Failed to prepare conda inline environment: {}", e);
-                                error!("[notebook-sync] {}", details);
-                                reset_starting_state(room, None).await;
-                                publish_environment_launch_error(
-                                    room,
-                                    env_source.as_str(),
-                                    Some(KernelErrorReason::EnvironmentPrepareFailed),
-                                    &details,
-                                );
-                                return None;
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            (pooled_env, None)
-        }
-    } else if matches!(env_source, EnvSource::EnvYml) {
-        let yml_path = trusted_project
-            .as_ref()
-            .filter(|t| *t.kind() == crate::project_file::ProjectFileKind::EnvironmentYml)
-            .map(|t| t.path().to_path_buf());
-
-        let Some(yml_path) = yml_path else {
-            let details = "conda:env_yml requested but no environment.yml was found";
-            warn!("[notebook-sync] {}", details);
-            reset_and_publish_environment_launch_error(
-                room,
-                env_source.as_str(),
-                Some(KernelErrorReason::EnvironmentPrepareFailed),
-                details,
-            )
-            .await;
-            return None;
-        };
-
-        // The directory is trusted, so a missing env is built here like uv
-        // and pixi build theirs. Trust is the consent; there is no second
-        // prompt for the build.
-        let detected_yml = crate::project_file::DetectedProjectFile {
-            path: yml_path.clone(),
-            kind: crate::project_file::ProjectFileKind::EnvironmentYml,
-        };
-        if let Some(decision) = missing_conda_env_yml_decision(&detected_yml) {
-            info!(
-                "[notebook-sync] Building conda env '{}' from trusted {:?}",
-                decision.label, detected_yml.path
-            );
-        }
-
-        let env_config = match crate::project_file::parse_environment_yml(&yml_path) {
-            Ok(config) => config,
-            Err(e) => {
-                let details = format!("Failed to parse environment.yml: {}", e);
-                error!("[notebook-sync] {}", details);
-                reset_and_publish_environment_launch_error(
-                    room,
-                    env_source.as_str(),
-                    Some(KernelErrorReason::EnvironmentPrepareFailed),
-                    &details,
-                )
-                .await;
-                return None;
-            }
-        };
-
-        // Track whether the env is daemon-owned (safe to auto-rebuild)
-        // vs. user-managed (prefix: field or pre-existing named env).
-        let (conda_prefix, is_daemon_owned_env) = if let Some(ref prefix) = env_config.prefix {
-            (prefix.clone(), false) // User-specified path — never auto-delete
-        } else if let Some(ref name) = env_config.name {
-            match crate::project_file::find_named_conda_env(name) {
-                Some(found) => (found, false), // Pre-existing user env — never auto-delete
-                None => (
-                    crate::project_file::default_conda_envs_dir().join(name),
-                    true,
-                ),
-            }
-        } else {
-            let cache_dir = crate::paths::env_yml_conda_cache_dir();
-            let conda_deps_tmp = kernel_env::CondaDependencies {
-                dependencies: env_config.dependencies.clone(),
-                channels: env_config.channels.clone(),
-                python: env_config.python.clone(),
-                env_id: None,
-            };
-            (
-                cache_dir.join(kernel_env::conda::compute_env_hash(&conda_deps_tmp)),
-                true,
-            )
-        };
-
-        let mut all_deps = env_config.dependencies.clone();
-        if let Some(crdt_deps) = metadata_snapshot.as_ref().and_then(get_inline_conda_deps) {
-            let base_names: std::collections::HashSet<String> = all_deps
-                .iter()
-                .map(|d| notebook_doc::metadata::extract_package_name(d).to_lowercase())
-                .collect();
-            for dep in &crdt_deps {
-                let name = notebook_doc::metadata::extract_package_name(dep).to_lowercase();
-                if !base_names.contains(&name) {
-                    all_deps.push(dep.clone());
-                }
-            }
-        }
-
-        let base_names: std::collections::HashSet<String> = all_deps
-            .iter()
-            .map(|d| notebook_doc::metadata::extract_package_name(d).to_lowercase())
-            .collect();
-        if !base_names.contains("ipykernel") {
-            all_deps.push("ipykernel".to_string());
-        }
-        if !base_names.contains("pip") {
-            all_deps.push("pip".to_string());
-        }
-
-        let channels = if env_config.channels.is_empty() {
-            vec!["conda-forge".to_string()]
-        } else {
-            env_config.channels.clone()
-        };
-
-        let env_name_display = env_config.name.as_deref().unwrap_or("<unnamed>");
-        info!(
-            "[notebook-sync] conda:env_yml: env '{}' at {:?} with {} deps",
-            env_name_display,
-            conda_prefix,
-            all_deps.len()
-        );
-
-        let conda_deps = kernel_env::CondaDependencies {
-            dependencies: all_deps,
-            channels,
-            python: env_config.python.clone(),
-            env_id: None,
-        };
-
-        let python_path = crate::project_file::conda_python_path(&conda_prefix);
-
-        // Check for Python version mismatch: if environment.yaml
-        // requests e.g. python=3.12 but the existing env has 3.14,
-        // the env needs rebuilding. Only auto-rebuild daemon-owned
-        // envs (cache/hash paths). For user-managed envs (prefix:
-        // field or pre-existing named env), surface an error so the
-        // user can rebuild manually.
-        let python_version_ok = if python_path.exists() {
-            if let Some(ref requested) = env_config.python {
-                let matches = kernel_env::conda::installed_python_matches_constraint(
-                    &conda_prefix,
-                    requested,
-                );
-                if !matches {
-                    let installed =
-                        kernel_env::conda::detect_installed_python_version(&conda_prefix)
-                            .unwrap_or_else(|| "unknown".to_string());
-                    if is_daemon_owned_env {
-                        warn!(
-                            "[notebook-sync] conda:env_yml Python mismatch: \
-                             environment.yaml requests python={} but env has {}; \
-                             rebuilding daemon-owned env",
-                            requested, installed
-                        );
-                        if let Err(e) = tokio::fs::remove_dir_all(&conda_prefix).await {
-                            warn!(
-                                "[notebook-sync] Failed to remove mismatched env {:?}: {}",
-                                conda_prefix, e
-                            );
-                        }
-                        false
-                    } else {
-                        let details = format!(
-                            "Conda env {:?} has Python {} but environment.yml requests \
-                             python={}. This is a user-managed env — rebuild it manually \
-                             with: conda env remove -n {} && conda env create -f environment.yml",
-                            conda_prefix,
-                            installed,
-                            requested,
-                            env_config.name.as_deref().unwrap_or("<env>"),
-                        );
-                        warn!("[notebook-sync] {}", details);
-                        reset_and_publish_environment_launch_error(
-                            room,
-                            env_source.as_str(),
-                            None,
-                            &details,
-                        )
-                        .await;
-                        return None;
-                    }
-                } else {
-                    true
-                }
-            } else {
-                true // No python constraint → any version is fine
-            }
-        } else {
-            false // No existing env
-        };
-
-        // Re-check python_path after potential env removal
-        let python_path = crate::project_file::conda_python_path(&conda_prefix);
-
-        if python_path.exists() && python_version_ok {
-            // Env GC evicts the env.yml cache by last use.
-            if conda_prefix.starts_with(crate::paths::env_yml_conda_cache_dir()) {
-                kernel_env::gc::touch_last_used(&conda_prefix).await;
-            }
-            // Existing env with correct Python — sync deps into it
-            let conda_env = kernel_env::CondaEnvironment {
-                env_path: conda_prefix.clone(),
-                python_path: python_path.clone(),
-            };
-            if let Err(e) = kernel_env::conda::sync_dependencies(
-                &conda_env,
-                &conda_deps,
-                if is_daemon_owned_env {
-                    kernel_env::EnvOwnership::Daemon
-                } else {
-                    kernel_env::EnvOwnership::User
-                },
-                progress_handler.clone(),
-            )
-            .await
-            {
-                let details = format!("conda:env_yml sync into existing env failed: {}", e);
-                error!("[notebook-sync] {}", details);
-                reset_and_publish_environment_launch_error(
-                    room,
-                    env_source.as_str(),
-                    Some(KernelErrorReason::CondaEnvBuildFailed),
-                    &details,
-                )
-                .await;
-                return None;
-            }
-            // The banner stays lit until a terminal phase is written. Emit Ready so
-            // it clears whether the sync completed or we fell through to the existing env.
-            progress_handler.on_progress(
-                "conda",
-                kernel_env::EnvProgressPhase::Ready {
-                    env_path: conda_prefix.to_string_lossy().into_owned(),
-                    python_path: python_path.to_string_lossy().into_owned(),
-                },
-            );
-            let env = Some(crate::PooledEnv {
-                env_type: crate::EnvType::Conda,
-                venv_path: conda_prefix,
-                python_path,
-                prewarmed_packages: vec![],
-            });
-            (
-                env,
-                metadata_snapshot.as_ref().and_then(get_inline_conda_deps),
-            )
-        } else {
-            let parent = conda_prefix
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("/tmp"));
-            if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                let details = format!("Failed to create conda envs directory {:?}: {}", parent, e);
-                error!("[notebook-sync] {}", details);
-                reset_and_publish_environment_launch_error(
-                    room,
-                    env_source.as_str(),
-                    Some(KernelErrorReason::CondaEnvBuildFailed),
-                    &details,
-                )
-                .await;
-                return None;
-            }
-
-            match kernel_env::conda::prepare_environment_in(
-                &conda_deps,
-                parent,
-                progress_handler.clone(),
-            )
-            .await
-            {
-                Ok(prepared) => {
-                    let final_prefix = if prepared.env_path != conda_prefix {
-                        match tokio::fs::rename(&prepared.env_path, &conda_prefix).await {
-                            Ok(()) => conda_prefix.clone(),
-                            Err(e) => {
-                                warn!(
-                                    "[notebook-sync] Failed to rename {:?} -> {:?}: {}, using hash path",
-                                    prepared.env_path, conda_prefix, e
-                                );
-                                prepared.env_path
-                            }
-                        }
-                    } else {
-                        prepared.env_path
-                    };
-                    let python = crate::project_file::conda_python_path(&final_prefix);
-                    let env = Some(crate::PooledEnv {
-                        env_type: crate::EnvType::Conda,
-                        venv_path: final_prefix,
-                        python_path: python,
-                        prewarmed_packages: vec![],
-                    });
-                    (
-                        env,
-                        metadata_snapshot.as_ref().and_then(get_inline_conda_deps),
-                    )
-                }
-                Err(e) => {
-                    let details = format!(
-                        "Failed to create conda env '{}' from environment.yml: {}",
-                        env_name_display, e
-                    );
-                    error!("[notebook-sync] {}", details);
-                    reset_and_publish_environment_launch_error(
-                        room,
-                        env_source.as_str(),
-                        Some(KernelErrorReason::CondaEnvBuildFailed),
-                        &details,
-                    )
-                    .await;
-                    return None;
-                }
-            }
-        }
-    } else if matches!(env_source, EnvSource::Inline(PackageManager::Pixi)) {
-        // pixi exec handles its own env caching — just extract deps for the -w flags
-        let deps = metadata_snapshot
-            .as_ref()
-            .and_then(|s| s.runt.pixi.as_ref())
-            .map(|p| p.dependencies.clone())
-            .unwrap_or_default();
-        let deps = crate::inline_env::inline_deps_with_conda_required_packages(&deps);
-        if !deps.is_empty() {
-            info!("[notebook-sync] pixi:inline deps for pixi exec: {:?}", deps);
-            (None, Some(deps))
-        } else {
-            (pooled_env, None)
-        }
-    } else if matches!(env_source, EnvSource::Pep723(PackageManager::Pixi)) {
-        // PEP 723 deps via pixi exec -w (same mechanism as pixi:inline)
-        if let Some(ref deps) = pep723_deps {
-            let deps = crate::inline_env::inline_deps_with_conda_required_packages(deps);
-            info!("[notebook-sync] pixi:pep723 deps for pixi exec: {:?}", deps);
-            (None, Some(deps))
-        } else {
-            (pooled_env, None)
-        }
-    } else {
-        (pooled_env, None)
+    let crate::kernel_launch_pipeline::PreparedEnvironment {
+        pooled_env,
+        inline_deps,
+        pep723_dependencies: _,
+        uv_pyproject_offline,
+        pixi_toml_frozen,
+        feature_flags,
+    } = match crate::kernel_launch_pipeline::prepare_environment(
+        crate::kernel_launch_pipeline::PrepareEnvContext {
+            trigger: crate::kernel_launch_pipeline::LaunchTrigger::Auto,
+            daemon: &daemon,
+            room,
+            kernel_type,
+            env_source: &env_source,
+            metadata_snapshot: metadata_snapshot.as_ref(),
+            trusted_project: trusted_project.as_ref(),
+            notebook_path: notebook_path_opt.as_deref(),
+            precomputed_pep723_deps: pep723_deps.as_deref(),
+        },
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(_) => return None,
     };
-
-    let mut uv_pyproject_offline = false;
-    let mut pixi_toml_frozen = false;
-    if let (EnvSource::Pyproject, Some(trusted)) = (&env_source, trusted_project.as_ref()) {
-        match crate::uv_project::prepare_uv_pyproject_environment(
-            trusted,
-            notebook_path_opt.as_deref(),
-            bootstrap_dx,
-            progress_handler.clone(),
-        )
-        .await
-        {
-            Ok(offline) => {
-                uv_pyproject_offline = offline;
-                if let Err(e) = room.state.with_doc(|sd| sd.clear_env_progress()) {
-                    warn!("[runtime-state] {}", e);
-                }
-            }
-            Err(e) => {
-                let details = format!("Failed to prepare UV project environment: {e}");
-                error!("[notebook-sync] {}", details);
-                reset_and_publish_environment_launch_error(
-                    room,
-                    env_source.as_str(),
-                    Some(KernelErrorReason::EnvironmentPrepareFailed),
-                    &details,
-                )
-                .await;
-                return None;
-            }
-        }
-    } else if let (EnvSource::PixiToml, Some(trusted)) = (&env_source, trusted_project.as_ref()) {
-        let outcome =
-            crate::pixi_project::prepare_pixi_toml_environment(trusted, progress_handler.clone())
-                .await;
-        // Always clear the `ProjectPreparing` env progress the probe may
-        // have published; without this a successful fallback launch leaves
-        // "preparing pixi" pinned in the UI after the kernel is idle.
-        if let Err(e) = room.state.with_doc(|sd| sd.clear_env_progress()) {
-            warn!("[runtime-state] {}", e);
-        }
-        match outcome {
-            crate::pixi_project::PixiPrepareOutcome::SkipOrOnline => {}
-            crate::pixi_project::PixiPrepareOutcome::Frozen => {
-                pixi_toml_frozen = true;
-            }
-            crate::pixi_project::PixiPrepareOutcome::OfflineUnrecoverable(e) => {
-                let details = format!("Failed to prepare pixi:toml environment: {e}");
-                error!("[notebook-sync] {}", details);
-                reset_and_publish_environment_launch_error(
-                    room,
-                    env_source.as_str(),
-                    Some(KernelErrorReason::EnvironmentPrepareFailed),
-                    &details,
-                )
-                .await;
-                return None;
-            }
-        }
-    }
-
-    // Verify ipykernel is actually present in the prepared env before we
-    // spawn the kernel. For UV/Conda inline + PEP 723, `prepare_environment_in`
-    // always adds `ipykernel` to the install set, but cache hits skip the
-    // install step and re-use whatever's on disk. Stale caches (pre-base-
-    // packages daemon builds, hand-edited venvs, partial installs) can slip
-    // through and then fail at kernel spawn with a generic
-    // `ModuleNotFoundError: ipykernel_launcher`. Gating here surfaces the
-    // typed `MissingIpykernel` reason so the UI can render env-specific
-    // remediation instead of a raw stderr dump.
-    //
-    // Skipped for:
-    // - Prewarmed pool envs (daemon-managed; base packages are invariant)
-    // - `pixi:inline` / `pixi:pep723` (no pooled_env, pixi exec handles it)
-    // - `uv:pyproject` (launched via `uv run --with ipykernel` — auto-injects)
-    // - `conda:env_yml` (daemon appends ipykernel to the dep set pre-sync)
-    // - `deno` (not a Python env)
-    // - `pixi:toml` (already gated above via `pixi_info().has_ipykernel()`)
-    if matches!(
-        env_source,
-        EnvSource::Inline(PackageManager::Uv)
-            | EnvSource::Inline(PackageManager::Conda)
-            | EnvSource::Pep723(PackageManager::Uv)
-    ) {
-        if let Some(ref env) = pooled_env {
-            let diagnostic = kernel_env::diagnose_ipykernel_async(&env.python_path).await;
-            if !diagnostic.is_present() {
-                warn!(
-                    "[notebook-sync] prepared env at {:?} ({}) cannot import ipykernel: {:?}",
-                    env.venv_path,
-                    env_source.as_str(),
-                    diagnostic
-                );
-                let (reason, details) = crate::ipykernel_error::classify_ipykernel_diagnostic(
-                    &diagnostic,
-                    env_source.as_str(),
-                );
-                // Don't delete the env dir here: it's a content-addressed
-                // cache shared with any other notebook using the same
-                // dep set, and there's a race where a concurrent launch
-                // could observe a partial build (python present,
-                // ipykernel not yet installed) and nuke the env out
-                // from under the in-progress installer. A proper heal
-                // (install ipykernel in place, or atomic invalidation
-                // marker) is a follow-up; for now we surface the typed
-                // error and let the user edit deps to bump the hash.
-                let env_source_label = env_source.as_str().to_string();
-                if let Some(Err(e)) = room.commit_unless_launch_cancelled(|| {
-                    room.state.with_doc(|sd| {
-                        sd.set_lifecycle_with_error_details(
-                            &RuntimeLifecycle::Error,
-                            Some(reason),
-                            Some(&details),
-                        )?;
-                        sd.set_kernel_info("python", "python", &env_source_label)?;
-                        Ok(())
-                    })
-                }) {
-                    warn!("[runtime-state] {}", e);
-                }
-                return None;
-            }
-        }
-    }
-
-    // Register the env path for GC protection. For prewarmed pool envs this
-    // is already set above (right after `transfer_to_runtime`); for inline /
-    // PEP 723 / env_yml flows that built their own env, set it here so the
-    // env directory is in `runtime_agent_env_path` before any async work
-    // (agent spawn, connect timeout) runs.
-    if let Some(ref env) = pooled_env {
-        let mut ep = room.runtime_agent_env_path.write().await;
-        *ep = Some(env.venv_path.clone());
-    }
 
     // Build LaunchedEnvConfig to track what config the kernel was launched with
     let venv_path = pooled_env.as_ref().map(|e| e.venv_path.clone());
     let python_path = pooled_env.as_ref().map(|e| e.python_path.clone());
-    let prewarmed_pkgs = if let Some(ref env) = pooled_env {
-        Some(env.prewarmed_packages.clone())
-    } else if env_source.package_manager() == Some(PackageManager::Pixi) {
-        // For pixi launches without a pooled env, read default packages from settings
-        let pixi_defaults = daemon.default_pixi_packages().await;
-        if pixi_defaults.is_empty() {
-            None
-        } else {
-            Some(pixi_defaults)
-        }
-    } else {
-        None
-    };
-    let feature_flags = feature_flags_for_inline;
+    let prewarmed_pkgs = crate::kernel_launch_pipeline::resolve_prewarmed_packages(
+        &daemon,
+        &env_source,
+        pooled_env.as_ref(),
+    )
+    .await;
     // Pass captured env only when this launch actually routed through the
     // captured path. If the capture data is present but env_source flipped
     // to a different family (auto:uv vs captured conda, project file wins,
@@ -4846,19 +3966,12 @@ async fn auto_launch_kernel_attempt(
                 }
 
                 // Send LaunchKernel RPC via the runtime agent's sync connection.
-                // Precedence: shell overlay (if import setting on) → uv → pixi.
-                let mut launch_env_vars: std::collections::HashMap<String, String> =
-                    if import_shell_environment {
-                        // Merge user shell PATH with daemon PATH; see
-                        // launch_kernel.rs::overlay_env_vars for rationale.
-                        let daemon_path = std::env::var("PATH").unwrap_or_default();
-                        shell_overlay.build_kernel_env_vars(&daemon_path)
-                    } else {
-                        std::collections::HashMap::new()
-                    };
-                launch_env_vars
-                    .extend(crate::uv_project::uv_offline_env_vars(uv_pyproject_offline));
-                launch_env_vars.extend(crate::pixi_project::pixi_frozen_env_vars(pixi_toml_frozen));
+                let launch_env_vars = crate::kernel_launch_pipeline::build_launch_env_vars(
+                    import_shell_environment,
+                    &shell_overlay,
+                    uv_pyproject_offline,
+                    pixi_toml_frozen,
+                );
                 match send_runtime_agent_request_with_captured_env_repair(
                     room,
                     captured_for_config,
